@@ -71,11 +71,13 @@ public sealed class SettingsService
             Directory.CreateDirectory(SettingsDir);
             var json = JsonSerializer.Serialize(sanitized, JsonOptions);
 
-            // Write to a temp file with restricted permissions first, then replace
-            // to avoid a window where the settings file is readable by others.
+            // Create the temp file and restrict permissions BEFORE writing content
+            // to avoid a window where sensitive data is world-readable.
             var tempPath = SettingsPath + ".tmp";
-            File.WriteAllText(tempPath, json);
+            using (File.Create(tempPath)) { }
             RestrictFilePermissions(tempPath);
+            // Permissions persist across writes on both Windows (NTFS ACL) and Unix (inode mode).
+            File.WriteAllText(tempPath, json);
             File.Move(tempPath, SettingsPath, overwrite: true);
 
             _cached = sanitized;

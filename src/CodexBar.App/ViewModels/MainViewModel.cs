@@ -53,6 +53,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                 card.WeeklyText = null;
                 card.WeeklyPercent = 0;
                 card.IsHighUsage = false;
+                card.ShowUsagePercent = true;
                 card.IsError = true;
                 return;
             }
