@@ -106,13 +106,18 @@
                                            Foreground="{StaticResource TextSecondaryBrush}"
                                            TextTrimming="CharacterEllipsis" />
 
-                                <!-- Reset / weekly text -->
-                                <TextBlock Grid.Row="3" Grid.ColumnSpan="2"
-                                           Text="{Binding ResetText}"
-                                           FontSize="10"
-                                           Foreground="{StaticResource TextSecondaryBrush}"
-                                           Visibility="{Binding ResetText, Converter={x:Static local:NullToCollapsedConverter.Instance}}"
-                                           Margin="0,2,0,0" />
+                                <!-- Weekly + Reset text -->
+                                <StackPanel Grid.Row="3" Grid.ColumnSpan="2"
+                                            Margin="0,2,0,0">
+                                    <TextBlock Text="{Binding WeeklyText}"
+                                               FontSize="10"
+                                               Foreground="{StaticResource TextSecondaryBrush}"
+                                               Visibility="{Binding WeeklyText, Converter={x:Static local:NullToCollapsedConverter.Instance}}" />
+                                    <TextBlock Text="{Binding ResetText}"
+                                               FontSize="10"
+                                               Foreground="{StaticResource TextSecondaryBrush}"
+                                               Visibility="{Binding ResetText, Converter={x:Static local:NullToCollapsedConverter.Instance}}" />
+                                </StackPanel>
                             </Grid>
                         </Border>
                     </DataTemplate>

@@ -32,7 +32,7 @@ public sealed class CopilotProvider : IUsageProvider
         DashboardUrl = "https://github.com/settings/copilot",
         StatusPageUrl = "https://www.githubstatus.com",
         SupportsSessionUsage = true,
-        SupportsWeeklyUsage = false,
+        SupportsWeeklyUsage = true,
         SupportsCredits = false
     };
 

@@ -40,6 +40,9 @@ public sealed class OpenRouterProvider : IUsageProvider
 
     public Task<bool> IsAvailableAsync(CancellationToken ct = default)
     {
+        if (!_settings.IsProviderEnabled("OpenRouter"))
+            return Task.FromResult(false);
+
         var key = ResolveApiKey();
         return Task.FromResult(!string.IsNullOrWhiteSpace(key));
     }
@@ -79,12 +82,7 @@ public sealed class OpenRouterProvider : IUsageProvider
             {
                 Provider = ProviderId.OpenRouter,
                 Success = true,
-                CreditsRemaining = (decimal)balance,
-                SessionUsage = new UsageSnapshot
-                {
-                    UsedPercent = usedPercent,
-                    UsageLabel = $"${balance:F2} remaining (${totalUsage:F2} / ${totalCredits:F2})"
-                }
+                CreditsRemaining = (decimal)balance
             };
         }
         catch (Exception ex)

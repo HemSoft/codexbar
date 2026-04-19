@@ -119,15 +119,17 @@ public sealed class ClaudeProvider : IUsageProvider
                 resetsAt = resetTime;
                 var remaining = resetTime - DateTimeOffset.UtcNow;
                 resetDesc = remaining.TotalHours >= 1
-                    ? $"Resets in {remaining.Hours}h {remaining.Minutes}m"
+                    ? $"Resets in {(int)remaining.TotalHours}h {remaining.Minutes}m"
                     : $"Resets in {remaining.Minutes}m";
             }
         }
 
+        var clampedPercentUsed = Math.Clamp(percentUsed, 0, 1);
+
         return new UsageSnapshot
         {
-            UsedPercent = Math.Clamp(percentUsed, 0, 1),
-            UsageLabel = $"{label}: {percentUsed:P0} used",
+            UsedPercent = clampedPercentUsed,
+            UsageLabel = $"{label}: {clampedPercentUsed:P0} used",
             ResetsAt = resetsAt,
             ResetDescription = resetDesc
         };

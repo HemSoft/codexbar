@@ -1,4 +1,5 @@
 ﻿using System.Drawing;
+using System.Runtime.InteropServices;
 using System.Windows;
 using CodexBar.App.ViewModels;
 using CodexBar.Core.Configuration;
@@ -108,11 +109,23 @@ public partial class App : Application
         g.FillRectangle(topBrush, 2, 3, 12, 4);
         g.FillRectangle(bottomBrush, 2, 9, 12, 4);
 
-        // Clone to create an owned icon — FromHandle doesn't take ownership
+        // Clone to create an owned icon — FromHandle doesn't take ownership.
+        // DestroyIcon must be called to free the unmanaged HICON from GetHicon().
         var handle = bmp.GetHicon();
-        using var tempIcon = Icon.FromHandle(handle);
-        return (Icon)tempIcon.Clone();
+        try
+        {
+            using var tempIcon = Icon.FromHandle(handle);
+            return (Icon)tempIcon.Clone();
+        }
+        finally
+        {
+            DestroyIcon(handle);
+        }
     }
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool DestroyIcon(IntPtr hIcon);
 
     protected override void OnExit(ExitEventArgs e)
     {

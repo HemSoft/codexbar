@@ -40,7 +40,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private void OnUsageUpdated(ProviderId id, ProviderUsageResult result)
     {
         // Marshal to UI thread
-        System.Windows.Application.Current?.Dispatcher.Invoke(() =>
+        System.Windows.Application.Current?.Dispatcher.InvokeAsync(() =>
         {
             var card = Providers.FirstOrDefault(p => p.ProviderId == id);
             if (card is null) return;
@@ -49,6 +49,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             {
                 card.StatusText = result.ErrorMessage ?? "Error";
                 card.UsedPercent = 0;
+                card.ResetText = null;
+                card.WeeklyText = null;
+                card.WeeklyPercent = 0;
+                card.IsHighUsage = false;
                 card.IsError = true;
                 return;
             }
@@ -64,10 +68,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             }
             else if (result.CreditsRemaining is not null)
             {
-                var pct = result.SessionUsage?.UsedPercent ?? 0;
                 card.StatusText = $"${result.CreditsRemaining:F2} remaining";
-                card.UsedPercent = pct;
-                card.IsHighUsage = pct >= 0.8;
+                card.UsedPercent = 0;
+                card.IsHighUsage = false;
             }
             else
             {

@@ -5,6 +5,11 @@ namespace CodexBar.Core.Configuration;
 
 /// <summary>
 /// Reads and writes settings to ~/.codexbar/settings.json.
+/// <para>
+/// ⚠️ Security note: API keys are stored in plaintext. On Windows, consider
+/// using DPAPI (ProtectedData) for encryption. The settings file should be
+/// protected by OS-level user permissions (~/.codexbar/).
+/// </para>
 /// </summary>
 public sealed class SettingsService
 {
@@ -67,8 +72,21 @@ public sealed class SettingsService
     {
         try
         {
+            // Strip null/empty API keys to avoid persisting empty credential fields
+            var sanitized = new AppSettings
+            {
+                RefreshIntervalSeconds = settings.RefreshIntervalSeconds,
+                Providers = settings.Providers.ToDictionary(
+                    kvp => kvp.Key,
+                    kvp => new ProviderSettings
+                    {
+                        Enabled = kvp.Value.Enabled,
+                        ApiKey = string.IsNullOrWhiteSpace(kvp.Value.ApiKey) ? null : kvp.Value.ApiKey
+                    })
+            };
+
             Directory.CreateDirectory(SettingsDir);
-            var json = JsonSerializer.Serialize(settings, JsonOptions);
+            var json = JsonSerializer.Serialize(sanitized, JsonOptions);
             File.WriteAllText(SettingsPath, json);
             _cached = settings;
             _logger.LogDebug("Settings saved to {Path}", SettingsPath);

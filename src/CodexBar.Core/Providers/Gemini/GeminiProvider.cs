@@ -36,7 +36,7 @@ public sealed class GeminiProvider : IUsageProvider
         DashboardUrl = "https://aistudio.google.com",
         StatusPageUrl = "https://status.cloud.google.com",
         SupportsSessionUsage = true,
-        SupportsWeeklyUsage = false,
+        SupportsWeeklyUsage = true,
         SupportsCredits = false
     };
 
@@ -148,10 +148,12 @@ public sealed class GeminiProvider : IUsageProvider
                 : $"Resets in {remaining.Minutes}m";
         }
 
+        var clampedUsedPercent = Math.Clamp(usedPercent, 0, 1);
+
         return new UsageSnapshot
         {
-            UsedPercent = Math.Clamp(usedPercent, 0, 1),
-            UsageLabel = $"{label}: {usedPercent:P0} used",
+            UsedPercent = clampedUsedPercent,
+            UsageLabel = $"{label}: {clampedUsedPercent:P0} used",
             ResetsAt = resetsAt,
             ResetDescription = resetDesc
         };
