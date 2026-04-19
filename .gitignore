@@ -43,3 +43,6 @@ appsettings.Development.json
 
 # Publish output
 publish/
+
+# Copilot hooks (local-only)
+.github/hooks/
