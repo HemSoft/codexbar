@@ -98,6 +98,7 @@ public sealed class SettingsService
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to save settings to {Path}", SettingsPath);
+            throw;
         }
     }
 
@@ -131,7 +132,11 @@ public sealed class SettingsService
         {
             _logger.LogInformation("No settings file found at {Path}, using defaults", SettingsPath);
             _cached = CreateDefaults();
-            SaveInternal(_cached);
+            try { SaveInternal(_cached); }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Could not persist default settings to {Path}; continuing with in-memory defaults", SettingsPath);
+            }
             return _cached;
         }
 
