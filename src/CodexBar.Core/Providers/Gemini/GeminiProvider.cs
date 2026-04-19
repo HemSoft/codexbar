@@ -36,7 +36,7 @@ public sealed class GeminiProvider : IUsageProvider
         DashboardUrl = "https://aistudio.google.com",
         StatusPageUrl = "https://status.cloud.google.com",
         SupportsSessionUsage = true,
-        SupportsWeeklyUsage = true,
+        SupportsWeeklyUsage = false,
         SupportsCredits = false
     };
 
@@ -122,7 +122,11 @@ public sealed class GeminiProvider : IUsageProvider
                 Provider = ProviderId.Gemini,
                 Success = true,
                 SessionUsage = proSnapshot,
-                WeeklyUsage = flashSnapshot
+                // Gemini exposes separate "Pro" and "Flash" quota buckets,
+                // not session/weekly time windows. Mapping Flash into WeeklyUsage
+                // would cause downstream consumers to label it as "Weekly".
+                // TODO: Introduce a secondary quota concept for multi-bucket providers.
+                WeeklyUsage = null
             };
         }
         catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.Unauthorized)
@@ -143,6 +147,8 @@ public sealed class GeminiProvider : IUsageProvider
         if (resetsAt is not null)
         {
             var remaining = resetsAt.Value - DateTimeOffset.UtcNow;
+            if (remaining < TimeSpan.Zero)
+                remaining = TimeSpan.Zero;
             resetDesc = remaining.TotalHours >= 1
                 ? $"Resets in {(int)remaining.TotalHours}h {remaining.Minutes}m"
                 : $"Resets in {remaining.Minutes}m";

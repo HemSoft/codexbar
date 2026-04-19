@@ -48,6 +48,7 @@ public sealed class SettingsService
             {
                 var json = File.ReadAllText(SettingsPath);
                 _cached = JsonSerializer.Deserialize<AppSettings>(json, JsonOptions) ?? CreateDefaults();
+                _cached.Providers ??= new Dictionary<string, ProviderSettings>();
                 _logger.LogDebug("Settings loaded from {Path}", SettingsPath);
             }
             catch (Exception ex)
@@ -72,11 +73,13 @@ public sealed class SettingsService
     {
         try
         {
+            var providers = settings.Providers ?? new Dictionary<string, ProviderSettings>();
+
             // Strip null/empty API keys to avoid persisting empty credential fields
             var sanitized = new AppSettings
             {
                 RefreshIntervalSeconds = settings.RefreshIntervalSeconds,
-                Providers = settings.Providers.ToDictionary(
+                Providers = providers.ToDictionary(
                     kvp => kvp.Key,
                     kvp => new ProviderSettings
                     {
@@ -88,7 +91,7 @@ public sealed class SettingsService
             Directory.CreateDirectory(SettingsDir);
             var json = JsonSerializer.Serialize(sanitized, JsonOptions);
             File.WriteAllText(SettingsPath, json);
-            _cached = settings;
+            _cached = sanitized;
             _logger.LogDebug("Settings saved to {Path}", SettingsPath);
         }
         catch (Exception ex)

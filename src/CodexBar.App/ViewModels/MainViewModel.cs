@@ -59,6 +59,15 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
             card.IsError = false;
 
+            // Reset all fields to avoid stale data from a previous result shape
+            card.StatusText = "No data";
+            card.UsedPercent = 0;
+            card.ResetText = null;
+            card.WeeklyText = null;
+            card.WeeklyPercent = 0;
+            card.IsHighUsage = false;
+            card.ShowUsagePercent = true;
+
             if (result.SessionUsage is not null)
             {
                 card.UsedPercent = result.SessionUsage.UsedPercent;
@@ -71,6 +80,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                 card.StatusText = $"${result.CreditsRemaining:F2} remaining";
                 card.UsedPercent = 0;
                 card.IsHighUsage = false;
+                card.ShowUsagePercent = false;
             }
             else
             {
@@ -158,6 +168,13 @@ public sealed class ProviderCardViewModel : INotifyPropertyChanged
     {
         get => _isHighUsage;
         set => SetField(ref _isHighUsage, value);
+    }
+
+    private bool _showUsagePercent = true;
+    public bool ShowUsagePercent
+    {
+        get => _showUsagePercent;
+        set => SetField(ref _showUsagePercent, value);
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;

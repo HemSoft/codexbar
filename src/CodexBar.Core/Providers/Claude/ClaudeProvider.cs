@@ -118,9 +118,11 @@ public sealed class ClaudeProvider : IUsageProvider
             {
                 resetsAt = resetTime;
                 var remaining = resetTime - DateTimeOffset.UtcNow;
-                resetDesc = remaining.TotalHours >= 1
-                    ? $"Resets in {(int)remaining.TotalHours}h {remaining.Minutes}m"
-                    : $"Resets in {remaining.Minutes}m";
+                resetDesc = remaining <= TimeSpan.Zero
+                    ? "Resets soon"
+                    : remaining.TotalHours >= 1
+                        ? $"Resets in {(int)remaining.TotalHours}h {remaining.Minutes}m"
+                        : $"Resets in {remaining.Minutes}m";
             }
         }
 

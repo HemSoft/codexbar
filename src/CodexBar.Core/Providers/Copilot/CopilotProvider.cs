@@ -32,7 +32,7 @@ public sealed class CopilotProvider : IUsageProvider
         DashboardUrl = "https://github.com/settings/copilot",
         StatusPageUrl = "https://www.githubstatus.com",
         SupportsSessionUsage = true,
-        SupportsWeeklyUsage = true,
+        SupportsWeeklyUsage = false,
         SupportsCredits = false
     };
 
@@ -94,7 +94,11 @@ public sealed class CopilotProvider : IUsageProvider
                 Provider = ProviderId.Copilot,
                 Success = true,
                 SessionUsage = premium ?? chat,
-                WeeklyUsage = premium is not null ? chat : null
+                // Copilot exposes "Premium" and "Chat" quota types,
+                // not session/weekly time windows. Mapping Chat into WeeklyUsage
+                // would cause downstream consumers to label it as "Weekly".
+                // TODO: Introduce a secondary quota concept for multi-bucket providers.
+                WeeklyUsage = null
             };
         }
         catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.Unauthorized)
@@ -142,47 +146,79 @@ public sealed class CopilotProvider : IUsageProvider
         return ReadGhCliToken();
     }
 
+    private static IEnumerable<string> GetGhHostsFilePaths()
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
+        if (!string.IsNullOrWhiteSpace(appData))
+        {
+            var windowsPath = Path.GetFullPath(Path.Combine(appData, "GitHub CLI", "hosts.yml"));
+            if (seen.Add(windowsPath))
+                yield return windowsPath;
+        }
+
+        var xdgConfigHome = Environment.GetEnvironmentVariable("XDG_CONFIG_HOME");
+        if (!string.IsNullOrWhiteSpace(xdgConfigHome))
+        {
+            var xdgPath = Path.GetFullPath(Path.Combine(xdgConfigHome, "gh", "hosts.yml"));
+            if (seen.Add(xdgPath))
+                yield return xdgPath;
+        }
+
+        var userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        if (!string.IsNullOrWhiteSpace(userProfile))
+        {
+            var unixPath = Path.GetFullPath(Path.Combine(userProfile, ".config", "gh", "hosts.yml"));
+            if (seen.Add(unixPath))
+                yield return unixPath;
+
+            var macPath = Path.GetFullPath(Path.Combine(userProfile, "Library", "Application Support", "GitHub CLI", "hosts.yml"));
+            if (seen.Add(macPath))
+                yield return macPath;
+        }
+    }
+
     private string? ReadGhCliToken()
     {
-        var ghConfigDir = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "GitHub CLI");
-        var hostsFile = Path.Combine(ghConfigDir, "hosts.yml");
-
-        if (!File.Exists(hostsFile))
+        foreach (var hostsFile in GetGhHostsFilePaths())
         {
-            _logger.LogDebug("gh CLI hosts.yml not found at {Path}", hostsFile);
-            return null;
-        }
-
-        try
-        {
-            // Simple YAML parsing — just looking for oauth_token under github.com
-            var lines = File.ReadAllLines(hostsFile);
-            var inGithubCom = false;
-            foreach (var line in lines)
+            if (!File.Exists(hostsFile))
             {
-                var trimmed = line.TrimStart();
-                if (trimmed.StartsWith("github.com:"))
-                {
-                    inGithubCom = true;
-                    continue;
-                }
-                if (inGithubCom && trimmed.StartsWith("oauth_token:"))
-                {
-                    var token = trimmed["oauth_token:".Length..].Trim();
-                    if (!string.IsNullOrWhiteSpace(token))
-                    {
-                        _logger.LogDebug("Found GitHub token from gh CLI");
-                        return token;
-                    }
-                }
-                if (inGithubCom && !line.StartsWith(' ') && !line.StartsWith('\t') && trimmed.Length > 0)
-                    inGithubCom = false; // left github.com block
+                _logger.LogDebug("gh CLI hosts.yml not found at {Path}", hostsFile);
+                continue;
             }
-        }
-        catch (Exception ex)
-        {
-            _logger.LogWarning(ex, "Failed to read gh CLI hosts.yml");
+
+            try
+            {
+                // Simple YAML parsing — just looking for oauth_token under github.com
+                var lines = File.ReadAllLines(hostsFile);
+                var inGithubCom = false;
+                foreach (var line in lines)
+                {
+                    var trimmed = line.TrimStart();
+                    if (trimmed.StartsWith("github.com:"))
+                    {
+                        inGithubCom = true;
+                        continue;
+                    }
+                    if (inGithubCom && trimmed.StartsWith("oauth_token:"))
+                    {
+                        var token = trimmed["oauth_token:".Length..].Trim();
+                        if (!string.IsNullOrWhiteSpace(token))
+                        {
+                            _logger.LogDebug("Found GitHub token from gh CLI at {Path}", hostsFile);
+                            return token;
+                        }
+                    }
+                    if (inGithubCom && !line.StartsWith(' ') && !line.StartsWith('\t') && trimmed.Length > 0)
+                        inGithubCom = false; // left github.com block
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to read gh CLI hosts.yml at {Path}", hostsFile);
+            }
         }
 
         return null;
