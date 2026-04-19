@@ -129,9 +129,9 @@ public partial class App : Application
 
     protected override void OnExit(ExitEventArgs e)
     {
-        _viewModel?.Dispose();
+        // Only dispose non-DI resources manually. _viewModel and _refreshService
+        // are DI singletons — ServiceProvider.Dispose() handles their lifetime.
         _trayIcon?.Dispose();
-        _refreshService?.Dispose();
         _services?.Dispose();
         base.OnExit(e);
     }

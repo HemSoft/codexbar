@@ -8,7 +8,7 @@ namespace CodexBar.Core.Providers.Copilot;
 
 /// <summary>
 /// Fetches GitHub Copilot usage via the Copilot internal API.
-/// Auth: reads GitHub token from gh CLI config or ~/.codexbar/settings.json.
+/// Auth: resolves GitHub token from ~/.codexbar/settings.json, then GITHUB_TOKEN env var, then gh CLI hosts config.
 /// Endpoint: GET https://api.github.com/copilot_internal/user
 /// </summary>
 public sealed class CopilotProvider : IUsageProvider
