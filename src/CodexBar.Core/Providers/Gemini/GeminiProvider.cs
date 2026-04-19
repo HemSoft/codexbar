@@ -45,15 +45,21 @@ public sealed class GeminiProvider : IUsageProvider
         if (!_settings.IsProviderEnabled("Gemini"))
             return Task.FromResult(false);
 
-        return Task.FromResult(File.Exists(OAuthCredsPath));
+        return Task.FromResult(ReadAccessToken().Status == AccessTokenStatus.Success);
     }
 
     public async Task<ProviderUsageResult> FetchUsageAsync(CancellationToken ct = default)
     {
-        var accessToken = ReadAccessToken();
-        if (accessToken is null)
-            return ProviderUsageResult.Failure(ProviderId.Gemini,
-                "No Gemini CLI credentials found. Run 'gemini login' first.");
+        var tokenResult = ReadAccessToken();
+        if (tokenResult.Status != AccessTokenStatus.Success)
+        {
+            var message = tokenResult.Status == AccessTokenStatus.Expired
+                ? "Gemini OAuth token expired. Run 'gemini login' to refresh."
+                : "No Gemini CLI credentials found. Run 'gemini login' first.";
+            return ProviderUsageResult.Failure(ProviderId.Gemini, message);
+        }
+
+        var accessToken = tokenResult.Token!;
 
         try
         {
@@ -80,6 +86,8 @@ public sealed class GeminiProvider : IUsageProvider
                 double lowestFlashRemaining = 1.0;
                 DateTimeOffset? proReset = null;
                 DateTimeOffset? flashReset = null;
+                bool foundPro = false;
+                bool foundFlash = false;
 
                 foreach (var quota in quotas.EnumerateArray())
                 {
@@ -95,6 +103,7 @@ public sealed class GeminiProvider : IUsageProvider
 
                     if (isFlash)
                     {
+                        foundFlash = true;
                         if (remaining < lowestFlashRemaining)
                         {
                             lowestFlashRemaining = remaining;
@@ -103,6 +112,7 @@ public sealed class GeminiProvider : IUsageProvider
                     }
                     else
                     {
+                        foundPro = true;
                         if (remaining < lowestProRemaining)
                         {
                             lowestProRemaining = remaining;
@@ -111,8 +121,10 @@ public sealed class GeminiProvider : IUsageProvider
                     }
                 }
 
-                proSnapshot = MakeSnapshot("Pro", 1.0 - lowestProRemaining, proReset);
-                flashSnapshot = MakeSnapshot("Flash", 1.0 - lowestFlashRemaining, flashReset);
+                if (foundPro)
+                    proSnapshot = MakeSnapshot("Pro", 1.0 - lowestProRemaining, proReset);
+                if (foundFlash)
+                    flashSnapshot = MakeSnapshot("Flash", 1.0 - lowestFlashRemaining, flashReset);
             }
 
             _logger.LogDebug("Gemini: pro={ProPct:P0}, flash={FlashPct:P0}",
@@ -166,12 +178,16 @@ public sealed class GeminiProvider : IUsageProvider
         };
     }
 
-    private string? ReadAccessToken()
+    private enum AccessTokenStatus { Success, Missing, Expired }
+
+    private sealed record AccessTokenResult(AccessTokenStatus Status, string? Token);
+
+    private AccessTokenResult ReadAccessToken()
     {
         if (!File.Exists(OAuthCredsPath))
         {
             _logger.LogDebug("Gemini OAuth credentials not found at {Path}", OAuthCredsPath);
-            return null;
+            return new AccessTokenResult(AccessTokenStatus.Missing, null);
         }
 
         try
@@ -180,7 +196,7 @@ public sealed class GeminiProvider : IUsageProvider
             using var doc = JsonDocument.Parse(json);
 
             if (!doc.RootElement.TryGetProperty("access_token", out var token))
-                return null;
+                return new AccessTokenResult(AccessTokenStatus.Missing, null);
 
             // Check expiry
             if (doc.RootElement.TryGetProperty("expiry_date", out var expiry))
@@ -191,17 +207,21 @@ public sealed class GeminiProvider : IUsageProvider
                     if (expiresAt < DateTimeOffset.UtcNow)
                     {
                         _logger.LogDebug("Gemini access token expired at {Expiry}", expiresAt);
-                        return null;
+                        return new AccessTokenResult(AccessTokenStatus.Expired, null);
                     }
                 }
             }
 
-            return token.GetString();
+            var tokenString = token.GetString();
+            if (string.IsNullOrEmpty(tokenString))
+                return new AccessTokenResult(AccessTokenStatus.Missing, null);
+
+            return new AccessTokenResult(AccessTokenStatus.Success, tokenString);
         }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Failed to read Gemini OAuth credentials");
-            return null;
+            return new AccessTokenResult(AccessTokenStatus.Missing, null);
         }
     }
 }
