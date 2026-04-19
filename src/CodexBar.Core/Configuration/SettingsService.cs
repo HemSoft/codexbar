@@ -37,14 +37,14 @@ public sealed class SettingsService
     {
         lock (_lock)
         {
-            if (_cached is not null) return _cached;
+            if (_cached is not null) return DeepCopy(_cached);
 
             if (!File.Exists(SettingsPath))
             {
                 _logger.LogInformation("No settings file found at {Path}, using defaults", SettingsPath);
                 _cached = CreateDefaults();
                 SaveInternal(_cached);
-                return _cached;
+                return DeepCopy(_cached);
             }
 
             try
@@ -60,7 +60,7 @@ public sealed class SettingsService
                 _cached = CreateDefaults();
             }
 
-            return _cached;
+            return DeepCopy(_cached);
         }
     }
 
@@ -132,6 +132,19 @@ public sealed class SettingsService
         }
     };
 
+    private static AppSettings DeepCopy(AppSettings source) => new()
+    {
+        RefreshIntervalSeconds = source.RefreshIntervalSeconds,
+        Providers = (source.Providers ?? new Dictionary<string, ProviderSettings>())
+            .ToDictionary(
+                kvp => kvp.Key,
+                kvp => new ProviderSettings
+                {
+                    Enabled = kvp.Value.Enabled,
+                    ApiKey = kvp.Value.ApiKey
+                })
+    };
+
     /// <summary>
     /// Restricts file permissions so only the current user can read/write.
     /// On Windows: sets an explicit ACL granting FullControl only to the current user.
@@ -144,23 +157,19 @@ public sealed class SettingsService
             if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
             {
                 var fileInfo = new FileInfo(filePath);
-                var security = fileInfo.GetAccessControl();
-                security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
 
                 var currentUser = WindowsIdentity.GetCurrent().User;
                 if (currentUser is not null)
                 {
-                    // Remove all existing rules, then add owner-only full control
-                    foreach (FileSystemAccessRule rule in security.GetAccessRules(true, true, typeof(SecurityIdentifier)))
-                        security.RemoveAccessRule(rule);
-
+                    // Build a fresh protected ACL so no pre-existing rules remain.
+                    var security = new FileSecurity();
+                    security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
                     security.AddAccessRule(new FileSystemAccessRule(
                         currentUser,
                         FileSystemRights.FullControl,
                         AccessControlType.Allow));
+                    fileInfo.SetAccessControl(security);
                 }
-
-                fileInfo.SetAccessControl(security);
             }
             else
             {

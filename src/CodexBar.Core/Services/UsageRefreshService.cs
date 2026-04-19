@@ -1,3 +1,4 @@
+using System.Collections.ObjectModel;
 using CodexBar.Core.Models;
 using CodexBar.Core.Providers;
 using Microsoft.Extensions.Logging;
@@ -34,7 +35,8 @@ public sealed class UsageRefreshService : IDisposable
         {
             lock (_resultsLock)
             {
-                return new Dictionary<ProviderId, ProviderUsageResult>(_latestResults);
+                return new ReadOnlyDictionary<ProviderId, ProviderUsageResult>(
+                    new Dictionary<ProviderId, ProviderUsageResult>(_latestResults));
             }
         }
     }
@@ -94,12 +96,10 @@ public sealed class UsageRefreshService : IDisposable
             if (!available)
             {
                 _logger.LogDebug("{Provider} is not available, skipping", provider.Metadata.DisplayName);
-                var unavailable = ProviderUsageResult.Failure(provider.Metadata.Id, "Not configured");
                 lock (_resultsLock)
                 {
-                    _latestResults[provider.Metadata.Id] = unavailable;
+                    _latestResults.Remove(provider.Metadata.Id);
                 }
-                UsageUpdated?.Invoke(provider.Metadata.Id, unavailable);
                 return;
             }
 

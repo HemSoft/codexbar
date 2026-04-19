@@ -211,6 +211,13 @@ public sealed class CopilotProvider : IUsageProvider
                     if (inGithubCom && trimmed.StartsWith("oauth_token:"))
                     {
                         var token = trimmed["oauth_token:".Length..].Trim();
+                        // Strip optional surrounding quotes (single or double)
+                        if (token.Length >= 2 &&
+                            ((token[0] == '"' && token[^1] == '"') ||
+                             (token[0] == '\'' && token[^1] == '\'')))
+                        {
+                            token = token[1..^1];
+                        }
                         if (!string.IsNullOrWhiteSpace(token))
                         {
                             _logger.LogDebug("Found GitHub token from gh CLI at {Path}", hostsFile);
