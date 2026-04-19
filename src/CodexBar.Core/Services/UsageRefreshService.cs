@@ -94,6 +94,12 @@ public sealed class UsageRefreshService : IDisposable
             if (!available)
             {
                 _logger.LogDebug("{Provider} is not available, skipping", provider.Metadata.DisplayName);
+                var unavailable = ProviderUsageResult.Failure(provider.Metadata.Id, "Not configured");
+                lock (_resultsLock)
+                {
+                    _latestResults[provider.Metadata.Id] = unavailable;
+                }
+                UsageUpdated?.Invoke(provider.Metadata.Id, unavailable);
                 return;
             }
 

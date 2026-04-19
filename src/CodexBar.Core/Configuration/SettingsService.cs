@@ -1,3 +1,6 @@
+using System.Runtime.InteropServices;
+using System.Security.AccessControl;
+using System.Security.Principal;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 
@@ -91,6 +94,7 @@ public sealed class SettingsService
             Directory.CreateDirectory(SettingsDir);
             var json = JsonSerializer.Serialize(sanitized, JsonOptions);
             File.WriteAllText(SettingsPath, json);
+            RestrictFilePermissions(SettingsPath);
             _cached = sanitized;
             _logger.LogDebug("Settings saved to {Path}", SettingsPath);
         }
@@ -127,4 +131,45 @@ public sealed class SettingsService
             ["Copilot"] = new() { Enabled = true }
         }
     };
+
+    /// <summary>
+    /// Restricts file permissions so only the current user can read/write.
+    /// On Windows: sets an explicit ACL granting FullControl only to the current user.
+    /// On Unix: sets file mode to owner read/write (chmod 600).
+    /// </summary>
+    private void RestrictFilePermissions(string filePath)
+    {
+        try
+        {
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            {
+                var fileInfo = new FileInfo(filePath);
+                var security = fileInfo.GetAccessControl();
+                security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
+
+                var currentUser = WindowsIdentity.GetCurrent().User;
+                if (currentUser is not null)
+                {
+                    // Remove all existing rules, then add owner-only full control
+                    foreach (FileSystemAccessRule rule in security.GetAccessRules(true, true, typeof(SecurityIdentifier)))
+                        security.RemoveAccessRule(rule);
+
+                    security.AddAccessRule(new FileSystemAccessRule(
+                        currentUser,
+                        FileSystemRights.FullControl,
+                        AccessControlType.Allow));
+                }
+
+                fileInfo.SetAccessControl(security);
+            }
+            else
+            {
+                File.SetUnixFileMode(filePath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Could not restrict file permissions on {Path}", filePath);
+        }
+    }
 }

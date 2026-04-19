@@ -14,16 +14,16 @@ namespace CodexBar.Core.Providers.Claude;
 public sealed class ClaudeProvider : IUsageProvider
 {
     private readonly ILogger<ClaudeProvider> _logger;
-    private readonly HttpClient _httpClient;
+    private readonly IHttpClientFactory _httpClientFactory;
     private readonly SettingsService _settings;
 
     private static readonly string CredentialsPath =
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude", ".credentials.json");
 
-    public ClaudeProvider(ILogger<ClaudeProvider> logger, HttpClient httpClient, SettingsService settings)
+    public ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFactory httpClientFactory, SettingsService settings)
     {
         _logger = logger;
-        _httpClient = httpClient;
+        _httpClientFactory = httpClientFactory;
         _settings = settings;
     }
 
@@ -62,7 +62,8 @@ public sealed class ClaudeProvider : IUsageProvider
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
             request.Headers.Add("anthropic-beta", "oauth-2025-04-20");
 
-            using var response = await _httpClient.SendAsync(request, ct);
+            using var httpClient = _httpClientFactory.CreateClient();
+            using var response = await httpClient.SendAsync(request, ct);
             response.EnsureSuccessStatusCode();
 
             var json = await response.Content.ReadAsStringAsync(ct);

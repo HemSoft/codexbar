@@ -19,13 +19,13 @@ public sealed class CopilotProvider : IUsageProvider
     private const string GitHubApiVersion = "2025-04-01";
 
     private readonly ILogger<CopilotProvider> _logger;
-    private readonly HttpClient _httpClient;
+    private readonly IHttpClientFactory _httpClientFactory;
     private readonly SettingsService _settings;
 
-    public CopilotProvider(ILogger<CopilotProvider> logger, HttpClient httpClient, SettingsService settings)
+    public CopilotProvider(ILogger<CopilotProvider> logger, IHttpClientFactory httpClientFactory, SettingsService settings)
     {
         _logger = logger;
-        _httpClient = httpClient;
+        _httpClientFactory = httpClientFactory;
         _settings = settings;
     }
 
@@ -68,7 +68,8 @@ public sealed class CopilotProvider : IUsageProvider
             request.Headers.UserAgent.ParseAdd(UserAgentProduct);
             request.Headers.Add("X-Github-Api-Version", GitHubApiVersion);
 
-            using var response = await _httpClient.SendAsync(request, ct);
+            using var httpClient = _httpClientFactory.CreateClient();
+            using var response = await httpClient.SendAsync(request, ct);
             response.EnsureSuccessStatusCode();
 
             var json = await response.Content.ReadAsStringAsync(ct);
@@ -122,14 +123,14 @@ public sealed class CopilotProvider : IUsageProvider
     {
         var percentRemaining = 100.0;
 
-        if (elem.TryGetProperty("percentRemaining", out var pct))
-            percentRemaining = pct.GetDouble();
+        if (elem.TryGetProperty("percentRemaining", out var pct) && pct.ValueKind == JsonValueKind.Number)
+            percentRemaining = Math.Clamp(pct.GetDouble(), 0.0, 100.0);
 
-        var usedPercent = 1.0 - (percentRemaining / 100.0);
+        var usedPercent = Math.Clamp(1.0 - (percentRemaining / 100.0), 0.0, 1.0);
 
         return new UsageSnapshot
         {
-            UsedPercent = Math.Clamp(usedPercent, 0, 1),
+            UsedPercent = usedPercent,
             UsageLabel = $"{label}: {usedPercent:P0} used"
         };
     }

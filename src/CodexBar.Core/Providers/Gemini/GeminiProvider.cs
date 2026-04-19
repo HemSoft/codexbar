@@ -15,16 +15,16 @@ namespace CodexBar.Core.Providers.Gemini;
 public sealed class GeminiProvider : IUsageProvider
 {
     private readonly ILogger<GeminiProvider> _logger;
-    private readonly HttpClient _httpClient;
+    private readonly IHttpClientFactory _httpClientFactory;
     private readonly SettingsService _settings;
 
     private static readonly string OAuthCredsPath =
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".gemini", "oauth_creds.json");
 
-    public GeminiProvider(ILogger<GeminiProvider> logger, HttpClient httpClient, SettingsService settings)
+    public GeminiProvider(ILogger<GeminiProvider> logger, IHttpClientFactory httpClientFactory, SettingsService settings)
     {
         _logger = logger;
-        _httpClient = httpClient;
+        _httpClientFactory = httpClientFactory;
         _settings = settings;
     }
 
@@ -62,7 +62,8 @@ public sealed class GeminiProvider : IUsageProvider
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
             request.Content = new StringContent("{}", Encoding.UTF8, "application/json");
 
-            using var response = await _httpClient.SendAsync(request, ct);
+            using var httpClient = _httpClientFactory.CreateClient();
+            using var response = await httpClient.SendAsync(request, ct);
             response.EnsureSuccessStatusCode();
 
             var json = await response.Content.ReadAsStringAsync(ct);

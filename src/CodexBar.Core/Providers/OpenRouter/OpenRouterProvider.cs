@@ -14,15 +14,15 @@ namespace CodexBar.Core.Providers.OpenRouter;
 public sealed class OpenRouterProvider : IUsageProvider
 {
     private readonly ILogger<OpenRouterProvider> _logger;
-    private readonly HttpClient _httpClient;
+    private readonly IHttpClientFactory _httpClientFactory;
     private readonly SettingsService _settings;
 
     private const string BaseUrl = "https://openrouter.ai/api/v1";
 
-    public OpenRouterProvider(ILogger<OpenRouterProvider> logger, HttpClient httpClient, SettingsService settings)
+    public OpenRouterProvider(ILogger<OpenRouterProvider> logger, IHttpClientFactory httpClientFactory, SettingsService settings)
     {
         _logger = logger;
-        _httpClient = httpClient;
+        _httpClientFactory = httpClientFactory;
         _settings = settings;
     }
 
@@ -59,7 +59,8 @@ public sealed class OpenRouterProvider : IUsageProvider
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", key);
             request.Headers.Add("X-Title", "CodexBar");
 
-            using var response = await _httpClient.SendAsync(request, ct);
+            using var httpClient = _httpClientFactory.CreateClient();
+            using var response = await httpClient.SendAsync(request, ct);
             response.EnsureSuccessStatusCode();
 
             var json = await response.Content.ReadAsStringAsync(ct);
