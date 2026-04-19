@@ -13,14 +13,26 @@ namespace CodexBar.Core.Providers.Copilot;
 /// </summary>
 public sealed class CopilotProvider : IUsageProvider
 {
-    // These header values emulate a VS Code Copilot Chat extension request.
-    // Source: captured from GitHub Copilot Chat extension network traffic (VS Code 1.96.2, extension v0.26.7).
-    // The Copilot internal API validates these headers; mismatched values may cause 403 responses.
-    // Update these when the Copilot Chat extension ships new versions.
-    private const string EditorVersion = "vscode/1.96.2";
-    private const string EditorPluginVersion = "copilot-chat/0.26.7";
-    private const string UserAgentProduct = "GitHubCopilotChat/0.26.7";
-    private const string GitHubApiVersion = "2025-04-01";
+    // Defaults preserve the currently working behavior, but can be overridden at runtime
+    // to avoid code changes and redeploys when upstream clients/API versions change.
+    private static readonly string EditorVersion = GetConfiguredValue(
+        "CODEXBAR_COPILOT_EDITOR_VERSION",
+        "vscode/1.96.2");
+    private static readonly string EditorPluginVersion = GetConfiguredValue(
+        "CODEXBAR_COPILOT_EDITOR_PLUGIN_VERSION",
+        "copilot-chat/0.26.7");
+    private static readonly string UserAgentProduct = GetConfiguredValue(
+        "CODEXBAR_COPILOT_USER_AGENT_PRODUCT",
+        "GitHubCopilotChat/0.26.7");
+    private static readonly string GitHubApiVersion = GetConfiguredValue(
+        "CODEXBAR_COPILOT_API_VERSION",
+        "2025-04-01");
+
+    private static string GetConfiguredValue(string environmentVariableName, string fallbackValue)
+    {
+        var configuredValue = Environment.GetEnvironmentVariable(environmentVariableName);
+        return string.IsNullOrWhiteSpace(configuredValue) ? fallbackValue : configuredValue.Trim();
+    }
 
     private readonly ILogger<CopilotProvider> _logger;
     private readonly IHttpClientFactory _httpClientFactory;
