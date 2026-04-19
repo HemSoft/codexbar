@@ -1,3 +1,4 @@
+using System.Collections.ObjectModel;
 using CodexBar.Core.Models;
 using CodexBar.Core.Providers;
 using Microsoft.Extensions.Logging;
@@ -11,6 +12,7 @@ public sealed class UsageRefreshService : IDisposable
 {
     private readonly IReadOnlyList<IUsageProvider> _providers;
     private readonly ILogger<UsageRefreshService> _logger;
+    private readonly object _resultsLock = new();
     private readonly Dictionary<ProviderId, ProviderUsageResult> _latestResults = new();
     private CancellationTokenSource? _cts;
     private Task? _refreshLoop;
@@ -27,7 +29,17 @@ public sealed class UsageRefreshService : IDisposable
         _logger = logger;
     }
 
-    public IReadOnlyDictionary<ProviderId, ProviderUsageResult> LatestResults => _latestResults;
+    public IReadOnlyDictionary<ProviderId, ProviderUsageResult> LatestResults
+    {
+        get
+        {
+            lock (_resultsLock)
+            {
+                return new ReadOnlyDictionary<ProviderId, ProviderUsageResult>(
+                    new Dictionary<ProviderId, ProviderUsageResult>(_latestResults));
+            }
+        }
+    }
 
     public void Start()
     {
@@ -84,19 +96,41 @@ public sealed class UsageRefreshService : IDisposable
             if (!available)
             {
                 _logger.LogDebug("{Provider} is not available, skipping", provider.Metadata.DisplayName);
+                lock (_resultsLock)
+                {
+                    _latestResults.Remove(provider.Metadata.Id);
+                }
                 return;
             }
 
             var result = await provider.FetchUsageAsync(ct);
-            _latestResults[provider.Metadata.Id] = result;
-            UsageUpdated?.Invoke(provider.Metadata.Id, result);
+            lock (_resultsLock)
+            {
+                _latestResults[provider.Metadata.Id] = result;
+            }
+            RaiseUsageUpdated(provider.Metadata.Id, result);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogWarning(ex, "Failed to fetch usage for {Provider}", provider.Metadata.DisplayName);
             var failure = ProviderUsageResult.Failure(provider.Metadata.Id, ex.Message);
-            _latestResults[provider.Metadata.Id] = failure;
-            UsageUpdated?.Invoke(provider.Metadata.Id, failure);
+            lock (_resultsLock)
+            {
+                _latestResults[provider.Metadata.Id] = failure;
+            }
+            RaiseUsageUpdated(provider.Metadata.Id, failure);
+        }
+    }
+
+    private void RaiseUsageUpdated(ProviderId id, ProviderUsageResult result)
+    {
+        try
+        {
+            UsageUpdated?.Invoke(id, result);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "UsageUpdated subscriber threw for {Provider}", id);
         }
     }
 

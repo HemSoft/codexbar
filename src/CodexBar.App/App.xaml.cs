@@ -1,5 +1,8 @@
 ﻿using System.Drawing;
+using System.Runtime.InteropServices;
 using System.Windows;
+using CodexBar.App.ViewModels;
+using CodexBar.Core.Configuration;
 using CodexBar.Core.Providers;
 using CodexBar.Core.Providers.Claude;
 using CodexBar.Core.Providers.Copilot;
@@ -16,6 +19,8 @@ public partial class App : Application
     private H.NotifyIcon.TaskbarIcon? _trayIcon;
     private ServiceProvider? _services;
     private UsageRefreshService? _refreshService;
+    private MainViewModel? _viewModel;
+    private MainWindow? _mainWindow;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -26,6 +31,7 @@ public partial class App : Application
         _services = services.BuildServiceProvider();
 
         _refreshService = _services.GetRequiredService<UsageRefreshService>();
+        _viewModel = _services.GetRequiredService<MainViewModel>();
 
         InitializeTrayIcon();
 
@@ -37,12 +43,15 @@ public partial class App : Application
         services.AddLogging(b => b.AddConsole().SetMinimumLevel(LogLevel.Debug));
         services.AddHttpClient();
 
+        services.AddSingleton<SettingsService>();
+
         services.AddSingleton<IUsageProvider, ClaudeProvider>();
         services.AddSingleton<IUsageProvider, GeminiProvider>();
         services.AddSingleton<IUsageProvider, OpenRouterProvider>();
         services.AddSingleton<IUsageProvider, CopilotProvider>();
 
         services.AddSingleton<UsageRefreshService>();
+        services.AddSingleton<MainViewModel>();
     }
 
     private void InitializeTrayIcon()
@@ -80,38 +89,49 @@ public partial class App : Application
 
     private void ShowPopup()
     {
-        var window = Current.Windows.OfType<MainWindow>().FirstOrDefault();
-        if (window is null)
+        if (_mainWindow is null)
         {
-            window = new MainWindow();
-            if (_refreshService is not null)
-                window.DataContext = _refreshService;
+            _mainWindow = new MainWindow { DataContext = _viewModel };
+            _mainWindow.Closed += (_, _) => _mainWindow = null;
         }
-        window.Show();
-        window.Activate();
+        _mainWindow.Show();
+        _mainWindow.Activate();
     }
 
     private static Icon CreateDefaultIcon()
     {
-        // Generate a simple 16x16 icon programmatically
         using var bmp = new Bitmap(16, 16);
         using var g = Graphics.FromImage(bmp);
         g.Clear(Color.Transparent);
 
-        // Draw two meter bars (matching CodexBar's icon concept)
-        using var topBrush = new SolidBrush(Color.FromArgb(255, 99, 102, 241)); // indigo
+        using var topBrush = new SolidBrush(Color.FromArgb(255, 99, 102, 241));
         using var bottomBrush = new SolidBrush(Color.FromArgb(180, 99, 102, 241));
         g.FillRectangle(topBrush, 2, 3, 12, 4);
         g.FillRectangle(bottomBrush, 2, 9, 12, 4);
 
+        // Clone to create an owned icon — FromHandle doesn't take ownership.
+        // DestroyIcon must be called to free the unmanaged HICON from GetHicon().
         var handle = bmp.GetHicon();
-        return Icon.FromHandle(handle);
+        try
+        {
+            using var tempIcon = Icon.FromHandle(handle);
+            return (Icon)tempIcon.Clone();
+        }
+        finally
+        {
+            DestroyIcon(handle);
+        }
     }
+
+    [DllImport("user32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool DestroyIcon(IntPtr hIcon);
 
     protected override void OnExit(ExitEventArgs e)
     {
+        // Only dispose non-DI resources manually. _viewModel and _refreshService
+        // are DI singletons — ServiceProvider.Dispose() handles their lifetime.
         _trayIcon?.Dispose();
-        _refreshService?.Dispose();
         _services?.Dispose();
         base.OnExit(e);
     }
