@@ -41,7 +41,7 @@ public sealed class ClaudeProvider : IUsageProvider
 
     public Task<bool> IsAvailableAsync(CancellationToken ct = default)
     {
-        var isEnabled = _settings.IsProviderEnabled("Claude");
+        var isEnabled = _settings.IsProviderEnabled(ProviderId.Claude);
         var hasAccessToken = ReadAccessToken() is not null;
         return Task.FromResult(isEnabled && hasAccessToken);
     }

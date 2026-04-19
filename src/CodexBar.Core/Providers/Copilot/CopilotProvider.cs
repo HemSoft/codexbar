@@ -47,7 +47,7 @@ public sealed class CopilotProvider : IUsageProvider
 
     public Task<bool> IsAvailableAsync(CancellationToken ct = default)
     {
-        var isEnabled = _settings.IsProviderEnabled("Copilot");
+        var isEnabled = _settings.IsProviderEnabled(ProviderId.Copilot);
         var hasToken = ResolveGitHubToken() is not null;
         return Task.FromResult(isEnabled && hasToken);
     }
@@ -143,7 +143,7 @@ public sealed class CopilotProvider : IUsageProvider
     private string? ResolveGitHubToken()
     {
         // 1. Check settings
-        var key = _settings.GetApiKey("Copilot");
+        var key = _settings.GetApiKey(ProviderId.Copilot);
         if (!string.IsNullOrWhiteSpace(key)) return key;
 
         // 2. Check env var

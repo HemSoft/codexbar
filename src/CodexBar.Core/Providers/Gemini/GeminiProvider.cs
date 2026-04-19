@@ -42,7 +42,7 @@ public sealed class GeminiProvider : IUsageProvider
 
     public Task<bool> IsAvailableAsync(CancellationToken ct = default)
     {
-        if (!_settings.IsProviderEnabled("Gemini"))
+        if (!_settings.IsProviderEnabled(ProviderId.Gemini))
             return Task.FromResult(false);
 
         return Task.FromResult(ReadAccessToken().Status == AccessTokenStatus.Success);

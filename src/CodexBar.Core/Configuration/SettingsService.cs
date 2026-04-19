@@ -4,6 +4,7 @@ using System.Security.AccessControl;
 using System.Security.Principal;
 #endif
 using System.Text.Json;
+using CodexBar.Core.Models;
 using Microsoft.Extensions.Logging;
 
 namespace CodexBar.Core.Configuration;
@@ -72,6 +73,7 @@ public sealed class SettingsService
             };
 
             Directory.CreateDirectory(SettingsDir);
+            RestrictDirectoryPermissions(SettingsDir);
             var json = JsonSerializer.Serialize(sanitized, JsonOptions);
 
             // Create the temp file and restrict permissions BEFORE writing content
@@ -92,21 +94,21 @@ public sealed class SettingsService
         }
     }
 
-    public string? GetApiKey(string providerId)
+    public string? GetApiKey(ProviderId providerId)
     {
         lock (_lock)
         {
             var settings = EnsureCached();
-            return settings.Providers.TryGetValue(providerId, out var ps) ? ps?.ApiKey : null;
+            return settings.Providers.TryGetValue(providerId.ToString(), out var ps) ? ps?.ApiKey : null;
         }
     }
 
-    public bool IsProviderEnabled(string providerId)
+    public bool IsProviderEnabled(ProviderId providerId)
     {
         lock (_lock)
         {
             var settings = EnsureCached();
-            return !settings.Providers.TryGetValue(providerId, out var ps) || ps is null || ps.Enabled;
+            return !settings.Providers.TryGetValue(providerId.ToString(), out var ps) || ps is null || ps.Enabled;
         }
     }
 
@@ -135,6 +137,7 @@ public sealed class SettingsService
 
             try
             {
+                RestrictDirectoryPermissions(SettingsDir);
                 RestrictFilePermissions(SettingsPath);
             }
             catch (Exception ex)
@@ -158,10 +161,10 @@ public sealed class SettingsService
         RefreshIntervalSeconds = 120,
         Providers = new Dictionary<string, ProviderSettings>
         {
-            ["Claude"] = new() { Enabled = true },
-            ["Gemini"] = new() { Enabled = true },
-            ["OpenRouter"] = new() { Enabled = true },
-            ["Copilot"] = new() { Enabled = true }
+            [ProviderId.Claude.ToString()] = new() { Enabled = true },
+            [ProviderId.Gemini.ToString()] = new() { Enabled = true },
+            [ProviderId.OpenRouter.ToString()] = new() { Enabled = true },
+            [ProviderId.Copilot.ToString()] = new() { Enabled = true }
         }
     };
 
@@ -218,6 +221,7 @@ public sealed class SettingsService
             }
             else
 #endif
+            if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
             {
                 File.SetUnixFileMode(filePath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
             }
@@ -225,6 +229,48 @@ public sealed class SettingsService
         catch (Exception ex)
         {
             _logger.LogDebug(ex, "Could not restrict file permissions on {Path}", filePath);
+        }
+    }
+
+    /// <summary>
+    /// Restricts directory permissions so only the current user can access it.
+    /// On Windows: sets an explicit ACL granting FullControl only to the current user.
+    /// On Unix: sets directory mode to owner-only (chmod 700).
+    /// </summary>
+    private void RestrictDirectoryPermissions(string dirPath)
+    {
+        try
+        {
+#if WINDOWS
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            {
+                var dirInfo = new DirectoryInfo(dirPath);
+
+                var currentUser = WindowsIdentity.GetCurrent().User;
+                if (currentUser is not null)
+                {
+                    var security = new DirectorySecurity();
+                    security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
+                    security.AddAccessRule(new FileSystemAccessRule(
+                        currentUser,
+                        FileSystemRights.FullControl,
+                        InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit,
+                        PropagationFlags.None,
+                        AccessControlType.Allow));
+                    dirInfo.SetAccessControl(security);
+                }
+            }
+            else
+#endif
+            if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+            {
+                File.SetUnixFileMode(dirPath,
+                    UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Could not restrict directory permissions on {Path}", dirPath);
         }
     }
 }

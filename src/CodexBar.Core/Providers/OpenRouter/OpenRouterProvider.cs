@@ -40,7 +40,7 @@ public sealed class OpenRouterProvider : IUsageProvider
 
     public Task<bool> IsAvailableAsync(CancellationToken ct = default)
     {
-        if (!_settings.IsProviderEnabled("OpenRouter"))
+        if (!_settings.IsProviderEnabled(ProviderId.OpenRouter))
             return Task.FromResult(false);
 
         var key = ResolveApiKey();
@@ -94,6 +94,6 @@ public sealed class OpenRouterProvider : IUsageProvider
     }
 
     private string? ResolveApiKey() =>
-        _settings.GetApiKey("OpenRouter")
+        _settings.GetApiKey(ProviderId.OpenRouter)
         ?? Environment.GetEnvironmentVariable("OPENROUTER_API_KEY");
 }
