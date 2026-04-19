@@ -13,6 +13,11 @@ namespace CodexBar.Core.Providers.Copilot;
 /// </summary>
 public sealed class CopilotProvider : IUsageProvider
 {
+    private const string EditorVersion = "vscode/1.96.2";
+    private const string EditorPluginVersion = "copilot-chat/0.26.7";
+    private const string UserAgentProduct = "GitHubCopilotChat/0.26.7";
+    private const string GitHubApiVersion = "2025-04-01";
+
     private readonly ILogger<CopilotProvider> _logger;
     private readonly HttpClient _httpClient;
     private readonly SettingsService _settings;
@@ -58,10 +63,10 @@ public sealed class CopilotProvider : IUsageProvider
                 "https://api.github.com/copilot_internal/user");
             request.Headers.Authorization = new AuthenticationHeaderValue("token", token);
             request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-            request.Headers.Add("Editor-Version", "vscode/1.96.2");
-            request.Headers.Add("Editor-Plugin-Version", "copilot-chat/0.26.7");
-            request.Headers.UserAgent.ParseAdd("GitHubCopilotChat/0.26.7");
-            request.Headers.Add("X-Github-Api-Version", "2025-04-01");
+            request.Headers.Add("Editor-Version", EditorVersion);
+            request.Headers.Add("Editor-Plugin-Version", EditorPluginVersion);
+            request.Headers.UserAgent.ParseAdd(UserAgentProduct);
+            request.Headers.Add("X-Github-Api-Version", GitHubApiVersion);
 
             using var response = await _httpClient.SendAsync(request, ct);
             response.EnsureSuccessStatusCode();
@@ -125,7 +130,7 @@ public sealed class CopilotProvider : IUsageProvider
         return new UsageSnapshot
         {
             UsedPercent = Math.Clamp(usedPercent, 0, 1),
-            UsageLabel = $"{label}: {percentRemaining:F0}% remaining"
+            UsageLabel = $"{label}: {usedPercent:P0} used"
         };
     }
 

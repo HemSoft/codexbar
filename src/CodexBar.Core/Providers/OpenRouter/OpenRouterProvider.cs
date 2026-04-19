@@ -9,7 +9,7 @@ namespace CodexBar.Core.Providers.OpenRouter;
 /// <summary>
 /// Fetches OpenRouter credit usage via the OpenRouter API.
 /// Auth: API key from OPENROUTER_API_KEY env var or settings.
-/// Endpoints: /api/v1/credits (balance) + /api/v1/auth/key (rate limits).
+/// Endpoint: /api/v1/credits (balance).
 /// </summary>
 public sealed class OpenRouterProvider : IUsageProvider
 {
