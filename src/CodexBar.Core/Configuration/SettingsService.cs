@@ -37,31 +37,7 @@ public sealed class SettingsService
     {
         lock (_lock)
         {
-            if (_cached is not null) return DeepCopy(_cached);
-
-            if (!File.Exists(SettingsPath))
-            {
-                _logger.LogInformation("No settings file found at {Path}, using defaults", SettingsPath);
-                _cached = CreateDefaults();
-                SaveInternal(_cached);
-                return DeepCopy(_cached);
-            }
-
-            try
-            {
-                var json = File.ReadAllText(SettingsPath);
-                _cached = JsonSerializer.Deserialize<AppSettings>(json, JsonOptions) ?? CreateDefaults();
-                _cached.Providers ??= new Dictionary<string, ProviderSettings>();
-                NormalizeProviders(_cached.Providers);
-                _logger.LogDebug("Settings loaded from {Path}", SettingsPath);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Failed to load settings from {Path}, using defaults", SettingsPath);
-                _cached = CreateDefaults();
-            }
-
-            return DeepCopy(_cached);
+            return DeepCopy(EnsureCached());
         }
     }
 
@@ -94,8 +70,14 @@ public sealed class SettingsService
 
             Directory.CreateDirectory(SettingsDir);
             var json = JsonSerializer.Serialize(sanitized, JsonOptions);
-            File.WriteAllText(SettingsPath, json);
-            RestrictFilePermissions(SettingsPath);
+
+            // Write to a temp file with restricted permissions first, then replace
+            // to avoid a window where the settings file is readable by others.
+            var tempPath = SettingsPath + ".tmp";
+            File.WriteAllText(tempPath, json);
+            RestrictFilePermissions(tempPath);
+            File.Move(tempPath, SettingsPath, overwrite: true);
+
             _cached = sanitized;
             _logger.LogDebug("Settings saved to {Path}", SettingsPath);
         }
@@ -109,7 +91,8 @@ public sealed class SettingsService
     {
         lock (_lock)
         {
-            return Load().Providers.TryGetValue(providerId, out var ps) ? ps?.ApiKey : null;
+            var settings = EnsureCached();
+            return settings.Providers.TryGetValue(providerId, out var ps) ? ps?.ApiKey : null;
         }
     }
 
@@ -117,8 +100,42 @@ public sealed class SettingsService
     {
         lock (_lock)
         {
-            return !Load().Providers.TryGetValue(providerId, out var ps) || ps is null || ps.Enabled;
+            var settings = EnsureCached();
+            return !settings.Providers.TryGetValue(providerId, out var ps) || ps is null || ps.Enabled;
         }
+    }
+
+    /// <summary>
+    /// Returns the cached settings, initializing from disk if needed.
+    /// Must be called while holding <see cref="_lock"/>. Does NOT deep-copy.
+    /// </summary>
+    private AppSettings EnsureCached()
+    {
+        if (_cached is not null) return _cached;
+
+        if (!File.Exists(SettingsPath))
+        {
+            _logger.LogInformation("No settings file found at {Path}, using defaults", SettingsPath);
+            _cached = CreateDefaults();
+            SaveInternal(_cached);
+            return _cached;
+        }
+
+        try
+        {
+            var json = File.ReadAllText(SettingsPath);
+            _cached = JsonSerializer.Deserialize<AppSettings>(json, JsonOptions) ?? CreateDefaults();
+            _cached.Providers ??= new Dictionary<string, ProviderSettings>();
+            NormalizeProviders(_cached.Providers);
+            _logger.LogDebug("Settings loaded from {Path}", SettingsPath);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to load settings from {Path}, using defaults", SettingsPath);
+            _cached = CreateDefaults();
+        }
+
+        return _cached;
     }
 
     private static AppSettings CreateDefaults() => new()
