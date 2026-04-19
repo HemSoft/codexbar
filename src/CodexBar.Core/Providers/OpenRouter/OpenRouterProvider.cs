@@ -86,6 +86,17 @@ public sealed class OpenRouterProvider : IUsageProvider
                 CreditsRemaining = (decimal)balance
             };
         }
+        catch (HttpRequestException ex) when (ex.StatusCode is System.Net.HttpStatusCode.Unauthorized
+                                                or System.Net.HttpStatusCode.Forbidden)
+        {
+            return ProviderUsageResult.Failure(ProviderId.OpenRouter,
+                "API key is invalid or revoked. Check your OpenRouter key.");
+        }
+        catch (HttpRequestException ex) when (ex.StatusCode is (System.Net.HttpStatusCode)429)
+        {
+            return ProviderUsageResult.Failure(ProviderId.OpenRouter,
+                "Rate limited by OpenRouter. Try again later.");
+        }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "OpenRouter fetch failed");

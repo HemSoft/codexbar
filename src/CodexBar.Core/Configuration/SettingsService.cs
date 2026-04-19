@@ -81,7 +81,16 @@ public sealed class SettingsService
             // so no window exists where the file is world-readable.
             var tempPath = SettingsPath + ".tmp";
             WriteRestrictedFile(tempPath, json);
-            File.Move(tempPath, SettingsPath, overwrite: true);
+            try
+            {
+                File.Move(tempPath, SettingsPath, overwrite: true);
+            }
+            catch
+            {
+                // Best-effort cleanup: remove the temp file so plaintext keys aren't left on disk
+                try { File.Delete(tempPath); } catch { /* swallow */ }
+                throw;
+            }
 
             _cached = sanitized;
             _logger.LogDebug("Settings saved to {Path}", SettingsPath);

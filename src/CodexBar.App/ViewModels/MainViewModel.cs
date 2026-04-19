@@ -6,7 +6,7 @@ using CodexBar.Core.Services;
 
 namespace CodexBar.App.ViewModels;
 
-public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
+public sealed class MainViewModel : IDisposable
 {
     private readonly UsageRefreshService _refreshService;
 
@@ -92,15 +92,6 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     public void Dispose()
     {
         _refreshService.UsageUpdated -= OnUsageUpdated;
-    }
-
-    public event PropertyChangedEventHandler? PropertyChanged;
-
-    private void SetField<T>(ref T field, T value, [CallerMemberName] string? name = null)
-    {
-        if (EqualityComparer<T>.Default.Equals(field, value)) return;
-        field = value;
-        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
     }
 }
 

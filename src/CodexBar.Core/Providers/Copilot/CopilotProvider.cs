@@ -13,8 +13,9 @@ namespace CodexBar.Core.Providers.Copilot;
 /// </summary>
 public sealed class CopilotProvider : IUsageProvider
 {
-    // Defaults preserve the currently working behavior, but can be overridden at runtime
-    // to avoid code changes and redeploys when upstream clients/API versions change.
+    // Defaults preserve the currently working behavior. Override these environment variables
+    // before starting the application to track upstream client/API version changes
+    // without code changes or redeploys. Values are read once at startup.
     private static readonly string EditorVersion = GetConfiguredValue(
         "CODEXBAR_COPILOT_EDITOR_VERSION",
         "vscode/1.96.2");
