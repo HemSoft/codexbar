@@ -12,13 +12,6 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
     public ObservableCollection<ProviderCardViewModel> Providers { get; } = new();
 
-    private bool _isRefreshing;
-    public bool IsRefreshing
-    {
-        get => _isRefreshing;
-        set => SetField(ref _isRefreshing, value);
-    }
-
     public MainViewModel(UsageRefreshService refreshService)
     {
         _refreshService = refreshService;
