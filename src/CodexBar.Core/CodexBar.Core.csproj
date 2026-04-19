@@ -16,9 +16,11 @@
     <PackageReference Include="Microsoft.Extensions.Http" Version="9.*" />
   </ItemGroup>
 
+  <!-- These packages provide Windows ACL types used by SettingsService.
+       5.0.0 is the latest stable release; no 6+ / 9+ versions exist. -->
   <ItemGroup Condition="$([MSBuild]::IsOSPlatform('Windows'))">
-    <PackageReference Include="System.IO.FileSystem.AccessControl" Version="5.*" />
-    <PackageReference Include="System.Security.Principal.Windows" Version="5.*" />
+    <PackageReference Include="System.IO.FileSystem.AccessControl" Version="5.0.0" />
+    <PackageReference Include="System.Security.Principal.Windows" Version="5.0.0" />
   </ItemGroup>
 
 </Project>
