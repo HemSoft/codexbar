@@ -6,7 +6,7 @@
         xmlns:vm="clr-namespace:CodexBar.App.ViewModels"
         xmlns:local="clr-namespace:CodexBar.App"
         mc:Ignorable="d"
-        d:DataContext="{d:DesignInstance Type=vm:MainViewModel}"
+        d:DataContext="{d:DesignInstance Type=vm:MainViewModel, IsDesignTimeCreatable=False}"
         Title="CodexBar"
         Height="420" Width="320"
         WindowStyle="None"

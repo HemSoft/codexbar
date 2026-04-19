@@ -13,6 +13,10 @@ namespace CodexBar.Core.Providers.Copilot;
 /// </summary>
 public sealed class CopilotProvider : IUsageProvider
 {
+    // These header values emulate a VS Code Copilot Chat extension request.
+    // Source: captured from GitHub Copilot Chat extension network traffic (VS Code 1.96.2, extension v0.26.7).
+    // The Copilot internal API validates these headers; mismatched values may cause 403 responses.
+    // Update these when the Copilot Chat extension ships new versions.
     private const string EditorVersion = "vscode/1.96.2";
     private const string EditorPluginVersion = "copilot-chat/0.26.7";
     private const string UserAgentProduct = "GitHubCopilotChat/0.26.7";
