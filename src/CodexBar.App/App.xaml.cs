@@ -42,6 +42,8 @@ public partial class App : Application
     {
         services.AddLogging(b => b.AddConsole().SetMinimumLevel(LogLevel.Debug));
         services.AddHttpClient();
+        services.ConfigureHttpClientDefaults(b =>
+            b.ConfigureHttpClient(c => c.Timeout = TimeSpan.FromSeconds(15)));
 
         services.AddSingleton<SettingsService>();
 
