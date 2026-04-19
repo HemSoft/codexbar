@@ -1,6 +1,8 @@
 using System.Runtime.InteropServices;
+#if WINDOWS
 using System.Security.AccessControl;
 using System.Security.Principal;
+#endif
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 
@@ -129,6 +131,16 @@ public sealed class SettingsService
             _cached = JsonSerializer.Deserialize<AppSettings>(json, JsonOptions) ?? CreateDefaults();
             _cached.Providers ??= new Dictionary<string, ProviderSettings>();
             NormalizeProviders(_cached.Providers);
+
+            try
+            {
+                RestrictFilePermissions(SettingsPath);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to restrict settings file permissions for {Path}", SettingsPath);
+            }
+
             _logger.LogDebug("Settings loaded from {Path}", SettingsPath);
         }
         catch (Exception ex)
@@ -185,6 +197,7 @@ public sealed class SettingsService
     {
         try
         {
+#if WINDOWS
             if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
             {
                 var fileInfo = new FileInfo(filePath);
@@ -203,6 +216,7 @@ public sealed class SettingsService
                 }
             }
             else
+#endif
             {
                 File.SetUnixFileMode(filePath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
             }
