@@ -41,11 +41,7 @@ public sealed class ClaudeProvider : IUsageProvider
 
     public Task<bool> IsAvailableAsync(CancellationToken ct = default)
     {
-        if (!_settings.IsProviderEnabled("Claude"))
-            return Task.FromResult(false);
-
-        var token = ReadAccessToken();
-        return Task.FromResult(token is not null);
+        return Task.FromResult(_settings.IsProviderEnabled("Claude"));
     }
 
     public async Task<ProviderUsageResult> FetchUsageAsync(CancellationToken ct = default)
