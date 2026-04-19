@@ -47,11 +47,7 @@ public sealed class CopilotProvider : IUsageProvider
 
     public Task<bool> IsAvailableAsync(CancellationToken ct = default)
     {
-        if (!_settings.IsProviderEnabled("Copilot"))
-            return Task.FromResult(false);
-
-        var token = ResolveGitHubToken();
-        return Task.FromResult(token is not null);
+        return Task.FromResult(_settings.IsProviderEnabled("Copilot"));
     }
 
     public async Task<ProviderUsageResult> FetchUsageAsync(CancellationToken ct = default)

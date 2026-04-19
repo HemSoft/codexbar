@@ -40,7 +40,11 @@ public sealed class OpenRouterProvider : IUsageProvider
 
     public Task<bool> IsAvailableAsync(CancellationToken ct = default)
     {
-        return Task.FromResult(_settings.IsProviderEnabled("OpenRouter"));
+        if (!_settings.IsProviderEnabled("OpenRouter"))
+            return Task.FromResult(false);
+
+        var key = ResolveApiKey();
+        return Task.FromResult(!string.IsNullOrWhiteSpace(key));
     }
 
     public async Task<ProviderUsageResult> FetchUsageAsync(CancellationToken ct = default)
