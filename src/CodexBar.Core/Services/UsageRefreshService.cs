@@ -108,7 +108,7 @@ public sealed class UsageRefreshService : IDisposable
             {
                 _latestResults[provider.Metadata.Id] = result;
             }
-            UsageUpdated?.Invoke(provider.Metadata.Id, result);
+            RaiseUsageUpdated(provider.Metadata.Id, result);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -118,7 +118,19 @@ public sealed class UsageRefreshService : IDisposable
             {
                 _latestResults[provider.Metadata.Id] = failure;
             }
-            UsageUpdated?.Invoke(provider.Metadata.Id, failure);
+            RaiseUsageUpdated(provider.Metadata.Id, failure);
+        }
+    }
+
+    private void RaiseUsageUpdated(ProviderId id, ProviderUsageResult result)
+    {
+        try
+        {
+            UsageUpdated?.Invoke(id, result);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "UsageUpdated subscriber threw for {Provider}", id);
         }
     }
 

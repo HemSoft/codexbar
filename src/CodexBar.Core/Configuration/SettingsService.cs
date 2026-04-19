@@ -52,6 +52,7 @@ public sealed class SettingsService
                 var json = File.ReadAllText(SettingsPath);
                 _cached = JsonSerializer.Deserialize<AppSettings>(json, JsonOptions) ?? CreateDefaults();
                 _cached.Providers ??= new Dictionary<string, ProviderSettings>();
+                NormalizeProviders(_cached.Providers);
                 _logger.LogDebug("Settings loaded from {Path}", SettingsPath);
             }
             catch (Exception ex)
@@ -86,8 +87,8 @@ public sealed class SettingsService
                     kvp => kvp.Key,
                     kvp => new ProviderSettings
                     {
-                        Enabled = kvp.Value.Enabled,
-                        ApiKey = string.IsNullOrWhiteSpace(kvp.Value.ApiKey) ? null : kvp.Value.ApiKey
+                        Enabled = kvp.Value?.Enabled ?? true,
+                        ApiKey = string.IsNullOrWhiteSpace(kvp.Value?.ApiKey) ? null : kvp.Value.ApiKey
                     })
             };
 
@@ -108,7 +109,7 @@ public sealed class SettingsService
     {
         lock (_lock)
         {
-            return Load().Providers.TryGetValue(providerId, out var ps) ? ps.ApiKey : null;
+            return Load().Providers.TryGetValue(providerId, out var ps) ? ps?.ApiKey : null;
         }
     }
 
@@ -116,7 +117,7 @@ public sealed class SettingsService
     {
         lock (_lock)
         {
-            return !Load().Providers.TryGetValue(providerId, out var ps) || ps.Enabled;
+            return !Load().Providers.TryGetValue(providerId, out var ps) || ps is null || ps.Enabled;
         }
     }
 
@@ -138,12 +139,23 @@ public sealed class SettingsService
         Providers = (source.Providers ?? new Dictionary<string, ProviderSettings>())
             .ToDictionary(
                 kvp => kvp.Key,
-                kvp => new ProviderSettings
+                kvp => kvp.Value is null ? new ProviderSettings() : new ProviderSettings
                 {
                     Enabled = kvp.Value.Enabled,
                     ApiKey = kvp.Value.ApiKey
                 })
     };
+
+    /// <summary>
+    /// Replaces null <see cref="ProviderSettings"/> values with defaults to prevent NREs.
+    /// </summary>
+    private static void NormalizeProviders(Dictionary<string, ProviderSettings> providers)
+    {
+        foreach (var key in providers.Keys.ToList())
+        {
+            providers[key] ??= new ProviderSettings();
+        }
+    }
 
     /// <summary>
     /// Restricts file permissions so only the current user can read/write.
