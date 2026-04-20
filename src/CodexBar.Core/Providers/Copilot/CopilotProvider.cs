@@ -42,7 +42,7 @@ public sealed class CopilotProvider : IUsageProvider
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly SettingsService _settings;
 
-    // Cached account list — refreshed on startup, auth failure, or explicit refresh
+    // Cached account list — refreshed on startup or auth failure
     private readonly SemaphoreSlim _accountsLock = new(1, 1);
     private List<string>? _cachedAccounts;
     private readonly ConcurrentDictionary<string, string> _tokenCache = new(StringComparer.OrdinalIgnoreCase);
@@ -284,7 +284,7 @@ public sealed class CopilotProvider : IUsageProvider
         }
         catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.Unauthorized)
         {
-            InvalidateTokenForUser(username);
+            await InvalidateTokenForUserAsync(username);
             return new CopilotAccountResult
             {
                 Username = username,
@@ -380,10 +380,10 @@ public sealed class CopilotProvider : IUsageProvider
         return null;
     }
 
-    private void InvalidateTokenForUser(string username)
+    private async Task InvalidateTokenForUserAsync(string username)
     {
         _tokenCache.TryRemove(username, out _);
-        _accountsLock.Wait();
+        await _accountsLock.WaitAsync();
         try
         {
             _cachedAccounts = null;

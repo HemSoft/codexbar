@@ -3,7 +3,8 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using CodexBar.Core.Configuration;
-using CodexBar.Core.Models;using Microsoft.Extensions.Logging;
+using CodexBar.Core.Models;
+using Microsoft.Extensions.Logging;
 
 namespace CodexBar.Core.Providers.Gemini;
 
@@ -36,8 +37,10 @@ public sealed class GeminiProvider : IUsageProvider
     private const string GoogleTokenEndpoint = "https://oauth2.googleapis.com/token";
 
     // Cached tier info — changes rarely, fetched once per app lifetime (or on auth failure).
+    // Guarded by _tierLock to prevent concurrent tier-detection requests.
+    private readonly object _tierLock = new();
     private string? _cachedTierName;
-    private bool _tierFetched;
+    private volatile bool _tierFetched;
 
     public GeminiProvider(ILogger<GeminiProvider> logger, IHttpClientFactory httpClientFactory, SettingsService settings)
     {
@@ -87,7 +90,8 @@ public sealed class GeminiProvider : IUsageProvider
             return ProviderUsageResult.Failure(ProviderId.Gemini,
                 "No Gemini CLI credentials found. Run 'gemini' and complete login.");
 
-        // Fetch tier info once (cached for app lifetime)
+        // Fetch tier info once (cached for app lifetime).
+        // Volatile read ensures we see the latest value from concurrent callers.
         if (!_tierFetched)
             await FetchTierInfoAsync(accessToken, ct);
 
@@ -176,7 +180,7 @@ public sealed class GeminiProvider : IUsageProvider
         }
         catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.Unauthorized)
         {
-            _tierFetched = false; // Reset tier cache on auth failure
+            lock (_tierLock) { _tierFetched = false; } // Reset tier cache on auth failure
 
             // Token may be revoked but not yet expired — force refresh and retry once
             if (retryOn401)
@@ -207,7 +211,11 @@ public sealed class GeminiProvider : IUsageProvider
     /// </summary>
     private async Task FetchTierInfoAsync(string accessToken, CancellationToken ct)
     {
-        if (_tierFetched) return; // Double-check for concurrent callers
+        // Double-check under lock to prevent concurrent tier-detection requests
+        lock (_tierLock)
+        {
+            if (_tierFetched) return;
+        }
 
         try
         {
@@ -250,7 +258,7 @@ public sealed class GeminiProvider : IUsageProvider
                 _logger.LogInformation("Gemini tier: {Tier}", _cachedTierName);
             }
 
-            _tierFetched = true;
+            lock (_tierLock) { _tierFetched = true; }
         }
         catch (OperationCanceledException)
         {
@@ -258,7 +266,7 @@ public sealed class GeminiProvider : IUsageProvider
         }
         catch (Exception ex)
         {
-            _tierFetched = true; // Non-critical — show quota without tier label
+            lock (_tierLock) { _tierFetched = true; } // Non-critical — show quota without tier label
             _logger.LogDebug(ex, "Gemini tier detection failed (non-critical)");
         }
     }
@@ -288,7 +296,8 @@ public sealed class GeminiProvider : IUsageProvider
 
     private static bool IsExpired(long? expiryDateMs)
     {
-        if (expiryDateMs is null) return false;
+        // Treat missing expiry as expired — we can't assume the token is still valid
+        if (expiryDateMs is null) return true;
         var expiresAt = DateTimeOffset.FromUnixTimeMilliseconds(expiryDateMs.Value);
         // Treat as expired 60s early to avoid edge-case races
         return expiresAt < DateTimeOffset.UtcNow.AddSeconds(60);
