@@ -198,12 +198,16 @@ public sealed class CopilotProvider : IUsageProvider
             {
                 await process.WaitForExitAsync(timeoutCts.Token);
             }
-            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            catch (OperationCanceledException)
             {
-                // Timeout only — caller cancellation propagates naturally
                 try { process.Kill(); } catch { /* best-effort */ }
                 try { await stderrTask; } catch { /* best-effort after kill */ }
                 try { await stdoutTask; } catch { /* best-effort after kill */ }
+
+                if (ct.IsCancellationRequested)
+                    throw; // Propagate caller cancellation after cleanup
+
+                // Timeout only
                 _logger.LogWarning("gh auth status timed out");
                 _lastDiscoveryError = "GitHub CLI (gh) timed out. Ensure 'gh' is responsive.";
                 return accounts;
@@ -399,13 +403,17 @@ public sealed class CopilotProvider : IUsageProvider
             {
                 await process.WaitForExitAsync(timeoutCts.Token);
             }
-            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            catch (OperationCanceledException)
             {
-                // Timeout only — caller cancellation propagates naturally
-                _logger.LogWarning("gh auth token --user {User} timed out", username);
                 try { process.Kill(); } catch { /* best-effort */ }
                 try { await stdoutTask; } catch { /* best-effort after kill */ }
                 try { await stderrTask; } catch { /* best-effort after kill */ }
+
+                if (ct.IsCancellationRequested)
+                    throw; // Propagate caller cancellation after cleanup
+
+                // Timeout only
+                _logger.LogWarning("gh auth token --user {User} timed out", username);
                 return null;
             }
 
