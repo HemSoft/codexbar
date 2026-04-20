@@ -224,8 +224,10 @@ public sealed class MainViewModel : IDisposable
                 card.IsHighUsage = false;
             }
 
-            if (item.SecondaryUsage is not null)
+            if (item.PrimaryUsage is not null && item.SecondaryUsage is not null)
             {
+                // Only show secondary as weekly when primary is present;
+                // when secondary is promoted to the main display above, avoid duplication.
                 card.WeeklyText = item.SecondaryUsage.UsageLabel;
                 card.WeeklyPercent = item.SecondaryUsage.UsedPercent;
             }
