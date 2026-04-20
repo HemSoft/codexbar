@@ -254,9 +254,9 @@ public sealed class GeminiProvider : IUsageProvider
                 }
 
                 _logger.LogInformation("Gemini tier: {Tier}", _cachedTierName);
+                _tierFetched = true;
             }
-
-            _tierFetched = true;
+            // Non-success: don't mark as fetched so a later call can retry
         }
         catch (OperationCanceledException)
         {

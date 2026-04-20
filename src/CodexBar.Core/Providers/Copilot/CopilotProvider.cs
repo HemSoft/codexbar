@@ -135,7 +135,13 @@ public sealed class CopilotProvider : IUsageProvider
         await _accountsLock.WaitAsync(ct);
         try
         {
-            _cachedAccounts ??= await DiscoverGhAccountsAsync(ct);
+            if (_cachedAccounts is null or { Count: 0 })
+                _cachedAccounts = await DiscoverGhAccountsAsync(ct);
+
+            // Don't cache empty results — allows re-discovery after user logs in
+            if (_cachedAccounts is { Count: 0 })
+                _cachedAccounts = null;
+
             return _cachedAccounts ?? [];
         }
         finally
