@@ -300,7 +300,7 @@ public sealed class CopilotProvider : IUsageProvider
         }
         catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.Unauthorized)
         {
-            await InvalidateTokenForUserAsync(username);
+            await InvalidateTokenForUserAsync(username, ct);
             return new CopilotAccountResult
             {
                 Username = username,
@@ -396,10 +396,10 @@ public sealed class CopilotProvider : IUsageProvider
         return null;
     }
 
-    private async Task InvalidateTokenForUserAsync(string username)
+    private async Task InvalidateTokenForUserAsync(string username, CancellationToken ct = default)
     {
         _tokenCache.TryRemove(username, out _);
-        await _accountsLock.WaitAsync();
+        await _accountsLock.WaitAsync(ct);
         try
         {
             _cachedAccounts = null;
@@ -460,35 +460,35 @@ public sealed class CopilotProvider : IUsageProvider
         return planLabel is not null ? $"Copilot · {username} ({planLabel})" : $"Copilot · {username}";
     }
 
-    private static UsageSnapshot BuildUsageSnapshot(CopilotQuotaSnapshot premium, string? resetDateUtc, string quotaLabel = "premium")
+    private static UsageSnapshot BuildUsageSnapshot(CopilotQuotaSnapshot quota, string? resetDateUtc, string quotaLabel = "premium")
     {
         double usedPercent;
         string usageLabel;
 
-        if (premium.Unlimited)
+        if (quota.Unlimited)
         {
             usedPercent = 0;
             usageLabel = "Unlimited";
         }
-        else if (premium.Entitlement <= 0)
+        else if (quota.Entitlement <= 0)
         {
             usedPercent = 0;
             usageLabel = "No quota";
         }
         else
         {
-            var used = premium.Entitlement - premium.Remaining;
-            usedPercent = (double)used / premium.Entitlement;
+            var used = quota.Entitlement - quota.Remaining;
+            usedPercent = (double)used / quota.Entitlement;
 
-            var overageRequests = ComputeOverageRequests(premium);
+            var overageRequests = ComputeOverageRequests(quota);
             if (overageRequests > 0)
             {
                 var overageCost = overageRequests * OverageCostPerRequest;
-                usageLabel = $"{used:N0} / {premium.Entitlement:N0} (+{overageRequests:N0} overage, ${overageCost:F2})";
+                usageLabel = $"{used:N0} / {quota.Entitlement:N0} (+{overageRequests:N0} overage, ${overageCost:F2})";
             }
             else
             {
-                usageLabel = $"{used:N0} / {premium.Entitlement:N0} {quotaLabel}";
+                usageLabel = $"{used:N0} / {quota.Entitlement:N0} {quotaLabel}";
             }
         }
 

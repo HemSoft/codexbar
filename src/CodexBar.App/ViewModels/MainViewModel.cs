@@ -12,7 +12,7 @@ public sealed class MainViewModel : IDisposable
 
     public ObservableCollection<ProviderCardViewModel> Providers { get; } = new();
 
-    // Stable key → card index for reconciliation
+    // Stable key → card view model for reconciliation
     private readonly Dictionary<string, ProviderCardViewModel> _cardsByKey = new(StringComparer.OrdinalIgnoreCase);
 
     public MainViewModel(UsageRefreshService refreshService)
