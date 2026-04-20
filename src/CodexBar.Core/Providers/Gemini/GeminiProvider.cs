@@ -78,6 +78,11 @@ public sealed class GeminiProvider : IUsageProvider
 
     public async Task<ProviderUsageResult> FetchUsageAsync(CancellationToken ct = default)
     {
+        return await FetchUsageInternalAsync(retryOn401: true, ct);
+    }
+
+    private async Task<ProviderUsageResult> FetchUsageInternalAsync(bool retryOn401, CancellationToken ct)
+    {
         var accessToken = await GetValidAccessTokenAsync(ct);
         if (accessToken is null)
             return ProviderUsageResult.Failure(ProviderId.Gemini,
@@ -173,6 +178,20 @@ public sealed class GeminiProvider : IUsageProvider
         catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.Unauthorized)
         {
             _tierFetched = false; // Reset tier cache on auth failure
+
+            // Token may be revoked but not yet expired — force refresh and retry once
+            if (retryOn401)
+            {
+                var creds = ReadCredentials();
+                if (!string.IsNullOrEmpty(creds?.RefreshToken))
+                {
+                    _logger.LogDebug("Gemini 401 — forcing token refresh and retrying");
+                    var newToken = await RefreshAccessTokenAsync(creds.RefreshToken, ct, force: true);
+                    if (newToken is not null)
+                        return await FetchUsageInternalAsync(retryOn401: false, ct);
+                }
+            }
+
             return ProviderUsageResult.Failure(ProviderId.Gemini,
                 "Gemini OAuth token invalid. Run 'gemini' and complete login.");
         }
@@ -276,15 +295,19 @@ public sealed class GeminiProvider : IUsageProvider
         return expiresAt < DateTimeOffset.UtcNow.AddSeconds(60);
     }
 
-    private async Task<string?> RefreshAccessTokenAsync(string refreshToken, CancellationToken ct)
+    private async Task<string?> RefreshAccessTokenAsync(string refreshToken, CancellationToken ct, bool force = false)
     {
         await _refreshLock.WaitAsync(ct);
         try
         {
-            // Re-check after acquiring lock — another thread may have already refreshed
-            var creds = ReadCredentials();
-            if (creds is not null && !string.IsNullOrEmpty(creds.AccessToken) && !IsExpired(creds.ExpiryDate))
-                return creds.AccessToken;
+            // Re-check after acquiring lock — another thread may have already refreshed.
+            // Skip this optimization when force=true (e.g., after a 401 with a not-yet-expired token).
+            if (!force)
+            {
+                var creds = ReadCredentials();
+                if (creds is not null && !string.IsNullOrEmpty(creds.AccessToken) && !IsExpired(creds.ExpiryDate))
+                    return creds.AccessToken;
+            }
 
             var body = new FormUrlEncodedContent(
             [
@@ -326,6 +349,10 @@ public sealed class GeminiProvider : IUsageProvider
             _logger.LogInformation("Gemini access token refreshed successfully");
 
             return newAccessToken;
+        }
+        catch (OperationCanceledException)
+        {
+            throw; // Propagate cancellation — don't treat it as a refresh failure
         }
         catch (Exception ex)
         {
@@ -396,6 +423,7 @@ public sealed class GeminiProvider : IUsageProvider
 
     /// <summary>
     /// Persists refreshed tokens back into the credentials file, preserving other fields.
+    /// Uses atomic write (temp file + move) to prevent concurrent readers from seeing a partially-written file.
     /// </summary>
     private void UpdateCredentialsFile(string accessToken, string? refreshToken, long expiryDateMs, string? idToken)
     {
@@ -413,7 +441,9 @@ public sealed class GeminiProvider : IUsageProvider
                 root["id_token"] = idToken;
 
             var options = new JsonSerializerOptions { WriteIndented = true };
-            File.WriteAllText(OAuthCredsPath, root.ToJsonString(options));
+            var tempPath = OAuthCredsPath + ".tmp";
+            File.WriteAllText(tempPath, root.ToJsonString(options));
+            File.Move(tempPath, OAuthCredsPath, overwrite: true);
             _logger.LogDebug("Updated Gemini credentials file at {Path}", OAuthCredsPath);
         }
         catch (Exception ex)

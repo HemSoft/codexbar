@@ -167,6 +167,9 @@ public sealed class CopilotProvider : IUsageProvider
             if (!process.WaitForExit(10_000))
             {
                 try { process.Kill(); } catch { /* best-effort */ }
+                // Drain outstanding stream reads to prevent unobserved task exceptions
+                try { stderrTask.GetAwaiter().GetResult(); } catch { /* best-effort after kill */ }
+                try { stdoutTask.GetAwaiter().GetResult(); } catch { /* best-effort after kill */ }
                 _logger.LogWarning("gh auth status timed out");
                 return accounts;
             }
@@ -317,12 +320,19 @@ public sealed class CopilotProvider : IUsageProvider
             {
                 _logger.LogWarning("gh auth token --user {User} timed out", username);
                 try { process.Kill(); } catch { /* best-effort */ }
+                // Drain outstanding stream reads to prevent unobserved task exceptions
+                try { stdoutTask.GetAwaiter().GetResult(); } catch { /* best-effort after kill */ }
+                try { stderrTask.GetAwaiter().GetResult(); } catch { /* best-effort after kill */ }
                 return null;
             }
 
             stderrTask.GetAwaiter().GetResult(); // drain stderr
 
-            if (process.ExitCode != 0) return null;
+            if (process.ExitCode != 0)
+            {
+                stdoutTask.GetAwaiter().GetResult(); // drain stdout to prevent unobserved task exceptions
+                return null;
+            }
 
             var token = stdoutTask.GetAwaiter().GetResult().Trim();
             if (!string.IsNullOrWhiteSpace(token))
