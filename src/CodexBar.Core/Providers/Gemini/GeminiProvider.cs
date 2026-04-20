@@ -476,7 +476,16 @@ public sealed class GeminiProvider : IUsageProvider
             var options = new JsonSerializerOptions { WriteIndented = true };
             var tempPath = OAuthCredsPath + ".tmp";
             FileSecurityHelper.WriteRestrictedFile(tempPath, root.ToJsonString(options));
-            File.Move(tempPath, OAuthCredsPath, overwrite: true);
+            try
+            {
+                File.Move(tempPath, OAuthCredsPath, overwrite: true);
+            }
+            catch
+            {
+                // Best-effort cleanup: remove the temp file so tokens aren't left on disk
+                try { File.Delete(tempPath); } catch { /* swallow */ }
+                throw;
+            }
             _logger.LogDebug("Updated Gemini credentials file at {Path}", OAuthCredsPath);
         }
         catch (Exception ex)

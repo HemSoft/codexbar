@@ -350,7 +350,7 @@ public sealed class CopilotProvider : IUsageProvider
     }
 
     /// <summary>
-    /// Resolves a GitHub token for a specific user via <c>gh auth token --user</c>.
+    /// Resolves a GitHub token for a specific user via <c>gh auth token --user --hostname github.com</c>.
     /// Uses async process handling so the calling thread is not blocked and
     /// the provided <paramref name="ct"/> can interrupt a stuck gh process.
     /// </summary>
@@ -373,6 +373,8 @@ public sealed class CopilotProvider : IUsageProvider
             psi.ArgumentList.Add("token");
             psi.ArgumentList.Add("--user");
             psi.ArgumentList.Add(username);
+            psi.ArgumentList.Add("--hostname");
+            psi.ArgumentList.Add("github.com");
 
             using var process = new Process { StartInfo = psi };
             process.Start();

@@ -10,6 +10,8 @@ public partial class MainWindow : Window
         InitializeComponent();
         // SizeToContent computes ActualHeight after layout; defer positioning
         Loaded += (_, _) => PositionNearTray();
+        // Re-position when dynamic content (e.g., Copilot account cards) changes the height
+        SizeChanged += (_, _) => { if (IsLoaded) PositionNearTray(); };
     }
 
     private void PositionNearTray()
