@@ -37,8 +37,8 @@ public sealed class GeminiProvider : IUsageProvider
     private const string GoogleTokenEndpoint = "https://oauth2.googleapis.com/token";
 
     // Cached tier info — changes rarely, fetched once per app lifetime (or on auth failure).
-    // Guarded by _tierLock to prevent concurrent tier-detection requests.
-    private readonly object _tierLock = new();
+    // SemaphoreSlim ensures only one tier-detection request runs at a time.
+    private readonly SemaphoreSlim _tierSemaphore = new(1, 1);
     private string? _cachedTierName;
     private volatile bool _tierFetched;
 
@@ -180,7 +180,7 @@ public sealed class GeminiProvider : IUsageProvider
         }
         catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.Unauthorized)
         {
-            lock (_tierLock) { _tierFetched = false; } // Reset tier cache on auth failure
+            _tierFetched = false; // Reset tier cache on auth failure
 
             // Token may be revoked but not yet expired — force refresh and retry once
             if (retryOn401)
@@ -211,14 +211,12 @@ public sealed class GeminiProvider : IUsageProvider
     /// </summary>
     private async Task FetchTierInfoAsync(string accessToken, CancellationToken ct)
     {
-        // Double-check under lock to prevent concurrent tier-detection requests
-        lock (_tierLock)
-        {
-            if (_tierFetched) return;
-        }
+        if (_tierFetched) return; // Fast path — no lock needed once fetched
 
+        await _tierSemaphore.WaitAsync(ct);
         try
         {
+            if (_tierFetched) return; // Double-check after acquiring semaphore
             using var request = new HttpRequestMessage(HttpMethod.Post,
                 "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist");
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
@@ -258,7 +256,7 @@ public sealed class GeminiProvider : IUsageProvider
                 _logger.LogInformation("Gemini tier: {Tier}", _cachedTierName);
             }
 
-            lock (_tierLock) { _tierFetched = true; }
+            _tierFetched = true;
         }
         catch (OperationCanceledException)
         {
@@ -266,8 +264,12 @@ public sealed class GeminiProvider : IUsageProvider
         }
         catch (Exception ex)
         {
-            lock (_tierLock) { _tierFetched = true; } // Non-critical — show quota without tier label
+            _tierFetched = true; // Non-critical — show quota without tier label
             _logger.LogDebug(ex, "Gemini tier detection failed (non-critical)");
+        }
+        finally
+        {
+            _tierSemaphore.Release();
         }
     }
 

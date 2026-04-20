@@ -191,18 +191,34 @@ public sealed class CopilotProvider : IUsageProvider
             var stderr = await stderrTask;
             await stdoutTask; // drain stdout
 
-            // Parse "Logged in to github.com account <username>"
+            // Parse "Logged in to github.com account <username>" or
+            // "Logged in to github.com as <username>" (format varies across gh versions)
             foreach (var line in stderr.Split('\n'))
             {
                 var trimmed = line.Trim();
-                if (!trimmed.Contains("Logged in to github.com account", StringComparison.OrdinalIgnoreCase))
+                if (!trimmed.Contains("Logged in to github.com", StringComparison.OrdinalIgnoreCase))
                     continue;
 
-                var idx = trimmed.IndexOf("account ", StringComparison.OrdinalIgnoreCase);
-                if (idx < 0) continue;
-                var rest = trimmed[(idx + "account ".Length)..];
-                var spaceIdx = rest.IndexOf(' ');
-                var username = spaceIdx >= 0 ? rest[..spaceIdx] : rest;
+                // Try "account <username>" first, then "as <username>"
+                string? username = null;
+                var accountIdx = trimmed.IndexOf("account ", StringComparison.OrdinalIgnoreCase);
+                if (accountIdx >= 0)
+                {
+                    var rest = trimmed[(accountIdx + "account ".Length)..];
+                    var spaceIdx = rest.IndexOf(' ');
+                    username = spaceIdx >= 0 ? rest[..spaceIdx] : rest;
+                }
+                else
+                {
+                    var asIdx = trimmed.IndexOf(" as ", StringComparison.OrdinalIgnoreCase);
+                    if (asIdx >= 0)
+                    {
+                        var rest = trimmed[(asIdx + " as ".Length)..];
+                        var spaceIdx = rest.IndexOf(' ');
+                        username = spaceIdx >= 0 ? rest[..spaceIdx] : rest;
+                    }
+                }
+
                 if (!string.IsNullOrWhiteSpace(username))
                     accounts.Add(username.Trim());
             }

@@ -78,7 +78,7 @@ public sealed class SettingsService
             var json = JsonSerializer.Serialize(sanitized, JsonOptions);
 
             // Write to a temp file and atomically move into place.
-            // Permissions are set at creation time (see CreateRestrictedFileStream)
+            // Permissions are set at creation time (see FileSecurityHelper.WriteRestrictedFile)
             // so no window exists where the file is world-readable.
             var tempPath = SettingsPath + ".tmp";
             FileSecurityHelper.WriteRestrictedFile(tempPath, json);
