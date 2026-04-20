@@ -195,7 +195,7 @@ public sealed class MainViewModel : IDisposable
                 card.StatusText = item.PrimaryUsage.UsageLabel ?? $"{item.PrimaryUsage.UsedPercent:P0} used";
                 card.ResetText = item.PrimaryUsage.ResetDescription;
                 card.IsHighUsage = item.PrimaryUsage.UsedPercent >= 0.8;
-                card.ShowUsagePercent = true;
+                card.ShowUsagePercent = !item.PrimaryUsage.IsUnlimited;
             }
             else if (item.CreditsRemaining is not null)
             {

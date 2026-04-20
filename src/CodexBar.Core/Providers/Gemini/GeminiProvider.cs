@@ -439,9 +439,23 @@ public sealed class GeminiProvider : IUsageProvider
     {
         try
         {
-            var json = File.ReadAllText(OAuthCredsPath);
-            var root = JsonNode.Parse(json);
-            if (root is null) return;
+            JsonNode? root = null;
+
+            if (File.Exists(OAuthCredsPath))
+            {
+                try
+                {
+                    var json = File.ReadAllText(OAuthCredsPath);
+                    root = JsonNode.Parse(json);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Existing Gemini credentials file is unreadable/corrupted; creating fresh");
+                }
+            }
+
+            // Build a minimal object when the file is missing, empty, or corrupted
+            root ??= new JsonObject();
 
             root["access_token"] = accessToken;
             root["expiry_date"] = expiryDateMs;

@@ -19,4 +19,9 @@ public sealed record UsageSnapshot
 
     /// <summary>When this snapshot was captured.</summary>
     public DateTimeOffset CapturedAt { get; init; } = DateTimeOffset.UtcNow;
+
+    /// <summary>
+    /// Indicates the quota is unlimited — percentage/progress display should be suppressed.
+    /// </summary>
+    public bool IsUnlimited { get; init; }
 }

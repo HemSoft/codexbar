@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Net.Http.Headers;
 using System.Text.Json;
@@ -45,6 +46,7 @@ public sealed class CopilotProvider : IUsageProvider
     // Cached account list — refreshed on startup or auth failure
     private readonly SemaphoreSlim _accountsLock = new(1, 1);
     private List<string>? _cachedAccounts;
+    private string? _lastDiscoveryError;
     private readonly ConcurrentDictionary<string, string> _tokenCache = new(StringComparer.OrdinalIgnoreCase);
 
     public CopilotProvider(ILogger<CopilotProvider> logger, IHttpClientFactory httpClientFactory, SettingsService settings)
@@ -74,8 +76,8 @@ public sealed class CopilotProvider : IUsageProvider
 
     public async Task<ProviderUsageResult> FetchUsageAsync(CancellationToken ct = default)
     {
-        if (!_settings.IsProviderEnabled(ProviderId.Copilot))
-            return ProviderUsageResult.Failure(ProviderId.Copilot, "Disabled in settings");
+        // Note: IsAvailableAsync already gates on IsProviderEnabled — UsageRefreshService
+        // skips disabled providers before calling FetchUsageAsync, so no redundant check here.
 
         var accounts = (await GetAccountsToFetchAsync(ct))
             .Where(a => !string.IsNullOrWhiteSpace(a))
@@ -84,7 +86,8 @@ public sealed class CopilotProvider : IUsageProvider
             .ToList();
         if (accounts.Count == 0)
             return ProviderUsageResult.Failure(ProviderId.Copilot,
-                "No Copilot accounts found. Add copilotAccounts to ~/.codexbar/settings.json or run 'gh auth login'.");
+                _lastDiscoveryError
+                ?? "No Copilot accounts found. Add copilotAccounts to ~/.codexbar/settings.json or run 'gh auth login'.");
 
         var items = new List<UsageItem>();
         var accountResults = new List<CopilotAccountResult>();
@@ -158,6 +161,7 @@ public sealed class CopilotProvider : IUsageProvider
     private async Task<List<string>> DiscoverGhAccountsAsync(CancellationToken ct)
     {
         var accounts = new List<string>();
+        _lastDiscoveryError = null;
         try
         {
             using var process = new Process
@@ -191,11 +195,20 @@ public sealed class CopilotProvider : IUsageProvider
                 try { await stderrTask; } catch { /* best-effort after kill */ }
                 try { await stdoutTask; } catch { /* best-effort after kill */ }
                 _logger.LogWarning("gh auth status timed out");
+                _lastDiscoveryError = "GitHub CLI (gh) timed out. Ensure 'gh' is responsive.";
                 return accounts;
             }
 
             var stderr = await stderrTask;
             await stdoutTask; // drain stdout
+
+            if (process.ExitCode != 0)
+            {
+                _logger.LogWarning("gh auth status exited with code {ExitCode}: {Stderr}",
+                    process.ExitCode, stderr.Trim());
+                _lastDiscoveryError = $"GitHub CLI (gh) auth failed (exit code {process.ExitCode}). Run 'gh auth login'.";
+                return accounts;
+            }
 
             // Parse "Logged in to github.com account <username>" or
             // "Logged in to github.com as <username>" (format varies across gh versions)
@@ -236,9 +249,15 @@ public sealed class CopilotProvider : IUsageProvider
         {
             throw; // Propagate cancellation
         }
+        catch (Win32Exception ex)
+        {
+            _logger.LogWarning(ex, "GitHub CLI (gh) not found on PATH");
+            _lastDiscoveryError = "GitHub CLI (gh) not found. Install from https://cli.github.com and run 'gh auth login'.";
+        }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Failed to discover gh CLI accounts");
+            _lastDiscoveryError = $"Failed to discover accounts: {ex.Message}";
         }
 
         return accounts;
@@ -470,11 +489,13 @@ public sealed class CopilotProvider : IUsageProvider
     {
         double usedPercent;
         string usageLabel;
+        bool isUnlimited = false;
 
         if (quota.Unlimited)
         {
             usedPercent = 0;
             usageLabel = "Unlimited";
+            isUnlimited = true;
         }
         else if (quota.Entitlement <= 0)
         {
@@ -518,7 +539,8 @@ public sealed class CopilotProvider : IUsageProvider
             UsedPercent = Math.Clamp(usedPercent, 0.0, 1.0),
             UsageLabel = usageLabel,
             ResetsAt = resetsAt,
-            ResetDescription = resetDescription
+            ResetDescription = resetDescription,
+            IsUnlimited = isUnlimited
         };
     }
 
