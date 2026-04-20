@@ -43,7 +43,7 @@ public sealed class CopilotProvider : IUsageProvider
     private readonly SettingsService _settings;
 
     // Cached account list — refreshed on startup, auth failure, or explicit refresh
-    private readonly object _accountsLock = new();
+    private readonly SemaphoreSlim _accountsLock = new(1, 1);
     private List<string>? _cachedAccounts;
     private readonly ConcurrentDictionary<string, string> _tokenCache = new(StringComparer.OrdinalIgnoreCase);
 
@@ -77,7 +77,7 @@ public sealed class CopilotProvider : IUsageProvider
         if (!_settings.IsProviderEnabled(ProviderId.Copilot))
             return ProviderUsageResult.Failure(ProviderId.Copilot, "Disabled in settings");
 
-        var accounts = GetAccountsToFetch()
+        var accounts = (await GetAccountsToFetchAsync(ct))
             .Where(a => !string.IsNullOrWhiteSpace(a))
             .Select(a => a.Trim())
             .Distinct(StringComparer.OrdinalIgnoreCase)
@@ -125,24 +125,31 @@ public sealed class CopilotProvider : IUsageProvider
     /// <summary>
     /// Returns the list of accounts to fetch: from settings if configured, otherwise auto-discovered.
     /// </summary>
-    private List<string> GetAccountsToFetch()
+    private async Task<List<string>> GetAccountsToFetchAsync(CancellationToken ct)
     {
         var configured = _settings.GetCopilotAccounts();
         if (configured.Count > 0)
             return configured.ToList();
 
-        // Auto-discover from gh CLI (thread-safe)
-        lock (_accountsLock)
+        // Auto-discover from gh CLI (async-safe via SemaphoreSlim)
+        await _accountsLock.WaitAsync(ct);
+        try
         {
-            _cachedAccounts ??= DiscoverGhAccounts();
+            _cachedAccounts ??= await DiscoverGhAccountsAsync(ct);
             return _cachedAccounts ?? [];
+        }
+        finally
+        {
+            _accountsLock.Release();
         }
     }
 
     /// <summary>
     /// Discovers all GitHub.com accounts from <c>gh auth status</c>.
+    /// Uses async process handling so the calling thread is not blocked and
+    /// the provided <paramref name="ct"/> can interrupt a stuck gh process.
     /// </summary>
-    private List<string> DiscoverGhAccounts()
+    private async Task<List<string>> DiscoverGhAccountsAsync(CancellationToken ct)
     {
         var accounts = new List<string>();
         try
@@ -160,22 +167,29 @@ public sealed class CopilotProvider : IUsageProvider
                 }
             };
             process.Start();
-            // Read streams asynchronously to avoid deadlock: ReadToEnd() before WaitForExit()
-            // can block indefinitely if the process produces enough output to fill the buffer.
+
             var stderrTask = process.StandardError.ReadToEndAsync();
             var stdoutTask = process.StandardOutput.ReadToEndAsync();
-            if (!process.WaitForExit(10_000))
+
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeoutCts.CancelAfter(TimeSpan.FromSeconds(10));
+
+            try
             {
+                await process.WaitForExitAsync(timeoutCts.Token);
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                // Timeout only — caller cancellation propagates naturally
                 try { process.Kill(); } catch { /* best-effort */ }
-                // Drain outstanding stream reads to prevent unobserved task exceptions
-                try { stderrTask.GetAwaiter().GetResult(); } catch { /* best-effort after kill */ }
-                try { stdoutTask.GetAwaiter().GetResult(); } catch { /* best-effort after kill */ }
+                try { await stderrTask; } catch { /* best-effort after kill */ }
+                try { await stdoutTask; } catch { /* best-effort after kill */ }
                 _logger.LogWarning("gh auth status timed out");
                 return accounts;
             }
 
-            var stderr = stderrTask.GetAwaiter().GetResult();
-            stdoutTask.GetAwaiter().GetResult(); // drain stdout
+            var stderr = await stderrTask;
+            await stdoutTask; // drain stdout
 
             // Parse "Logged in to github.com account <username>"
             foreach (var line in stderr.Split('\n'))
@@ -196,6 +210,10 @@ public sealed class CopilotProvider : IUsageProvider
             _logger.LogDebug("Discovered {Count} gh CLI accounts: {Accounts}",
                 accounts.Count, string.Join(", ", accounts));
         }
+        catch (OperationCanceledException)
+        {
+            throw; // Propagate cancellation
+        }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Failed to discover gh CLI accounts");
@@ -209,7 +227,7 @@ public sealed class CopilotProvider : IUsageProvider
     /// </summary>
     private async Task<CopilotAccountResult> FetchAccountQuotaAsync(string username, CancellationToken ct)
     {
-        var token = ResolveTokenForUser(username);
+        var token = await ResolveTokenForUserAsync(username, ct);
         if (token is null)
         {
             return new CopilotAccountResult
@@ -288,8 +306,10 @@ public sealed class CopilotProvider : IUsageProvider
 
     /// <summary>
     /// Resolves a GitHub token for a specific user via <c>gh auth token --user</c>.
+    /// Uses async process handling so the calling thread is not blocked and
+    /// the provided <paramref name="ct"/> can interrupt a stuck gh process.
     /// </summary>
-    private string? ResolveTokenForUser(string username)
+    private async Task<string?> ResolveTokenForUserAsync(string username, CancellationToken ct)
     {
         if (_tokenCache.TryGetValue(username, out var cached))
             return cached;
@@ -312,35 +332,45 @@ public sealed class CopilotProvider : IUsageProvider
             using var process = new Process { StartInfo = psi };
             process.Start();
 
-            // Read streams asynchronously to avoid deadlock when output fills the buffer.
             var stdoutTask = process.StandardOutput.ReadToEndAsync();
             var stderrTask = process.StandardError.ReadToEndAsync();
 
-            if (!process.WaitForExit(5000))
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeoutCts.CancelAfter(TimeSpan.FromSeconds(5));
+
+            try
             {
+                await process.WaitForExitAsync(timeoutCts.Token);
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                // Timeout only — caller cancellation propagates naturally
                 _logger.LogWarning("gh auth token --user {User} timed out", username);
                 try { process.Kill(); } catch { /* best-effort */ }
-                // Drain outstanding stream reads to prevent unobserved task exceptions
-                try { stdoutTask.GetAwaiter().GetResult(); } catch { /* best-effort after kill */ }
-                try { stderrTask.GetAwaiter().GetResult(); } catch { /* best-effort after kill */ }
+                try { await stdoutTask; } catch { /* best-effort after kill */ }
+                try { await stderrTask; } catch { /* best-effort after kill */ }
                 return null;
             }
 
-            stderrTask.GetAwaiter().GetResult(); // drain stderr
+            await stderrTask; // drain stderr
 
             if (process.ExitCode != 0)
             {
-                stdoutTask.GetAwaiter().GetResult(); // drain stdout to prevent unobserved task exceptions
+                await stdoutTask; // drain stdout
                 return null;
             }
 
-            var token = stdoutTask.GetAwaiter().GetResult().Trim();
+            var token = (await stdoutTask).Trim();
             if (!string.IsNullOrWhiteSpace(token))
             {
                 _tokenCache[username] = token;
                 _logger.LogDebug("Resolved token for {User} ({Length} chars)", username, token.Length);
                 return token;
             }
+        }
+        catch (OperationCanceledException)
+        {
+            throw; // Propagate cancellation
         }
         catch (Exception ex)
         {
@@ -353,9 +383,14 @@ public sealed class CopilotProvider : IUsageProvider
     private void InvalidateTokenForUser(string username)
     {
         _tokenCache.TryRemove(username, out _);
-        lock (_accountsLock)
+        _accountsLock.Wait();
+        try
         {
             _cachedAccounts = null;
+        }
+        finally
+        {
+            _accountsLock.Release();
         }
     }
 

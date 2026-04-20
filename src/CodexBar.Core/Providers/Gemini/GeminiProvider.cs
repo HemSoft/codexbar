@@ -3,8 +3,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using CodexBar.Core.Configuration;
-using CodexBar.Core.Models;
-using Microsoft.Extensions.Logging;
+using CodexBar.Core.Models;using Microsoft.Extensions.Logging;
 
 namespace CodexBar.Core.Providers.Gemini;
 
@@ -442,7 +441,7 @@ public sealed class GeminiProvider : IUsageProvider
 
             var options = new JsonSerializerOptions { WriteIndented = true };
             var tempPath = OAuthCredsPath + ".tmp";
-            File.WriteAllText(tempPath, root.ToJsonString(options));
+            FileSecurityHelper.WriteRestrictedFile(tempPath, root.ToJsonString(options));
             File.Move(tempPath, OAuthCredsPath, overwrite: true);
             _logger.LogDebug("Updated Gemini credentials file at {Path}", OAuthCredsPath);
         }
