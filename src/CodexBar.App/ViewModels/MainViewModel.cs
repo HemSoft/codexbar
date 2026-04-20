@@ -111,6 +111,19 @@ public sealed class MainViewModel : IDisposable
         // If no items and overall failure, show a single error card
         if (items is null || items.Count == 0)
         {
+            // Remove stale copilot account cards so they don't linger alongside the error
+            var staleCopilotKeys = _cardsByKey.Keys
+                .Where(k => k.StartsWith("copilot:", StringComparison.OrdinalIgnoreCase) && k != "copilot:error")
+                .ToList();
+            foreach (var key in staleCopilotKeys)
+            {
+                if (_cardsByKey.TryGetValue(key, out var staleCard))
+                {
+                    Providers.Remove(staleCard);
+                    _cardsByKey.Remove(key);
+                }
+            }
+
             var errorKey = "copilot:error";
             if (!_cardsByKey.TryGetValue(errorKey, out var errorCard))
             {

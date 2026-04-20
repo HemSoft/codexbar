@@ -63,6 +63,7 @@ public sealed class SettingsService
             var sanitized = new AppSettings
             {
                 RefreshIntervalSeconds = settings.RefreshIntervalSeconds,
+                CopilotAccounts = (settings.CopilotAccounts ?? []).ToList(),
                 Providers = providers.ToDictionary(
                     kvp => kvp.Key,
                     kvp => new ProviderSettings
@@ -128,7 +129,7 @@ public sealed class SettingsService
         lock (_lock)
         {
             var settings = EnsureCached();
-            return settings.CopilotAccounts ?? new List<string>();
+            return (settings.CopilotAccounts ?? []).ToList();
         }
     }
 
@@ -185,7 +186,6 @@ public sealed class SettingsService
         RefreshIntervalSeconds = 120,
         Providers = new Dictionary<string, ProviderSettings>
         {
-            [ProviderId.Claude.ToString()] = new() { Enabled = true },
             [ProviderId.Gemini.ToString()] = new() { Enabled = true },
             [ProviderId.OpenRouter.ToString()] = new() { Enabled = true },
             [ProviderId.Copilot.ToString()] = new() { Enabled = true }
@@ -195,6 +195,7 @@ public sealed class SettingsService
     private static AppSettings DeepCopy(AppSettings source) => new()
     {
         RefreshIntervalSeconds = source.RefreshIntervalSeconds,
+        CopilotAccounts = (source.CopilotAccounts ?? []).ToList(),
         Providers = (source.Providers ?? new Dictionary<string, ProviderSettings>())
             .ToDictionary(
                 kvp => kvp.Key,

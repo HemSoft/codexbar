@@ -8,7 +8,8 @@
         mc:Ignorable="d"
         d:DataContext="{d:DesignInstance Type=vm:MainViewModel, IsDesignTimeCreatable=False}"
         Title="CodexBar"
-        Height="600" Width="320"
+        SizeToContent="Height" Width="340"
+        MaxHeight="800"
         WindowStyle="None"
         AllowsTransparency="True"
         Background="Transparent"
@@ -22,7 +23,7 @@
 
         <!-- Usage bar style: defaults to green and switches to red when IsHighUsage is true -->
         <Style x:Key="UsageBar" TargetType="ProgressBar">
-            <Setter Property="Height" Value="6" />
+            <Setter Property="Height" Value="8" />
             <Setter Property="Minimum" Value="0" />
             <Setter Property="Maximum" Value="1" />
             <Setter Property="Background" Value="#1A1A2E" />
@@ -55,20 +56,20 @@
             <!-- Header -->
             <TextBlock Grid.Row="0"
                        Text="🎚️ CodexBar"
-                       FontSize="18" FontWeight="SemiBold"
+                       FontSize="20" FontWeight="SemiBold"
                        Foreground="{StaticResource TextPrimaryBrush}"
                        Margin="0,0,0,12" />
 
-            <!-- Provider cards (scrollable) -->
+            <!-- Provider cards -->
             <ScrollViewer Grid.Row="1"
                           VerticalScrollBarVisibility="Auto"
                           HorizontalScrollBarVisibility="Disabled">
-                <ItemsControl ItemsSource="{Binding Providers}">
+            <ItemsControl ItemsSource="{Binding Providers}">
                     <ItemsControl.ItemTemplate>
                     <DataTemplate>
                         <Border Background="{StaticResource SurfaceBrush}"
                                 CornerRadius="8"
-                                Padding="12,10"
+                                Padding="14,12"
                                 Margin="0,0,0,8">
                             <Grid>
                                 <Grid.RowDefinitions>
@@ -85,12 +86,12 @@
                                 <!-- Provider name -->
                                 <TextBlock Grid.Row="0" Grid.Column="0"
                                            Text="{Binding DisplayName}"
-                                           FontSize="14" FontWeight="Medium"
+                                           FontSize="16" FontWeight="Medium"
                                            Foreground="{StaticResource TextPrimaryBrush}" />
 
                                 <!-- Percentage (hidden for credit-based providers) -->
                                 <TextBlock Grid.Row="0" Grid.Column="1"
-                                           FontSize="13" FontWeight="Medium"
+                                           FontSize="15" FontWeight="Medium"
                                            Foreground="{StaticResource TextSecondaryBrush}"
                                            Visibility="{Binding ShowUsagePercent, Converter={StaticResource BoolToVis}}">
                                     <TextBlock.Text>
@@ -108,7 +109,7 @@
                                 <!-- Status text -->
                                 <TextBlock Grid.Row="2" Grid.ColumnSpan="2"
                                            Text="{Binding StatusText}"
-                                           FontSize="11"
+                                           FontSize="13"
                                            Foreground="{StaticResource TextSecondaryBrush}"
                                            TextTrimming="CharacterEllipsis" />
 
@@ -116,11 +117,11 @@
                                 <StackPanel Grid.Row="3" Grid.ColumnSpan="2"
                                             Margin="0,2,0,0">
                                     <TextBlock Text="{Binding WeeklyText}"
-                                               FontSize="10"
+                                               FontSize="12"
                                                Foreground="{StaticResource TextSecondaryBrush}"
                                                Visibility="{Binding WeeklyText, Converter={x:Static local:NullToCollapsedConverter.Instance}}" />
                                     <TextBlock Text="{Binding ResetText}"
-                                               FontSize="10"
+                                               FontSize="12"
                                                Foreground="{StaticResource TextSecondaryBrush}"
                                                Visibility="{Binding ResetText, Converter={x:Static local:NullToCollapsedConverter.Instance}}" />
                                 </StackPanel>
@@ -136,7 +137,7 @@
                         HorizontalAlignment="Right" Margin="0,8,0,0">
                 <TextBlock Text="v0.1.0"
                            Foreground="{StaticResource TextSecondaryBrush}"
-                           FontSize="11" />
+                           FontSize="12" />
             </StackPanel>
         </Grid>
     </Border>

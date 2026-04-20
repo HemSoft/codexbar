@@ -8,7 +8,7 @@ public sealed record ProviderUsageResult
     public required ProviderId Provider { get; init; }
     public required bool Success { get; init; }
 
-    /// <summary>Session/short-window usage (e.g., 5-hour window for Claude).</summary>
+    /// <summary>Session/short-window usage (e.g., quota window for Gemini).</summary>
     public UsageSnapshot? SessionUsage { get; init; }
 
     /// <summary>Weekly/long-window usage.</summary>

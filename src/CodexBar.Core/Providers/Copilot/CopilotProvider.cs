@@ -30,7 +30,7 @@ public sealed class CopilotProvider : IUsageProvider
         "CODEXBAR_COPILOT_API_VERSION",
         "2025-04-01");
 
-    private const double OverageCostPerRequest = 0.04;
+    private const decimal OverageCostPerRequest = 0.04m;
 
     private static string GetConfiguredValue(string environmentVariableName, string fallbackValue)
     {
@@ -77,7 +77,11 @@ public sealed class CopilotProvider : IUsageProvider
         if (!_settings.IsProviderEnabled(ProviderId.Copilot))
             return ProviderUsageResult.Failure(ProviderId.Copilot, "Disabled in settings");
 
-        var accounts = GetAccountsToFetch();
+        var accounts = GetAccountsToFetch()
+            .Where(a => !string.IsNullOrWhiteSpace(a))
+            .Select(a => a.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
         if (accounts.Count == 0)
             return ProviderUsageResult.Failure(ProviderId.Copilot,
                 "No Copilot accounts found. Add copilotAccounts to ~/.codexbar/settings.json or run 'gh auth login'.");
@@ -103,7 +107,7 @@ public sealed class CopilotProvider : IUsageProvider
         if (firstSuccess?.PremiumInteractions is not null)
         {
             aggregateSession = BuildUsageSnapshot(firstSuccess.PremiumInteractions,
-                firstSuccess.Plan, firstSuccess.QuotaResetDateUtc);
+                firstSuccess.QuotaResetDateUtc);
         }
 
         return new ProviderUsageResult
@@ -156,15 +160,19 @@ public sealed class CopilotProvider : IUsageProvider
                 }
             };
             process.Start();
-            // gh auth status writes to stderr
-            var stderr = process.StandardError.ReadToEnd();
-            process.StandardOutput.ReadToEnd();
+            // Read streams asynchronously to avoid deadlock: ReadToEnd() before WaitForExit()
+            // can block indefinitely if the process produces enough output to fill the buffer.
+            var stderrTask = process.StandardError.ReadToEndAsync();
+            var stdoutTask = process.StandardOutput.ReadToEndAsync();
             if (!process.WaitForExit(10_000))
             {
                 try { process.Kill(); } catch { /* best-effort */ }
                 _logger.LogWarning("gh auth status timed out");
                 return accounts;
             }
+
+            var stderr = stderrTask.GetAwaiter().GetResult();
+            stdoutTask.GetAwaiter().GetResult(); // drain stdout
 
             // Parse "Logged in to github.com account <username>"
             foreach (var line in stderr.Split('\n'))
@@ -285,22 +293,25 @@ public sealed class CopilotProvider : IUsageProvider
 
         try
         {
-            using var process = new Process
+            var psi = new ProcessStartInfo
             {
-                StartInfo = new ProcessStartInfo
-                {
-                    FileName = "gh",
-                    Arguments = $"auth token --user {username}",
-                    UseShellExecute = false,
-                    CreateNoWindow = true,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true
-                }
+                FileName = "gh",
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
             };
+            psi.ArgumentList.Add("auth");
+            psi.ArgumentList.Add("token");
+            psi.ArgumentList.Add("--user");
+            psi.ArgumentList.Add(username);
 
+            using var process = new Process { StartInfo = psi };
             process.Start();
-            var stdout = process.StandardOutput.ReadToEnd();
-            process.StandardError.ReadToEnd();
+
+            // Read streams asynchronously to avoid deadlock when output fills the buffer.
+            var stdoutTask = process.StandardOutput.ReadToEndAsync();
+            var stderrTask = process.StandardError.ReadToEndAsync();
 
             if (!process.WaitForExit(5000))
             {
@@ -309,9 +320,11 @@ public sealed class CopilotProvider : IUsageProvider
                 return null;
             }
 
+            stderrTask.GetAwaiter().GetResult(); // drain stderr
+
             if (process.ExitCode != 0) return null;
 
-            var token = stdout.Trim();
+            var token = stdoutTask.GetAwaiter().GetResult().Trim();
             if (!string.IsNullOrWhiteSpace(token))
             {
                 _tokenCache[username] = token;
@@ -354,7 +367,7 @@ public sealed class CopilotProvider : IUsageProvider
 
         if (premium is not null)
         {
-            primaryUsage = BuildUsageSnapshot(premium, result.Plan, result.QuotaResetDateUtc);
+            primaryUsage = BuildUsageSnapshot(premium, result.QuotaResetDateUtc);
         }
 
         return new UsageItem
@@ -379,7 +392,7 @@ public sealed class CopilotProvider : IUsageProvider
         return planLabel is not null ? $"Copilot · {username} ({planLabel})" : $"Copilot · {username}";
     }
 
-    private static UsageSnapshot BuildUsageSnapshot(CopilotQuotaSnapshot premium, string? plan, string? resetDateUtc)
+    private static UsageSnapshot BuildUsageSnapshot(CopilotQuotaSnapshot premium, string? resetDateUtc)
     {
         double usedPercent;
         string usageLabel;
