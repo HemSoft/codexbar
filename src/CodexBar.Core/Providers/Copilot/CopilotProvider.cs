@@ -333,6 +333,10 @@ public sealed class CopilotProvider : IUsageProvider
                 ErrorMessage = "Token expired or invalid. Run 'gh auth login'."
             };
         }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Copilot fetch failed for {User}", username);

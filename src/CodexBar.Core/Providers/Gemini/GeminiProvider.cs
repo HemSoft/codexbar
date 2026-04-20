@@ -198,6 +198,10 @@ public sealed class GeminiProvider : IUsageProvider
             return ProviderUsageResult.Failure(ProviderId.Gemini,
                 "Gemini OAuth token invalid. Run 'gemini' and complete login.");
         }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Gemini fetch failed");
@@ -239,7 +243,7 @@ public sealed class GeminiProvider : IUsageProvider
                     paidTier.TryGetProperty("id", out var paidTierId) &&
                     paidTierId.GetString() is "g1-pro-tier")
                 {
-                    _cachedTierName = "Pro";
+                    _cachedTierName = "Paid";
                 }
                 else if (root.TryGetProperty("currentTier", out var tier) &&
                     tier.TryGetProperty("id", out var tierId))
