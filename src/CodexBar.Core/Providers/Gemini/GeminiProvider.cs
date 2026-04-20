@@ -81,8 +81,15 @@ public sealed class GeminiProvider : IUsageProvider
     {
         var creds = ReadCredentials();
         if (creds is null)
+        {
+            // Distinguish "no file" from "file exists but unreadable/corrupted"
+            if (File.Exists(OAuthCredsPath))
+                return ProviderUsageResult.Failure(ProviderId.Gemini,
+                    $"Gemini credentials file exists but could not be read or is corrupted ({OAuthCredsPath}). Delete the file and run 'gemini' to re-authenticate.");
+
             return ProviderUsageResult.Failure(ProviderId.Gemini,
                 "No Gemini CLI credentials found. Run 'gemini' and complete login.");
+        }
 
         var accessToken = await GetValidAccessTokenAsync(ct);
         if (accessToken is null)

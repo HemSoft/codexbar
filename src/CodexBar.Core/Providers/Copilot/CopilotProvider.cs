@@ -46,6 +46,7 @@ public sealed class CopilotProvider : IUsageProvider
     // Cached account list — refreshed on startup or auth failure
     private readonly SemaphoreSlim _accountsLock = new(1, 1);
     private List<string>? _cachedAccounts;
+    private DateTime _emptyDiscoveryCachedUntil;
     private string? _lastDiscoveryError;
     private readonly ConcurrentDictionary<string, string> _tokenCache = new(StringComparer.OrdinalIgnoreCase);
 
@@ -139,11 +140,20 @@ public sealed class CopilotProvider : IUsageProvider
         try
         {
             if (_cachedAccounts is null or { Count: 0 })
-                _cachedAccounts = await DiscoverGhAccountsAsync(ct);
+            {
+                // Respect negative-result cache to avoid hammering gh when it's not installed/configured
+                if (DateTime.UtcNow < _emptyDiscoveryCachedUntil)
+                    return [];
 
-            // Don't cache empty results — allows re-discovery after user logs in
+                _cachedAccounts = await DiscoverGhAccountsAsync(ct);
+            }
+
+            // Cache empty results for 5 minutes to avoid repeated process spawning on persistent failures
             if (_cachedAccounts is { Count: 0 })
+            {
+                _emptyDiscoveryCachedUntil = DateTime.UtcNow.AddMinutes(5);
                 _cachedAccounts = null;
+            }
 
             return _cachedAccounts ?? [];
         }
@@ -434,6 +444,7 @@ public sealed class CopilotProvider : IUsageProvider
         try
         {
             _cachedAccounts = null;
+            _emptyDiscoveryCachedUntil = default;
         }
         finally
         {

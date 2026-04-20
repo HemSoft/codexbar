@@ -190,7 +190,7 @@ public sealed class MainViewModel : IDisposable
                 card.WeeklyText = null;
                 card.WeeklyPercent = 0;
                 card.IsHighUsage = false;
-                card.ShowUsagePercent = true;
+                card.ShowUsagePercent = false;
                 card.IsError = true;
                 continue;
             }
