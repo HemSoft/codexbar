@@ -23,6 +23,13 @@ public sealed record ProviderUsageResult
     /// <summary>When this result was fetched.</summary>
     public DateTimeOffset FetchedAt { get; init; } = DateTimeOffset.UtcNow;
 
+    /// <summary>
+    /// Per-subject usage items. Multi-account providers (e.g., Copilot) return
+    /// one item per account. Single-account providers return one item or leave null
+    /// (in which case <see cref="SessionUsage"/>/<see cref="WeeklyUsage"/> are used).
+    /// </summary>
+    public IReadOnlyList<UsageItem>? Items { get; init; }
+
     public static ProviderUsageResult Failure(ProviderId provider, string error) =>
         new()
         {

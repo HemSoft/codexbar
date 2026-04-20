@@ -121,6 +121,18 @@ public sealed class SettingsService
     }
 
     /// <summary>
+    /// Returns the configured Copilot account usernames.
+    /// </summary>
+    public IReadOnlyList<string> GetCopilotAccounts()
+    {
+        lock (_lock)
+        {
+            var settings = EnsureCached();
+            return settings.CopilotAccounts ?? new List<string>();
+        }
+    }
+
+    /// <summary>
     /// Returns the cached settings, initializing from disk if needed.
     /// Must be called while holding <see cref="_lock"/>. Does NOT deep-copy.
     /// </summary>

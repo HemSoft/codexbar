@@ -1,3 +1,5 @@
+using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Net.Http.Headers;
 using System.Text.Json;
 using CodexBar.Core.Configuration;
@@ -7,15 +9,14 @@ using Microsoft.Extensions.Logging;
 namespace CodexBar.Core.Providers.Copilot;
 
 /// <summary>
-/// Fetches GitHub Copilot usage via the Copilot internal API.
-/// Auth: resolves GitHub token from ~/.codexbar/settings.json, then GITHUB_TOKEN env var, then gh CLI hosts config.
-/// Endpoint: GET https://api.github.com/copilot_internal/user
+/// Fetches GitHub Copilot usage for one or more accounts via the Copilot internal API.
+/// <para>
+/// Multi-account: configured accounts in settings or auto-discovered from <c>gh auth status</c>.
+/// Per-account tokens resolved via <c>gh auth token --user &lt;name&gt;</c>.
+/// </para>
 /// </summary>
 public sealed class CopilotProvider : IUsageProvider
 {
-    // Defaults preserve the currently working behavior. Override these environment variables
-    // before starting the application to track upstream client/API version changes
-    // without code changes or redeploys. Values are read once at startup.
     private static readonly string EditorVersion = GetConfiguredValue(
         "CODEXBAR_COPILOT_EDITOR_VERSION",
         "vscode/1.96.2");
@@ -29,6 +30,8 @@ public sealed class CopilotProvider : IUsageProvider
         "CODEXBAR_COPILOT_API_VERSION",
         "2025-04-01");
 
+    private const double OverageCostPerRequest = 0.04;
+
     private static string GetConfiguredValue(string environmentVariableName, string fallbackValue)
     {
         var configuredValue = Environment.GetEnvironmentVariable(environmentVariableName);
@@ -38,6 +41,11 @@ public sealed class CopilotProvider : IUsageProvider
     private readonly ILogger<CopilotProvider> _logger;
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly SettingsService _settings;
+
+    // Cached account list — refreshed on startup, auth failure, or explicit refresh
+    private readonly object _accountsLock = new();
+    private List<string>? _cachedAccounts;
+    private readonly ConcurrentDictionary<string, string> _tokenCache = new(StringComparer.OrdinalIgnoreCase);
 
     public CopilotProvider(ILogger<CopilotProvider> logger, IHttpClientFactory httpClientFactory, SettingsService settings)
     {
@@ -66,10 +74,140 @@ public sealed class CopilotProvider : IUsageProvider
 
     public async Task<ProviderUsageResult> FetchUsageAsync(CancellationToken ct = default)
     {
-        var token = ResolveGitHubToken();
-        if (token is null)
+        if (!_settings.IsProviderEnabled(ProviderId.Copilot))
+            return ProviderUsageResult.Failure(ProviderId.Copilot, "Disabled in settings");
+
+        var accounts = GetAccountsToFetch();
+        if (accounts.Count == 0)
             return ProviderUsageResult.Failure(ProviderId.Copilot,
-                "No GitHub token found. Run 'gh auth login' first.");
+                "No Copilot accounts found. Add copilotAccounts to ~/.codexbar/settings.json or run 'gh auth login'.");
+
+        var items = new List<UsageItem>();
+        var accountResults = new List<CopilotAccountResult>();
+
+        var tasks = accounts.Select(async username =>
+        {
+            var result = await FetchAccountQuotaAsync(username, ct);
+            return (username, result);
+        });
+
+        foreach (var (username, result) in await Task.WhenAll(tasks))
+        {
+            accountResults.Add(result);
+            items.Add(ToUsageItem(username, result));
+        }
+
+        // Aggregate: use the first successful premium snapshot for the legacy SessionUsage field
+        var firstSuccess = accountResults.FirstOrDefault(r => r.Success && r.PremiumInteractions is not null);
+        UsageSnapshot? aggregateSession = null;
+        if (firstSuccess?.PremiumInteractions is not null)
+        {
+            aggregateSession = BuildUsageSnapshot(firstSuccess.PremiumInteractions,
+                firstSuccess.Plan, firstSuccess.QuotaResetDateUtc);
+        }
+
+        return new ProviderUsageResult
+        {
+            Provider = ProviderId.Copilot,
+            Success = accountResults.Any(r => r.Success),
+            SessionUsage = aggregateSession,
+            Items = items,
+            ErrorMessage = accountResults.All(r => !r.Success)
+                ? string.Join("; ", accountResults.Select(r => $"{r.Username}: {r.ErrorMessage}"))
+                : null
+        };
+    }
+
+    /// <summary>
+    /// Returns the list of accounts to fetch: from settings if configured, otherwise auto-discovered.
+    /// </summary>
+    private List<string> GetAccountsToFetch()
+    {
+        var configured = _settings.GetCopilotAccounts();
+        if (configured.Count > 0)
+            return configured.ToList();
+
+        // Auto-discover from gh CLI (thread-safe)
+        lock (_accountsLock)
+        {
+            _cachedAccounts ??= DiscoverGhAccounts();
+            return _cachedAccounts ?? [];
+        }
+    }
+
+    /// <summary>
+    /// Discovers all GitHub.com accounts from <c>gh auth status</c>.
+    /// </summary>
+    private List<string> DiscoverGhAccounts()
+    {
+        var accounts = new List<string>();
+        try
+        {
+            using var process = new Process
+            {
+                StartInfo = new ProcessStartInfo
+                {
+                    FileName = "gh",
+                    Arguments = "auth status --hostname github.com",
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true
+                }
+            };
+            process.Start();
+            // gh auth status writes to stderr
+            var stderr = process.StandardError.ReadToEnd();
+            process.StandardOutput.ReadToEnd();
+            if (!process.WaitForExit(10_000))
+            {
+                try { process.Kill(); } catch { /* best-effort */ }
+                _logger.LogWarning("gh auth status timed out");
+                return accounts;
+            }
+
+            // Parse "Logged in to github.com account <username>"
+            foreach (var line in stderr.Split('\n'))
+            {
+                var trimmed = line.Trim();
+                if (!trimmed.Contains("Logged in to github.com account", StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                var idx = trimmed.IndexOf("account ", StringComparison.OrdinalIgnoreCase);
+                if (idx < 0) continue;
+                var rest = trimmed[(idx + "account ".Length)..];
+                var spaceIdx = rest.IndexOf(' ');
+                var username = spaceIdx >= 0 ? rest[..spaceIdx] : rest;
+                if (!string.IsNullOrWhiteSpace(username))
+                    accounts.Add(username.Trim());
+            }
+
+            _logger.LogDebug("Discovered {Count} gh CLI accounts: {Accounts}",
+                accounts.Count, string.Join(", ", accounts));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to discover gh CLI accounts");
+        }
+
+        return accounts;
+    }
+
+    /// <summary>
+    /// Fetches quota for a single account.
+    /// </summary>
+    private async Task<CopilotAccountResult> FetchAccountQuotaAsync(string username, CancellationToken ct)
+    {
+        var token = ResolveTokenForUser(username);
+        if (token is null)
+        {
+            return new CopilotAccountResult
+            {
+                Username = username,
+                Success = false,
+                ErrorMessage = $"No token for '{username}'. Run 'gh auth login'."
+            };
+        }
 
         try
         {
@@ -87,167 +225,220 @@ public sealed class CopilotProvider : IUsageProvider
             response.EnsureSuccessStatusCode();
 
             var json = await response.Content.ReadAsStringAsync(ct);
-            using var doc = JsonDocument.Parse(json);
-            var root = doc.RootElement;
+            var data = JsonSerializer.Deserialize<CopilotUserResponse>(json);
 
-            UsageSnapshot? premium = null;
-            UsageSnapshot? chat = null;
-            string? plan = null;
-
-            if (root.TryGetProperty("copilotPlan", out var planElem))
-                plan = planElem.GetString();
-
-            if (root.TryGetProperty("quotaSnapshots", out var snapshots))
+            if (data is null)
             {
-                if (snapshots.TryGetProperty("premiumInteractions", out var premiumElem))
-                    premium = ParseQuotaSnapshot(premiumElem, "Premium");
-
-                if (snapshots.TryGetProperty("chat", out var chatElem))
-                    chat = ParseQuotaSnapshot(chatElem, "Chat");
+                return new CopilotAccountResult
+                {
+                    Username = username,
+                    Success = false,
+                    ErrorMessage = "Empty API response"
+                };
             }
 
-            _logger.LogDebug("Copilot ({Plan}): premium={PremPct:P0}",
-                plan ?? "unknown", premium?.UsedPercent ?? 0);
+            _logger.LogDebug("Copilot {User} ({Plan}): premium remaining={Remaining}/{Entitlement}",
+                username, data.CopilotPlan ?? "unknown",
+                data.QuotaSnapshots?.PremiumInteractions?.Remaining ?? 0,
+                data.QuotaSnapshots?.PremiumInteractions?.Entitlement ?? 0);
 
-            return new ProviderUsageResult
+            return new CopilotAccountResult
             {
-                Provider = ProviderId.Copilot,
-                Success = true,
-                SessionUsage = premium ?? chat,
-                // Copilot exposes "Premium" and "Chat" quota types,
-                // not session/weekly time windows. Mapping Chat into WeeklyUsage
-                // would cause downstream consumers to label it as "Weekly".
-                // TODO: Introduce a secondary quota concept for multi-bucket providers.
-                WeeklyUsage = null
+                Username = username,
+                Plan = data.CopilotPlan,
+                Organizations = data.OrganizationLoginList?.AsReadOnly(),
+                PremiumInteractions = data.QuotaSnapshots?.PremiumInteractions,
+                Chat = data.QuotaSnapshots?.Chat,
+                QuotaResetDateUtc = data.QuotaResetDateUtc,
+                Success = true
             };
         }
         catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.Unauthorized)
         {
-            return ProviderUsageResult.Failure(ProviderId.Copilot,
-                "GitHub token expired or invalid. Run 'gh auth login'.");
+            InvalidateTokenForUser(username);
+            return new CopilotAccountResult
+            {
+                Username = username,
+                Success = false,
+                ErrorMessage = "Token expired or invalid. Run 'gh auth login'."
+            };
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Copilot fetch failed");
-            return ProviderUsageResult.Failure(ProviderId.Copilot, ex.Message);
+            _logger.LogWarning(ex, "Copilot fetch failed for {User}", username);
+            return new CopilotAccountResult
+            {
+                Username = username,
+                Success = false,
+                ErrorMessage = ex.Message
+            };
         }
-    }
-
-    private static UsageSnapshot ParseQuotaSnapshot(JsonElement elem, string label)
-    {
-        var percentRemaining = 100.0;
-
-        if (elem.TryGetProperty("percentRemaining", out var pct) && pct.ValueKind == JsonValueKind.Number)
-            percentRemaining = Math.Clamp(pct.GetDouble(), 0.0, 100.0);
-
-        var usedPercent = Math.Clamp(1.0 - (percentRemaining / 100.0), 0.0, 1.0);
-
-        return new UsageSnapshot
-        {
-            UsedPercent = usedPercent,
-            UsageLabel = $"{label}: {usedPercent:P0} used"
-        };
     }
 
     /// <summary>
-    /// Resolves a GitHub token from: settings → GITHUB_TOKEN env → gh CLI hosts config.
+    /// Resolves a GitHub token for a specific user via <c>gh auth token --user</c>.
     /// </summary>
-    private string? ResolveGitHubToken()
+    private string? ResolveTokenForUser(string username)
     {
-        // 1. Check settings
-        var key = _settings.GetApiKey(ProviderId.Copilot);
-        if (!string.IsNullOrWhiteSpace(key)) return key;
+        if (_tokenCache.TryGetValue(username, out var cached))
+            return cached;
 
-        // 2. Check env var
-        key = Environment.GetEnvironmentVariable("GITHUB_TOKEN");
-        if (!string.IsNullOrWhiteSpace(key)) return key;
-
-        // 3. Read from gh CLI hosts.yml
-        return ReadGhCliToken();
-    }
-
-    private static IEnumerable<string> GetGhHostsFilePaths()
-    {
-        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-        var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-        if (!string.IsNullOrWhiteSpace(appData))
+        try
         {
-            var windowsPath = Path.GetFullPath(Path.Combine(appData, "GitHub CLI", "hosts.yml"));
-            if (seen.Add(windowsPath))
-                yield return windowsPath;
-        }
-
-        var xdgConfigHome = Environment.GetEnvironmentVariable("XDG_CONFIG_HOME");
-        if (!string.IsNullOrWhiteSpace(xdgConfigHome))
-        {
-            var xdgPath = Path.GetFullPath(Path.Combine(xdgConfigHome, "gh", "hosts.yml"));
-            if (seen.Add(xdgPath))
-                yield return xdgPath;
-        }
-
-        var userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        if (!string.IsNullOrWhiteSpace(userProfile))
-        {
-            var unixPath = Path.GetFullPath(Path.Combine(userProfile, ".config", "gh", "hosts.yml"));
-            if (seen.Add(unixPath))
-                yield return unixPath;
-
-            var macPath = Path.GetFullPath(Path.Combine(userProfile, "Library", "Application Support", "GitHub CLI", "hosts.yml"));
-            if (seen.Add(macPath))
-                yield return macPath;
-        }
-    }
-
-    private string? ReadGhCliToken()
-    {
-        foreach (var hostsFile in GetGhHostsFilePaths())
-        {
-            if (!File.Exists(hostsFile))
+            using var process = new Process
             {
-                _logger.LogDebug("gh CLI hosts.yml not found at {Path}", hostsFile);
-                continue;
-            }
-
-            try
-            {
-                // Simple YAML parsing — just looking for oauth_token under github.com
-                var lines = File.ReadAllLines(hostsFile);
-                var inGithubCom = false;
-                foreach (var line in lines)
+                StartInfo = new ProcessStartInfo
                 {
-                    var trimmed = line.TrimStart();
-                    if (trimmed.StartsWith("github.com:"))
-                    {
-                        inGithubCom = true;
-                        continue;
-                    }
-                    if (inGithubCom && trimmed.StartsWith("oauth_token:"))
-                    {
-                        var token = trimmed["oauth_token:".Length..].Trim();
-                        // Strip optional surrounding quotes (single or double)
-                        if (token.Length >= 2 &&
-                            ((token[0] == '"' && token[^1] == '"') ||
-                             (token[0] == '\'' && token[^1] == '\'')))
-                        {
-                            token = token[1..^1];
-                        }
-                        if (!string.IsNullOrWhiteSpace(token))
-                        {
-                            _logger.LogDebug("Found GitHub token from gh CLI at {Path}", hostsFile);
-                            return token;
-                        }
-                    }
-                    if (inGithubCom && !line.StartsWith(' ') && !line.StartsWith('\t') && trimmed.Length > 0)
-                        inGithubCom = false; // left github.com block
+                    FileName = "gh",
+                    Arguments = $"auth token --user {username}",
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true
                 }
-            }
-            catch (Exception ex)
+            };
+
+            process.Start();
+            var stdout = process.StandardOutput.ReadToEnd();
+            process.StandardError.ReadToEnd();
+
+            if (!process.WaitForExit(5000))
             {
-                _logger.LogWarning(ex, "Failed to read gh CLI hosts.yml at {Path}", hostsFile);
+                _logger.LogWarning("gh auth token --user {User} timed out", username);
+                try { process.Kill(); } catch { /* best-effort */ }
+                return null;
             }
+
+            if (process.ExitCode != 0) return null;
+
+            var token = stdout.Trim();
+            if (!string.IsNullOrWhiteSpace(token))
+            {
+                _tokenCache[username] = token;
+                _logger.LogDebug("Resolved token for {User} ({Length} chars)", username, token.Length);
+                return token;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Failed to get token for {User}", username);
         }
 
         return null;
+    }
+
+    private void InvalidateTokenForUser(string username)
+    {
+        _tokenCache.TryRemove(username, out _);
+        lock (_accountsLock)
+        {
+            _cachedAccounts = null;
+        }
+    }
+
+    private static UsageItem ToUsageItem(string username, CopilotAccountResult result)
+    {
+        if (!result.Success)
+        {
+            return new UsageItem
+            {
+                Key = $"copilot:{username}",
+                DisplayName = $"Copilot · {username}",
+                Success = false,
+                ErrorMessage = result.ErrorMessage
+            };
+        }
+
+        var premium = result.PremiumInteractions;
+        UsageSnapshot? primaryUsage = null;
+
+        if (premium is not null)
+        {
+            primaryUsage = BuildUsageSnapshot(premium, result.Plan, result.QuotaResetDateUtc);
+        }
+
+        return new UsageItem
+        {
+            Key = $"copilot:{username}",
+            DisplayName = FormatDisplayName(username, result.Plan),
+            PrimaryUsage = primaryUsage,
+            Success = true
+        };
+    }
+
+    private static string FormatDisplayName(string username, string? plan)
+    {
+        var planLabel = plan switch
+        {
+            "enterprise" => "Ent",
+            "individual_pro" => "Pro",
+            "business" => "Biz",
+            _ => plan?.Replace("_", " ")
+        };
+
+        return planLabel is not null ? $"Copilot · {username} ({planLabel})" : $"Copilot · {username}";
+    }
+
+    private static UsageSnapshot BuildUsageSnapshot(CopilotQuotaSnapshot premium, string? plan, string? resetDateUtc)
+    {
+        double usedPercent;
+        string usageLabel;
+
+        if (premium.Unlimited)
+        {
+            usedPercent = 0;
+            usageLabel = "Unlimited";
+        }
+        else if (premium.Entitlement <= 0)
+        {
+            usedPercent = 0;
+            usageLabel = "No quota";
+        }
+        else
+        {
+            var used = premium.Entitlement - premium.Remaining;
+            usedPercent = (double)used / premium.Entitlement;
+
+            var overageRequests = ComputeOverageRequests(premium);
+            if (overageRequests > 0)
+            {
+                var overageCost = overageRequests * OverageCostPerRequest;
+                usageLabel = $"{used:N0} / {premium.Entitlement:N0} (+{overageRequests:N0} overage, ${overageCost:F2})";
+            }
+            else
+            {
+                usageLabel = $"{used:N0} / {premium.Entitlement:N0} premium";
+            }
+        }
+
+        DateTimeOffset? resetsAt = null;
+        string? resetDescription = null;
+        if (resetDateUtc is not null && DateTimeOffset.TryParse(resetDateUtc, out var parsed))
+        {
+            resetsAt = parsed;
+            var remaining = parsed - DateTimeOffset.UtcNow;
+            resetDescription = remaining.TotalDays switch
+            {
+                < 0 => "Reset overdue",
+                < 1 => $"Resets in {remaining.Hours}h {remaining.Minutes}m",
+                < 2 => "Resets tomorrow",
+                _ => $"Resets in {(int)remaining.TotalDays}d"
+            };
+        }
+
+        return new UsageSnapshot
+        {
+            UsedPercent = Math.Clamp(usedPercent, 0.0, 1.0),
+            UsageLabel = usageLabel,
+            ResetsAt = resetsAt,
+            ResetDescription = resetDescription
+        };
+    }
+
+    private static int ComputeOverageRequests(CopilotQuotaSnapshot premium)
+    {
+        var overageByCount = Math.Max(0, premium.OverageCount);
+        var overageByRemaining = Math.Max(0, -premium.Remaining);
+        return Math.Max(overageByCount, overageByRemaining);
     }
 }

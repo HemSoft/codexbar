@@ -8,7 +8,7 @@
         mc:Ignorable="d"
         d:DataContext="{d:DesignInstance Type=vm:MainViewModel, IsDesignTimeCreatable=False}"
         Title="CodexBar"
-        Height="420" Width="320"
+        Height="600" Width="320"
         WindowStyle="None"
         AllowsTransparency="True"
         Background="Transparent"
@@ -59,10 +59,12 @@
                        Foreground="{StaticResource TextPrimaryBrush}"
                        Margin="0,0,0,12" />
 
-            <!-- Provider cards -->
-            <ItemsControl Grid.Row="1"
-                          ItemsSource="{Binding Providers}">
-                <ItemsControl.ItemTemplate>
+            <!-- Provider cards (scrollable) -->
+            <ScrollViewer Grid.Row="1"
+                          VerticalScrollBarVisibility="Auto"
+                          HorizontalScrollBarVisibility="Disabled">
+                <ItemsControl ItemsSource="{Binding Providers}">
+                    <ItemsControl.ItemTemplate>
                     <DataTemplate>
                         <Border Background="{StaticResource SurfaceBrush}"
                                 CornerRadius="8"
@@ -126,7 +128,8 @@
                         </Border>
                     </DataTemplate>
                 </ItemsControl.ItemTemplate>
-            </ItemsControl>
+                </ItemsControl>
+            </ScrollViewer>
 
             <!-- Footer -->
             <StackPanel Grid.Row="2" Orientation="Horizontal"
