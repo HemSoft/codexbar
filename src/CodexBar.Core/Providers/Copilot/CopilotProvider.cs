@@ -364,10 +364,16 @@ public sealed class CopilotProvider : IUsageProvider
 
         var premium = result.PremiumInteractions;
         UsageSnapshot? primaryUsage = null;
+        UsageSnapshot? secondaryUsage = null;
 
         if (premium is not null)
         {
-            primaryUsage = BuildUsageSnapshot(premium, result.QuotaResetDateUtc);
+            primaryUsage = BuildUsageSnapshot(premium, result.QuotaResetDateUtc, "premium");
+        }
+
+        if (result.Chat is not null)
+        {
+            secondaryUsage = BuildUsageSnapshot(result.Chat, result.QuotaResetDateUtc, "chat");
         }
 
         return new UsageItem
@@ -375,6 +381,7 @@ public sealed class CopilotProvider : IUsageProvider
             Key = $"copilot:{username}",
             DisplayName = FormatDisplayName(username, result.Plan),
             PrimaryUsage = primaryUsage,
+            SecondaryUsage = secondaryUsage,
             Success = true
         };
     }
@@ -392,7 +399,7 @@ public sealed class CopilotProvider : IUsageProvider
         return planLabel is not null ? $"Copilot · {username} ({planLabel})" : $"Copilot · {username}";
     }
 
-    private static UsageSnapshot BuildUsageSnapshot(CopilotQuotaSnapshot premium, string? resetDateUtc)
+    private static UsageSnapshot BuildUsageSnapshot(CopilotQuotaSnapshot premium, string? resetDateUtc, string quotaLabel = "premium")
     {
         double usedPercent;
         string usageLabel;
@@ -420,7 +427,7 @@ public sealed class CopilotProvider : IUsageProvider
             }
             else
             {
-                usageLabel = $"{used:N0} / {premium.Entitlement:N0} premium";
+                usageLabel = $"{used:N0} / {premium.Entitlement:N0} {quotaLabel}";
             }
         }
 

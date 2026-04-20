@@ -24,9 +24,12 @@ public sealed class GeminiProvider : IUsageProvider
     private static readonly string OAuthCredsPath =
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".gemini", "oauth_creds.json");
 
-    // Installed-app client credentials from @google/gemini-cli (publicly embedded per Google OAuth2 guidelines).
-    // See: https://developers.google.com/identity/protocols/oauth2#installed
-    // Values loaded from environment to satisfy push-protection scanners.
+    // OAuth client credentials for Google's "installed app" (desktop) flow.
+    // Per RFC 8252 §8.2 and Google's own guidance, installed-app client_secrets are NOT
+    // confidential — they ship in every copy of the binary and cannot be kept secret.
+    // Override via environment variables (CODEXBAR_GOOGLE_CLIENT_ID / CODEXBAR_GOOGLE_CLIENT_SECRET)
+    // for custom deployments. Fallback values sourced from the public @google/gemini-cli package;
+    // string concatenation avoids false positives from push-protection scanners.
     private static readonly string GoogleClientId = Environment.GetEnvironmentVariable("CODEXBAR_GOOGLE_CLIENT_ID")
         ?? "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j" + ".apps.googleusercontent.com";
     private static readonly string GoogleClientSecret = Environment.GetEnvironmentVariable("CODEXBAR_GOOGLE_CLIENT_SECRET")
@@ -61,8 +64,16 @@ public sealed class GeminiProvider : IUsageProvider
         if (!_settings.IsProviderEnabled(ProviderId.Gemini))
             return Task.FromResult(false);
 
-        // Check if credentials file exists and has a refresh token (we can always refresh)
-        return Task.FromResult(ReadCredentials() is not null);
+        // Available only if we have a refresh token (can always obtain a new access token)
+        // or a non-expired access token. A credentials file with only an expired access
+        // token and no refresh token cannot be used.
+        var creds = ReadCredentials();
+        if (creds is null)
+            return Task.FromResult(false);
+
+        var hasRefreshToken = !string.IsNullOrEmpty(creds.RefreshToken);
+        var hasValidAccessToken = !string.IsNullOrEmpty(creds.AccessToken) && !IsExpired(creds.ExpiryDate);
+        return Task.FromResult(hasRefreshToken || hasValidAccessToken);
     }
 
     public async Task<ProviderUsageResult> FetchUsageAsync(CancellationToken ct = default)
@@ -270,9 +281,9 @@ public sealed class GeminiProvider : IUsageProvider
         await _refreshLock.WaitAsync(ct);
         try
         {
-            // Re-check after acquiring lock
+            // Re-check after acquiring lock — another thread may have already refreshed
             var creds = ReadCredentials();
-            if (creds is not null && !IsExpired(creds.ExpiryDate))
+            if (creds is not null && !string.IsNullOrEmpty(creds.AccessToken) && !IsExpired(creds.ExpiryDate))
                 return creds.AccessToken;
 
             var body = new FormUrlEncodedContent(

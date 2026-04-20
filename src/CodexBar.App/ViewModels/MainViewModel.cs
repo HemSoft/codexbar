@@ -179,6 +179,8 @@ public sealed class MainViewModel : IDisposable
                 card.StatusText = item.ErrorMessage ?? "Error";
                 card.UsedPercent = 0;
                 card.ResetText = null;
+                card.WeeklyText = null;
+                card.WeeklyPercent = 0;
                 card.IsHighUsage = false;
                 card.ShowUsagePercent = true;
                 card.IsError = true;
@@ -246,7 +248,7 @@ public sealed class ProviderCardViewModel : INotifyPropertyChanged
 {
     public ProviderId ProviderId { get; init; }
 
-    /// <summary>Stable key for reconciliation (e.g., "claude", "copilot:HemSoft").</summary>
+    /// <summary>Stable key for reconciliation (e.g., "gemini", "copilot:HemSoft").</summary>
     public string CardKey { get; init; } = "";
 
     private string _displayName = "";

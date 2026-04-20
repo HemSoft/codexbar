@@ -7,7 +7,7 @@ namespace CodexBar.Core.Models;
 /// </summary>
 public sealed record UsageItem
 {
-    /// <summary>Stable key for reconciliation (e.g., "claude", "copilot:HemSoft").</summary>
+    /// <summary>Stable key for reconciliation (e.g., "gemini", "copilot:HemSoft").</summary>
     public required string Key { get; init; }
 
     /// <summary>Display name shown on the card (e.g., "Copilot · HemSoft").</summary>
