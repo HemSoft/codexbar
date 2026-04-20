@@ -3,7 +3,8 @@ namespace CodexBar.Core.Models;
 /// <summary>
 /// A single usage item within a provider result. Providers that track multiple
 /// subjects (e.g., Copilot with multiple GitHub accounts) return one item per subject.
-/// Single-subject providers return exactly one item.
+/// Single-subject providers may return one item or leave
+/// <see cref="ProviderUsageResult.Items"/> null and use the top-level snapshots instead.
 /// </summary>
 public sealed record UsageItem
 {

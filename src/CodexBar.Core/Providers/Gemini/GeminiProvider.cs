@@ -181,6 +181,7 @@ public sealed class GeminiProvider : IUsageProvider
         catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.Unauthorized)
         {
             _tierFetched = false; // Reset tier cache on auth failure
+            _cachedTierName = null;
 
             // Token may be revoked but not yet expired — force refresh and retry once
             if (retryOn401)
