@@ -66,16 +66,11 @@ public sealed class GeminiProvider : IUsageProvider
         if (!_settings.IsProviderEnabled(ProviderId.Gemini))
             return Task.FromResult(false);
 
-        // Available only if we have a refresh token (can always obtain a new access token)
-        // or a non-expired access token. A credentials file with only an expired access
-        // token and no refresh token cannot be used.
-        var creds = ReadCredentials();
-        if (creds is null)
-            return Task.FromResult(false);
-
-        var hasRefreshToken = !string.IsNullOrEmpty(creds.RefreshToken);
-        var hasValidAccessToken = !string.IsNullOrEmpty(creds.AccessToken) && !IsExpired(creds.ExpiryDate);
-        return Task.FromResult(hasRefreshToken || hasValidAccessToken);
+        // Return true whenever a credentials file exists with any token info.
+        // Even if the token is expired and unrefreshable, FetchUsageAsync should
+        // run so it can return an actionable failure message to the UI instead
+        // of leaving the card stuck in "Waiting…" state.
+        return Task.FromResult(ReadCredentials() is not null);
     }
 
     public async Task<ProviderUsageResult> FetchUsageAsync(CancellationToken ct = default)
@@ -85,10 +80,15 @@ public sealed class GeminiProvider : IUsageProvider
 
     private async Task<ProviderUsageResult> FetchUsageInternalAsync(bool retryOn401, CancellationToken ct)
     {
+        var creds = ReadCredentials();
+        if (creds is null)
+            return ProviderUsageResult.Failure(ProviderId.Gemini,
+                "No Gemini CLI credentials found. Run 'gemini' and complete login.");
+
         var accessToken = await GetValidAccessTokenAsync(ct);
         if (accessToken is null)
             return ProviderUsageResult.Failure(ProviderId.Gemini,
-                "No Gemini CLI credentials found. Run 'gemini' and complete login.");
+                "Gemini access token is expired or revoked and cannot be refreshed. Run 'gemini' to re-authenticate.");
 
         // Fetch tier info once (cached for app lifetime).
         // Volatile read ensures we see the latest value from concurrent callers.
@@ -185,11 +185,11 @@ public sealed class GeminiProvider : IUsageProvider
             // Token may be revoked but not yet expired — force refresh and retry once
             if (retryOn401)
             {
-                var creds = ReadCredentials();
-                if (!string.IsNullOrEmpty(creds?.RefreshToken))
+                var retryCreds = ReadCredentials();
+                if (!string.IsNullOrEmpty(retryCreds?.RefreshToken))
                 {
                     _logger.LogDebug("Gemini 401 — forcing token refresh and retrying");
-                    var newToken = await RefreshAccessTokenAsync(creds.RefreshToken, ct, force: true);
+                    var newToken = await RefreshAccessTokenAsync(retryCreds.RefreshToken, ct, force: true);
                     if (newToken is not null)
                         return await FetchUsageInternalAsync(retryOn401: false, ct);
                 }
@@ -458,8 +458,10 @@ public sealed class GeminiProvider : IUsageProvider
                 }
             }
 
-            // Build a minimal object when the file is missing, empty, or corrupted
-            root ??= new JsonObject();
+            // Normalize to a JsonObject — if the file contains valid JSON of a
+            // non-object type (e.g., array or value) due to corruption, treat it
+            // as corrupted and start fresh.
+            root = root as JsonObject ?? new JsonObject();
 
             root["access_token"] = accessToken;
             root["expiry_date"] = expiryDateMs;
