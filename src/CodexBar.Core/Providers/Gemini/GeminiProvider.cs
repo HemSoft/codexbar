@@ -66,11 +66,10 @@ public sealed class GeminiProvider : IUsageProvider
         if (!_settings.IsProviderEnabled(ProviderId.Gemini))
             return Task.FromResult(false);
 
-        // Return true whenever a credentials file exists with any token info.
-        // Even if the token is expired and unrefreshable, FetchUsageAsync should
-        // run so it can return an actionable failure message to the UI instead
-        // of leaving the card stuck in "Waiting…" state.
-        return Task.FromResult(ReadCredentials() is not null);
+        // Return true whenever a credentials file exists on disk, even if it is
+        // corrupted or unreadable.  FetchUsageAsync will surface an actionable
+        // error message to the UI instead of leaving the card stuck in "Waiting…".
+        return Task.FromResult(File.Exists(OAuthCredsPath));
     }
 
     public async Task<ProviderUsageResult> FetchUsageAsync(CancellationToken ct = default)

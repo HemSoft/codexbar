@@ -206,6 +206,15 @@ public sealed class MainViewModel : IDisposable
                 card.ShowUsagePercent = false;
                 card.ResetText = null;
             }
+            else if (item.SecondaryUsage is not null)
+            {
+                // PrimaryUsage missing but secondary quota exists — show it as the main display.
+                card.UsedPercent = item.SecondaryUsage.UsedPercent;
+                card.StatusText = item.SecondaryUsage.UsageLabel ?? $"{item.SecondaryUsage.UsedPercent:P0} used";
+                card.ResetText = item.SecondaryUsage.ResetDescription;
+                card.IsHighUsage = item.SecondaryUsage.UsedPercent >= 0.8;
+                card.ShowUsagePercent = !item.SecondaryUsage.IsUnlimited;
+            }
             else
             {
                 card.StatusText = "No data";
