@@ -523,8 +523,15 @@ public sealed class CopilotProvider : IUsageProvider
             var overageRequests = ComputeOverageRequests(quota);
             if (overageRequests > 0)
             {
-                var overageCost = overageRequests * OverageCostPerRequest;
-                usageLabel = $"{used:N0} / {quota.Entitlement:N0} {FormatQuotaLabel(quotaLabel)} (+{overageRequests:N0} overage, ${overageCost:F2})";
+                if (quota.OveragePermitted)
+                {
+                    var overageCost = overageRequests * OverageCostPerRequest;
+                    usageLabel = $"{used:N0} / {quota.Entitlement:N0} {FormatQuotaLabel(quotaLabel)} (+{overageRequests:N0} overage, ${overageCost:F2})";
+                }
+                else
+                {
+                    usageLabel = $"{used:N0} / {quota.Entitlement:N0} {FormatQuotaLabel(quotaLabel)} (over limit)";
+                }
             }
             else
             {

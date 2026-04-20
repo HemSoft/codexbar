@@ -134,7 +134,8 @@ public sealed class MainViewModel : IDisposable
                     CardKey = errorKey,
                     DisplayName = "Copilot",
                     StatusText = result.ErrorMessage ?? "No accounts",
-                    IsError = true
+                    IsError = true,
+                    ShowUsagePercent = false
                 };
                 Providers.Add(errorCard);
                 _cardsByKey[errorKey] = errorCard;
@@ -143,6 +144,12 @@ public sealed class MainViewModel : IDisposable
             {
                 errorCard.StatusText = result.ErrorMessage ?? "No accounts";
                 errorCard.IsError = true;
+                errorCard.ShowUsagePercent = false;
+                errorCard.UsedPercent = 0;
+                errorCard.WeeklyText = null;
+                errorCard.WeeklyPercent = 0;
+                errorCard.ResetText = null;
+                errorCard.IsHighUsage = false;
             }
             return;
         }
