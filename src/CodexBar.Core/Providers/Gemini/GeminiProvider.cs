@@ -176,12 +176,17 @@ public sealed class GeminiProvider : IUsageProvider
             _logger.LogDebug("Gemini: pro={ProPct:P0}, flash={FlashPct:P0}",
                 proSnapshot?.UsedPercent ?? 0, flashSnapshot?.UsedPercent ?? 0);
 
+            // When only Flash is available (no Pro bucket), promote Flash to
+            // SessionUsage so the UI progress bar displays it instead of "No data".
+            var sessionUsage = proSnapshot ?? flashSnapshot;
+            var weeklyUsage = proSnapshot is not null ? flashSnapshot : null;
+
             return new ProviderUsageResult
             {
                 Provider = ProviderId.Gemini,
                 Success = true,
-                SessionUsage = proSnapshot,
-                WeeklyUsage = flashSnapshot
+                SessionUsage = sessionUsage,
+                WeeklyUsage = weeklyUsage
             };
         }
         catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.Unauthorized)

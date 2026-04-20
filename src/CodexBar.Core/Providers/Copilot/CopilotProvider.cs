@@ -417,11 +417,18 @@ public sealed class CopilotProvider : IUsageProvider
                 return null;
             }
 
-            await stderrTask; // drain stderr
+            var stderrOutput = await stderrTask;
 
             if (process.ExitCode != 0)
             {
                 await stdoutTask; // drain stdout
+                var sanitizedStderr = string.IsNullOrWhiteSpace(stderrOutput)
+                    ? "(no stderr)"
+                    : stderrOutput.Trim().Length > 200
+                        ? stderrOutput.Trim()[..200] + "…"
+                        : stderrOutput.Trim();
+                _logger.LogDebug("gh auth token --user {User} exited {Code}: {Stderr}",
+                    username, process.ExitCode, sanitizedStderr);
                 return null;
             }
 
