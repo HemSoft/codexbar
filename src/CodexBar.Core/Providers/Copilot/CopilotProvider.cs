@@ -515,7 +515,7 @@ public sealed class CopilotProvider : IUsageProvider
         }
         else
         {
-            var used = quota.Entitlement - quota.Remaining;
+            var used = Math.Min(quota.Entitlement, quota.Entitlement - quota.Remaining);
             usedPercent = (double)used / quota.Entitlement;
 
             var overageRequests = ComputeOverageRequests(quota);

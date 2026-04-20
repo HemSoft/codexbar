@@ -204,12 +204,15 @@ public sealed class MainViewModel : IDisposable
                 card.UsedPercent = 0;
                 card.IsHighUsage = false;
                 card.ShowUsagePercent = false;
+                card.ResetText = null;
             }
             else
             {
                 card.StatusText = "No data";
                 card.UsedPercent = 0;
                 card.ShowUsagePercent = true;
+                card.ResetText = null;
+                card.IsHighUsage = false;
             }
 
             if (item.SecondaryUsage is not null)
