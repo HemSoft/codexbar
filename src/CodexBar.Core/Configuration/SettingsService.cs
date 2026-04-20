@@ -63,6 +63,7 @@ public sealed class SettingsService
             var sanitized = new AppSettings
             {
                 RefreshIntervalSeconds = settings.RefreshIntervalSeconds,
+                CopilotAccounts = (settings.CopilotAccounts ?? []).ToList(),
                 Providers = providers.ToDictionary(
                     kvp => kvp.Key,
                     kvp => new ProviderSettings
@@ -77,10 +78,10 @@ public sealed class SettingsService
             var json = JsonSerializer.Serialize(sanitized, JsonOptions);
 
             // Write to a temp file and atomically move into place.
-            // Permissions are set at creation time (see CreateRestrictedFileStream)
+            // Permissions are set at creation time (see FileSecurityHelper.WriteRestrictedFile)
             // so no window exists where the file is world-readable.
             var tempPath = SettingsPath + ".tmp";
-            WriteRestrictedFile(tempPath, json);
+            FileSecurityHelper.WriteRestrictedFile(tempPath, json);
             try
             {
                 File.Move(tempPath, SettingsPath, overwrite: true);
@@ -117,6 +118,18 @@ public sealed class SettingsService
         {
             var settings = EnsureCached();
             return !settings.Providers.TryGetValue(providerId.ToString(), out var ps) || ps is null || ps.Enabled;
+        }
+    }
+
+    /// <summary>
+    /// Returns the configured Copilot account usernames.
+    /// </summary>
+    public IReadOnlyList<string> GetCopilotAccounts()
+    {
+        lock (_lock)
+        {
+            var settings = EnsureCached();
+            return (settings.CopilotAccounts ?? []).ToList();
         }
     }
 
@@ -173,7 +186,6 @@ public sealed class SettingsService
         RefreshIntervalSeconds = 120,
         Providers = new Dictionary<string, ProviderSettings>
         {
-            [ProviderId.Claude.ToString()] = new() { Enabled = true },
             [ProviderId.Gemini.ToString()] = new() { Enabled = true },
             [ProviderId.OpenRouter.ToString()] = new() { Enabled = true },
             [ProviderId.Copilot.ToString()] = new() { Enabled = true }
@@ -183,6 +195,7 @@ public sealed class SettingsService
     private static AppSettings DeepCopy(AppSettings source) => new()
     {
         RefreshIntervalSeconds = source.RefreshIntervalSeconds,
+        CopilotAccounts = (source.CopilotAccounts ?? []).ToList(),
         Providers = (source.Providers ?? new Dictionary<string, ProviderSettings>())
             .ToDictionary(
                 kvp => kvp.Key,
@@ -202,64 +215,6 @@ public sealed class SettingsService
         {
             providers[key] ??= new ProviderSettings();
         }
-    }
-
-    /// <summary>
-    /// Creates a file with owner-only permissions and writes content to it,
-    /// ensuring no window exists where the file has default (world-readable) permissions.
-    /// </summary>
-    private void WriteRestrictedFile(string filePath, string content)
-    {
-        using var fs = CreateRestrictedFileStream(filePath);
-        using var writer = new StreamWriter(fs);
-        writer.Write(content);
-    }
-
-    /// <summary>
-    /// Creates a <see cref="FileStream"/> for a new file with owner-only permissions set at creation time.
-    /// On Windows: uses a <see cref="FileSecurity"/> ACL granting FullControl only to the current user.
-    /// On Unix: uses <see cref="FileStreamOptions.UnixCreateMode"/> to set chmod 600 atomically.
-    /// </summary>
-    private static FileStream CreateRestrictedFileStream(string filePath)
-    {
-#if WINDOWS
-        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-        {
-            var currentUser = WindowsIdentity.GetCurrent().User;
-            if (currentUser is not null)
-            {
-                var security = new FileSecurity();
-                security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
-                security.AddAccessRule(new FileSystemAccessRule(
-                    currentUser,
-                    FileSystemRights.FullControl,
-                    AccessControlType.Allow));
-
-                return new FileInfo(filePath).Create(
-                    FileMode.Create,
-                    FileSystemRights.FullControl,
-                    FileShare.None,
-                    bufferSize: 4096,
-                    FileOptions.None,
-                    security);
-            }
-
-            // Windows identity unavailable; create with default permissions.
-            return new FileStream(filePath, FileMode.Create, FileAccess.Write);
-        }
-        else
-#endif
-        if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-        {
-            return new FileStream(filePath, new FileStreamOptions
-            {
-                Mode = FileMode.Create,
-                Access = FileAccess.Write,
-                UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite
-            });
-        }
-
-        return new FileStream(filePath, FileMode.Create, FileAccess.Write);
     }
 
     /// <summary>

@@ -8,10 +8,9 @@ Built with C# / WPF / .NET 9 — native Windows, no Electron overhead.
 
 | Provider | Auth Method | What's Tracked |
 |----------|-------------|----------------|
-| **Claude** | OAuth (Claude CLI credentials) | Session (5h), Weekly usage |
-| **Gemini** | OAuth (gcloud CLI credentials) | Quota |
+| **Gemini** | OAuth (Gemini CLI credentials) | Pro + Flash quota |
 | **OpenRouter** | API Key | Credits, usage across models |
-| **Copilot** | GitHub Device Flow | Usage limits |
+| **Copilot** | GitHub CLI (`gh auth`) | Usage limits per account |
 
 ## Features
 
@@ -39,10 +38,9 @@ dotnet run --project src\CodexBar.App
 
 ### Provider setup
 
-1. **Claude**: Install [Claude CLI](https://docs.anthropic.com/en/docs/claude-cli) and run `claude login`
-2. **Gemini**: Install [Google Cloud CLI](https://cloud.google.com/sdk/docs/install) and run `gcloud auth login`
-3. **OpenRouter**: Get an API key from [openrouter.ai/keys](https://openrouter.ai/keys) and add it in Settings
-4. **Copilot**: Uses GitHub Device Flow — authenticate from Settings
+1. **Gemini**: Install [Gemini CLI](https://github.com/google-gemini/gemini-cli) and run `gemini` to complete OAuth login
+2. **OpenRouter**: Get an API key from [openrouter.ai/keys](https://openrouter.ai/keys) and add it in Settings
+3. **Copilot**: Uses GitHub CLI tokens — run `gh auth login` for each account
 
 ## Architecture
 
@@ -51,7 +49,6 @@ CodexBar.sln
 ├── src/CodexBar.Core/          # Provider abstractions, models, fetch logic
 │   ├── Models/                 # UsageSnapshot, ProviderStatus, etc.
 │   ├── Providers/              # One folder per provider
-│   │   ├── Claude/
 │   │   ├── Gemini/
 │   │   ├── OpenRouter/
 │   │   └── Copilot/
