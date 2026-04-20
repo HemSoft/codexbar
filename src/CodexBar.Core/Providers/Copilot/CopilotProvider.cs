@@ -489,6 +489,13 @@ public sealed class CopilotProvider : IUsageProvider
         return planLabel is not null ? $"Copilot · {username} ({planLabel})" : $"Copilot · {username}";
     }
 
+    private static string FormatQuotaLabel(string quotaLabel) => quotaLabel switch
+    {
+        "premium" => "Premium interactions",
+        "chat" => "Chat",
+        _ => quotaLabel
+    };
+
     private static UsageSnapshot BuildUsageSnapshot(CopilotQuotaSnapshot quota, string? resetDateUtc, string quotaLabel = "premium")
     {
         double usedPercent;
@@ -515,11 +522,11 @@ public sealed class CopilotProvider : IUsageProvider
             if (overageRequests > 0)
             {
                 var overageCost = overageRequests * OverageCostPerRequest;
-                usageLabel = $"{used:N0} / {quota.Entitlement:N0} (+{overageRequests:N0} overage, ${overageCost:F2})";
+                usageLabel = $"{used:N0} / {quota.Entitlement:N0} {FormatQuotaLabel(quotaLabel)} (+{overageRequests:N0} overage, ${overageCost:F2})";
             }
             else
             {
-                usageLabel = $"{used:N0} / {quota.Entitlement:N0} {quotaLabel}";
+                usageLabel = $"{used:N0} / {quota.Entitlement:N0} {FormatQuotaLabel(quotaLabel)}";
             }
         }
 

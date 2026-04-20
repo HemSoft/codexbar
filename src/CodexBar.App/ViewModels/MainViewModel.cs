@@ -80,6 +80,7 @@ public sealed class MainViewModel : IDisposable
                 card.StatusText = result.SessionUsage.UsageLabel ?? $"{result.SessionUsage.UsedPercent:P0} used";
                 card.ResetText = result.SessionUsage.ResetDescription;
                 card.IsHighUsage = result.SessionUsage.UsedPercent >= 0.8;
+                card.ShowUsagePercent = !result.SessionUsage.IsUnlimited;
             }
             else if (result.CreditsRemaining is not null)
             {
