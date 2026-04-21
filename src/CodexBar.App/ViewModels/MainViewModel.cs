@@ -20,10 +20,10 @@ public sealed class MainViewModel : IDisposable
         _refreshService = refreshService;
         _refreshService.UsageUpdated += OnUsageUpdated;
 
-        // Initialize cards for non-Copilot providers (Copilot cards are dynamic)
+        // Initialize cards for non-Copilot/non-Claude providers (those use dynamic cards via Items)
         foreach (ProviderId id in Enum.GetValues<ProviderId>())
         {
-            if (id == ProviderId.Copilot) continue;
+            if (id is ProviderId.Copilot or ProviderId.Claude) continue;
 
             var card = new ProviderCardViewModel
             {
@@ -45,6 +45,12 @@ public sealed class MainViewModel : IDisposable
             if (id == ProviderId.Copilot)
             {
                 ReconcileCopilotCards(result);
+                return;
+            }
+
+            if (id == ProviderId.Claude)
+            {
+                ReconcileItemCards(ProviderId.Claude, "claude:", result);
                 return;
             }
 
@@ -105,18 +111,26 @@ public sealed class MainViewModel : IDisposable
     /// <summary>
     /// Reconciles Copilot cards: update existing, add new, remove stale.
     /// </summary>
-    private void ReconcileCopilotCards(ProviderUsageResult result)
+    private void ReconcileCopilotCards(ProviderUsageResult result) =>
+        ReconcileItemCards(ProviderId.Copilot, "copilot:", result);
+
+    /// <summary>
+    /// Generic reconciliation for providers that use per-item cards (e.g., Copilot, Claude).
+    /// </summary>
+    private void ReconcileItemCards(ProviderId providerId, string keyPrefix, ProviderUsageResult result)
     {
         var items = result.Items;
+        var errorKey = $"{keyPrefix}error";
+        var providerDisplayName = providerId.ToString();
 
         // If no items and overall failure, show a single error card
         if (items is null || items.Count == 0)
         {
-            // Remove stale copilot account cards so they don't linger alongside the error
-            var staleCopilotKeys = _cardsByKey.Keys
-                .Where(k => k.StartsWith("copilot:", StringComparison.OrdinalIgnoreCase) && k != "copilot:error")
+            // Remove stale account cards so they don't linger alongside the error
+            var staleAccountKeys = _cardsByKey.Keys
+                .Where(k => k.StartsWith(keyPrefix, StringComparison.OrdinalIgnoreCase) && k != errorKey)
                 .ToList();
-            foreach (var key in staleCopilotKeys)
+            foreach (var key in staleAccountKeys)
             {
                 if (_cardsByKey.TryGetValue(key, out var staleCard))
                 {
@@ -125,14 +139,13 @@ public sealed class MainViewModel : IDisposable
                 }
             }
 
-            var errorKey = "copilot:error";
             if (!_cardsByKey.TryGetValue(errorKey, out var errorCard))
             {
                 errorCard = new ProviderCardViewModel
                 {
-                    ProviderId = ProviderId.Copilot,
+                    ProviderId = providerId,
                     CardKey = errorKey,
-                    DisplayName = "Copilot",
+                    DisplayName = providerDisplayName,
                     StatusText = result.ErrorMessage ?? "No accounts",
                     IsError = true,
                     ShowUsagePercent = false
@@ -155,10 +168,10 @@ public sealed class MainViewModel : IDisposable
         }
 
         // Remove stale error card if items arrived
-        if (_cardsByKey.TryGetValue("copilot:error", out var staleError))
+        if (_cardsByKey.TryGetValue(errorKey, out var staleError))
         {
             Providers.Remove(staleError);
-            _cardsByKey.Remove("copilot:error");
+            _cardsByKey.Remove(errorKey);
         }
 
         var currentKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -171,7 +184,7 @@ public sealed class MainViewModel : IDisposable
             {
                 card = new ProviderCardViewModel
                 {
-                    ProviderId = ProviderId.Copilot,
+                    ProviderId = providerId,
                     CardKey = item.Key,
                     DisplayName = item.DisplayName,
                     StatusText = "Loading…"
@@ -247,7 +260,7 @@ public sealed class MainViewModel : IDisposable
 
         // Remove cards for accounts that are no longer present
         var staleKeys = _cardsByKey.Keys
-            .Where(k => k.StartsWith("copilot:", StringComparison.OrdinalIgnoreCase) && !currentKeys.Contains(k))
+            .Where(k => k.StartsWith(keyPrefix, StringComparison.OrdinalIgnoreCase) && !currentKeys.Contains(k))
             .ToList();
 
         foreach (var key in staleKeys)
