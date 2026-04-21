@@ -188,7 +188,8 @@ public sealed class SettingsService
         {
             [ProviderId.Gemini.ToString()] = new() { Enabled = true },
             [ProviderId.OpenRouter.ToString()] = new() { Enabled = true },
-            [ProviderId.Copilot.ToString()] = new() { Enabled = true }
+            [ProviderId.Copilot.ToString()] = new() { Enabled = true },
+            [ProviderId.Claude.ToString()] = new() { Enabled = true }
         }
     };
 

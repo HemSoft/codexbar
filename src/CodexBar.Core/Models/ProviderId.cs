@@ -7,5 +7,6 @@ public enum ProviderId
 {
     Gemini,
     OpenRouter,
-    Copilot
+    Copilot,
+    Claude
 }

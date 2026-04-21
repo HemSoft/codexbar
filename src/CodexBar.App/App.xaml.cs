@@ -4,6 +4,7 @@ using System.Windows;
 using CodexBar.App.ViewModels;
 using CodexBar.Core.Configuration;
 using CodexBar.Core.Providers;
+using CodexBar.Core.Providers.Claude;
 using CodexBar.Core.Providers.Copilot;
 using CodexBar.Core.Providers.Gemini;
 using CodexBar.Core.Providers.OpenRouter;
@@ -49,6 +50,7 @@ public partial class App : Application
         services.AddSingleton<IUsageProvider, GeminiProvider>();
         services.AddSingleton<IUsageProvider, OpenRouterProvider>();
         services.AddSingleton<IUsageProvider, CopilotProvider>();
+        services.AddSingleton<IUsageProvider, ClaudeProvider>();
 
         services.AddSingleton<UsageRefreshService>();
         services.AddSingleton<MainViewModel>();
