@@ -20,7 +20,9 @@ public sealed class MainViewModel : IDisposable
         _refreshService = refreshService;
         _refreshService.UsageUpdated += OnUsageUpdated;
 
-        // Initialize cards for non-Copilot/non-Claude providers (those use dynamic cards via Items)
+        // Initialize cards for non-Copilot/non-Claude providers
+        // (Copilot and Claude use dynamic cards via Items reconciliation;
+        //  Claude stays visible via IsAvailableAsync returning true when enabled)
         foreach (ProviderId id in Enum.GetValues<ProviderId>())
         {
             if (id is ProviderId.Copilot or ProviderId.Claude) continue;

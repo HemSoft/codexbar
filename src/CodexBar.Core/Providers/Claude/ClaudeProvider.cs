@@ -17,6 +17,7 @@ public sealed class ClaudeProvider : IUsageProvider
 {
     private readonly ILogger<ClaudeProvider> _logger;
     private readonly SettingsService _settings;
+    private readonly IHttpClientFactory _httpClientFactory;
 
     private static readonly string ClaudeDir =
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude");
@@ -28,11 +29,6 @@ public sealed class ClaudeProvider : IUsageProvider
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude.json");
 
     private static readonly TimeSpan ApiTimeout = TimeSpan.FromSeconds(15);
-
-    private static readonly HttpClient Http = new()
-    {
-        Timeout = TimeSpan.FromSeconds(15)
-    };
 
     // Minimal request body: haiku model, 1 token, trivial prompt — just enough to trigger rate-limit headers
     private static readonly string ProbeRequestBody = JsonSerializer.Serialize(new
@@ -60,10 +56,12 @@ public sealed class ClaudeProvider : IUsageProvider
     private UnifiedRateLimits? _cachedLimits;
     private DateTimeOffset _limitsCachedAt;
     private static readonly TimeSpan CacheTtl = TimeSpan.FromMinutes(5);
+    private readonly SemaphoreSlim _cacheLock = new(1, 1);
 
-    public ClaudeProvider(ILogger<ClaudeProvider> logger, SettingsService settings)
+    public ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFactory httpClientFactory, SettingsService settings)
     {
         _logger = logger;
+        _httpClientFactory = httpClientFactory;
         _settings = settings;
     }
 
@@ -76,7 +74,7 @@ public sealed class ClaudeProvider : IUsageProvider
         StatusPageUrl = "https://status.anthropic.com",
         SupportsSessionUsage = true,
         SupportsWeeklyUsage = true,
-        SupportsCredits = true
+        SupportsCredits = false
     };
 
     public Task<bool> IsAvailableAsync(CancellationToken ct = default)
@@ -84,7 +82,10 @@ public sealed class ClaudeProvider : IUsageProvider
         if (!_settings.IsProviderEnabled(ProviderId.Claude))
             return Task.FromResult(false);
 
-        return Task.FromResult(File.Exists(CredentialsPath));
+        // Return true when enabled even if credentials are missing so that
+        // FetchUsageAsync runs and produces an actionable error card in the UI
+        // (rather than leaving Claude completely invisible).
+        return Task.FromResult(true);
     }
 
     public async Task<ProviderUsageResult> FetchUsageAsync(CancellationToken ct = default)
@@ -93,14 +94,25 @@ public sealed class ClaudeProvider : IUsageProvider
         {
             var credentials = ReadCredentials();
             if (credentials is null)
+            {
+                // Distinguish "file missing" from "file exists but could not be read"
+                if (File.Exists(CredentialsPath))
+                    return ProviderUsageResult.Failure(ProviderId.Claude,
+                        $"Claude credentials file exists but could not be read or is corrupted ({CredentialsPath}). Delete the file and run 'claude' to re-authenticate.");
+
                 return ProviderUsageResult.Failure(ProviderId.Claude,
                     "No Claude Code credentials found. Run 'claude' and sign in.");
+            }
 
             var accountInfo = ReadAccountInfo();
             var stats = ReadStatsCache();
 
-            var subscriptionType = credentials.SubscriptionType ?? "unknown";
-            var displaySub = char.ToUpperInvariant(subscriptionType[0]) + subscriptionType[1..];
+            var subscriptionType = credentials.SubscriptionType;
+            string displaySub;
+            if (string.IsNullOrWhiteSpace(subscriptionType))
+                displaySub = "Unknown";
+            else
+                displaySub = char.ToUpperInvariant(subscriptionType[0]) + subscriptionType[1..];
             var accountName = accountInfo?.DisplayName;
 
             var equivalentCost = CalculateEquivalentCost(stats);
@@ -109,7 +121,7 @@ public sealed class ClaudeProvider : IUsageProvider
             // Fetch real-time rate-limit data via a lightweight API probe
             var limits = await FetchRateLimitsAsync(credentials.AccessToken, ct);
 
-            var sessionSnapshot = BuildSessionSnapshot(limits, displaySub, totalTokens, accountInfo);
+            var sessionSnapshot = BuildSessionSnapshot(limits, displaySub, totalTokens, equivalentCost, accountInfo);
             var weeklySnapshot = BuildWeeklySnapshot(limits);
 
             var itemKey = "claude:code";
@@ -123,13 +135,12 @@ public sealed class ClaudeProvider : IUsageProvider
                 DisplayName = itemDisplayName,
                 PrimaryUsage = sessionSnapshot,
                 SecondaryUsage = weeklySnapshot,
-                CreditsRemaining = equivalentCost > 0 ? (decimal)equivalentCost : null,
                 Success = true
             };
 
             _logger.LogDebug(
                 "Claude: subscription={Sub}, equivalentCost=${Cost:F2}, totalTokens={Tokens:N0}, 5h={FiveH:P0}, 7d={SevenD:P0}",
-                subscriptionType, equivalentCost, totalTokens,
+                subscriptionType ?? "unknown", equivalentCost, totalTokens,
                 limits?.FiveHourUtilization ?? -1, limits?.SevenDayUtilization ?? -1);
 
             return new ProviderUsageResult
@@ -138,7 +149,6 @@ public sealed class ClaudeProvider : IUsageProvider
                 Success = true,
                 SessionUsage = sessionSnapshot,
                 WeeklyUsage = weeklySnapshot,
-                CreditsRemaining = equivalentCost > 0 ? (decimal)equivalentCost : null,
                 Items = [item]
             };
         }
@@ -153,6 +163,7 @@ public sealed class ClaudeProvider : IUsageProvider
         UnifiedRateLimits? limits,
         string subscriptionType,
         long totalTokens,
+        double equivalentCost,
         ClaudeAccountInfo? accountInfo)
     {
         if (limits is not null)
@@ -160,7 +171,9 @@ public sealed class ClaudeProvider : IUsageProvider
             var usedPercent = limits.FiveHourUtilization;
 
             var statusParts = new List<string> { $"{subscriptionType} plan" };
-            if (totalTokens > 0)
+            if (equivalentCost > 0)
+                statusParts.Add($"~${equivalentCost:F2} equiv.");
+            else if (totalTokens > 0)
                 statusParts.Add(FormatTokenCount(totalTokens));
             if (accountInfo?.HasExtraUsageEnabled == true)
                 statusParts.Add("extra usage on");
@@ -186,7 +199,7 @@ public sealed class ClaudeProvider : IUsageProvider
         return new UsageSnapshot
         {
             IsUnlimited = true,
-            UsageLabel = FormatUsageLabel(subscriptionType, totalTokens, accountInfo),
+            UsageLabel = FormatUsageLabel(subscriptionType, totalTokens, equivalentCost, accountInfo),
             CapturedAt = DateTimeOffset.UtcNow
         };
     }
@@ -242,11 +255,14 @@ public sealed class ClaudeProvider : IUsageProvider
     private static string FormatUsageLabel(
         string subscriptionType,
         long totalTokens,
+        double equivalentCost,
         ClaudeAccountInfo? accountInfo)
     {
         var parts = new List<string> { $"{subscriptionType} plan" };
 
-        if (totalTokens > 0)
+        if (equivalentCost > 0)
+            parts.Add($"~${equivalentCost:F2} equiv.");
+        else if (totalTokens > 0)
             parts.Add(FormatTokenCount(totalTokens));
 
         if (accountInfo?.HasExtraUsageEnabled == true)
@@ -262,7 +278,7 @@ public sealed class ClaudeProvider : IUsageProvider
     /// </summary>
     private async Task<UnifiedRateLimits?> FetchRateLimitsAsync(string? accessToken, CancellationToken ct)
     {
-        // Return cached value if still fresh
+        // Return cached value if still fresh (lock-free read for the common case)
         if (_cachedLimits is not null &&
             DateTimeOffset.UtcNow - _limitsCachedAt < CacheTtl)
         {
@@ -275,8 +291,19 @@ public sealed class ClaudeProvider : IUsageProvider
             return _cachedLimits;
         }
 
+        await _cacheLock.WaitAsync(ct);
         try
         {
+            // Re-check after acquiring lock — another call may have refreshed the cache
+            if (_cachedLimits is not null &&
+                DateTimeOffset.UtcNow - _limitsCachedAt < CacheTtl)
+            {
+                return _cachedLimits;
+            }
+
+            using var httpClient = _httpClientFactory.CreateClient();
+            httpClient.Timeout = ApiTimeout;
+
             using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.anthropic.com/v1/messages");
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
             request.Headers.TryAddWithoutValidation("anthropic-version", "2023-06-01");
@@ -286,7 +313,7 @@ public sealed class ClaudeProvider : IUsageProvider
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             cts.CancelAfter(ApiTimeout);
 
-            using var response = await Http.SendAsync(request, cts.Token);
+            using var response = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cts.Token);
 
             if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized)
             {
@@ -316,6 +343,10 @@ public sealed class ClaudeProvider : IUsageProvider
         {
             _logger.LogDebug(ex, "Claude API probe failed");
             return _cachedLimits;
+        }
+        finally
+        {
+            _cacheLock.Release();
         }
     }
 
@@ -493,12 +524,23 @@ public sealed class ClaudeProvider : IUsageProvider
     /// </summary>
     private static (double InputPerMTok, double OutputPerMTok, double CacheWritePerMTok, double CacheReadPerMTok) ResolvePricing(string modelId)
     {
-        // Try exact match first from known prefixes
+        // Exact match first
+        if (ModelPricing.TryGetValue(modelId, out var exactMatch))
+            return exactMatch;
+
+        // Longest-prefix match (deterministic: longest prefix wins)
+        (double InputPerMTok, double OutputPerMTok, double CacheWritePerMTok, double CacheReadPerMTok)? bestMatch = null;
+        int bestLength = 0;
         foreach (var (prefix, pricing) in ModelPricing)
         {
-            if (modelId.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
-                return pricing;
+            if (modelId.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) && prefix.Length > bestLength)
+            {
+                bestMatch = pricing;
+                bestLength = prefix.Length;
+            }
         }
+        if (bestMatch is not null)
+            return bestMatch.Value;
 
         // Fallback by model family
         if (modelId.Contains("opus", StringComparison.OrdinalIgnoreCase))
