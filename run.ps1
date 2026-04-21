@@ -4,7 +4,7 @@ $ErrorActionPreference = 'Stop'
 $project = "$PSScriptRoot\src\CodexBar.App"
 
 # Kill any existing instance so the DLL isn't locked during build.
-Get-Process -Name 'CodexBar.App' -ErrorAction SilentlyContinue | Stop-Process -Force
+Get-Process -Name 'CodexBar.App' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 Start-Sleep -Milliseconds 500
 
 # Build so errors are visible in the terminal.
