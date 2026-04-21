@@ -1,4 +1,6 @@
-using System.Diagnostics;
+using System.Net.Http;
+using System.Net.Http.Headers;
+using System.Text;
 using System.Text.Json;
 using CodexBar.Core.Configuration;
 using CodexBar.Core.Models;
@@ -7,9 +9,9 @@ using Microsoft.Extensions.Logging;
 namespace CodexBar.Core.Providers.Claude;
 
 /// <summary>
-/// Fetches Claude Code Pro subscription usage by invoking the Claude CLI
-/// to obtain real-time rate-limit data (session and weekly utilization)
-/// and reading local data files for account and token stats.
+/// Fetches Claude Code Pro subscription usage by making a lightweight API call
+/// to the Anthropic Messages endpoint using the local OAuth token, then parsing
+/// the rate-limit response headers for per-window utilization data.
 /// </summary>
 public sealed class ClaudeProvider : IUsageProvider
 {
@@ -25,7 +27,20 @@ public sealed class ClaudeProvider : IUsageProvider
     private static readonly string ClaudeJsonPath =
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude.json");
 
-    private static readonly TimeSpan CliTimeout = TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan ApiTimeout = TimeSpan.FromSeconds(15);
+
+    private static readonly HttpClient Http = new()
+    {
+        Timeout = TimeSpan.FromSeconds(15)
+    };
+
+    // Minimal request body: haiku model, 1 token, trivial prompt — just enough to trigger rate-limit headers
+    private static readonly string ProbeRequestBody = JsonSerializer.Serialize(new
+    {
+        model = "claude-haiku-4-5",
+        max_tokens = 1,
+        messages = new[] { new { role = "user", content = "x" } }
+    });
 
     // Anthropic API pricing per million tokens (used to calculate equivalent cost)
     private static readonly Dictionary<string, (double InputPerMTok, double OutputPerMTok, double CacheWritePerMTok, double CacheReadPerMTok)> ModelPricing =
@@ -41,10 +56,10 @@ public sealed class ClaudeProvider : IUsageProvider
             ["claude-haiku-3-5"]  = (0.80, 4.0,  1.0,   0.08),
         };
 
-    // Cache the last known rate-limit info so we don't call the CLI on every refresh
-    private RateLimitInfo? _cachedRateLimit;
-    private DateTimeOffset _rateLimitCachedAt;
-    private static readonly TimeSpan RateLimitCacheTtl = TimeSpan.FromMinutes(5);
+    // Cache the last known rate-limit data so we don't probe the API on every refresh
+    private UnifiedRateLimits? _cachedLimits;
+    private DateTimeOffset _limitsCachedAt;
+    private static readonly TimeSpan CacheTtl = TimeSpan.FromMinutes(5);
 
     public ClaudeProvider(ILogger<ClaudeProvider> logger, SettingsService settings)
     {
@@ -56,7 +71,7 @@ public sealed class ClaudeProvider : IUsageProvider
     {
         Id = ProviderId.Claude,
         DisplayName = "Claude",
-        Description = "Claude Code — subscription usage via CLI + local data",
+        Description = "Claude Code — subscription usage via API rate-limit headers",
         DashboardUrl = "https://claude.ai/settings/usage",
         StatusPageUrl = "https://status.anthropic.com",
         SupportsSessionUsage = true,
@@ -91,11 +106,11 @@ public sealed class ClaudeProvider : IUsageProvider
             var equivalentCost = CalculateEquivalentCost(stats);
             var totalTokens = CalculateTotalTokens(stats);
 
-            // Fetch real-time rate-limit data from the Claude CLI
-            var rateLimit = await GetRateLimitInfoAsync(ct);
+            // Fetch real-time rate-limit data via a lightweight API probe
+            var limits = await FetchRateLimitsAsync(credentials.AccessToken, ct);
 
-            var sessionSnapshot = BuildSessionSnapshot(rateLimit, displaySub, totalTokens, accountInfo);
-            var weeklySnapshot = BuildWeeklySnapshot(rateLimit);
+            var sessionSnapshot = BuildSessionSnapshot(limits, displaySub, totalTokens, accountInfo);
+            var weeklySnapshot = BuildWeeklySnapshot(limits);
 
             var itemKey = "claude:code";
             var itemDisplayName = accountName is not null
@@ -113,8 +128,9 @@ public sealed class ClaudeProvider : IUsageProvider
             };
 
             _logger.LogDebug(
-                "Claude: subscription={Sub}, equivalentCost=${Cost:F2}, totalTokens={Tokens:N0}, rateLimitStatus={Status}",
-                subscriptionType, equivalentCost, totalTokens, rateLimit?.Status ?? "unknown");
+                "Claude: subscription={Sub}, equivalentCost=${Cost:F2}, totalTokens={Tokens:N0}, 5h={FiveH:P0}, 7d={SevenD:P0}",
+                subscriptionType, equivalentCost, totalTokens,
+                limits?.FiveHourUtilization ?? -1, limits?.SevenDayUtilization ?? -1);
 
             return new ProviderUsageResult
             {
@@ -134,57 +150,39 @@ public sealed class ClaudeProvider : IUsageProvider
     }
 
     private UsageSnapshot BuildSessionSnapshot(
-        RateLimitInfo? rateLimit,
+        UnifiedRateLimits? limits,
         string subscriptionType,
         long totalTokens,
         ClaudeAccountInfo? accountInfo)
     {
-        if (rateLimit is not null)
+        if (limits is not null)
         {
-            var usedPercent = rateLimit.Utilization ?? 0;
-            var statusParts = new List<string> { $"{subscriptionType} plan" };
+            var usedPercent = limits.FiveHourUtilization;
 
+            var statusParts = new List<string> { $"{subscriptionType} plan" };
             if (totalTokens > 0)
                 statusParts.Add(FormatTokenCount(totalTokens));
-            if (rateLimit.IsUsingOverage)
-                statusParts.Add("extra usage active");
-            else if (accountInfo?.HasExtraUsageEnabled == true)
+            if (accountInfo?.HasExtraUsageEnabled == true)
                 statusParts.Add("extra usage on");
 
-            var windowLabel = rateLimit.RateLimitType switch
-            {
-                "five_hour" => "Session (5hr)",
-                "seven_day" or "seven_day_opus" or "seven_day_sonnet" => "Weekly (7d)",
-                "overage" => "Overage",
-                _ => "Limit"
-            };
-
-            var statusText = rateLimit.Status switch
-            {
-                "allowed" => "within limits",
-                "allowed_warning" => $"approaching limit ({usedPercent:P0})",
-                "rejected" => "at limit",
-                _ => "unknown"
-            };
-
-            var resetDesc = rateLimit.ResetsAt.HasValue
-                ? FormatResetCountdown(rateLimit.ResetsAt.Value, windowLabel)
+            var resetDesc = limits.FiveHourReset > 0
+                ? FormatResetCountdown(limits.FiveHourReset, "5-hour limit")
                 : null;
 
             return new UsageSnapshot
             {
                 UsedPercent = usedPercent,
-                UsageLabel = $"{string.Join(" · ", statusParts)} · {windowLabel}: {statusText}",
-                ResetsAt = rateLimit.ResetsAt.HasValue
-                    ? DateTimeOffset.FromUnixTimeSeconds(rateLimit.ResetsAt.Value)
+                UsageLabel = string.Join(" · ", statusParts),
+                ResetsAt = limits.FiveHourReset > 0
+                    ? DateTimeOffset.FromUnixTimeSeconds(limits.FiveHourReset)
                     : null,
                 ResetDescription = resetDesc,
-                IsUnlimited = rateLimit.Utilization is null,
+                IsUnlimited = false,
                 CapturedAt = DateTimeOffset.UtcNow
             };
         }
 
-        // Fallback: no CLI data available
+        // Fallback: no API data available
         return new UsageSnapshot
         {
             IsUnlimited = true,
@@ -193,34 +191,27 @@ public sealed class ClaudeProvider : IUsageProvider
         };
     }
 
-    private static UsageSnapshot? BuildWeeklySnapshot(RateLimitInfo? rateLimit)
+    private static UsageSnapshot? BuildWeeklySnapshot(UnifiedRateLimits? limits)
     {
-        if (rateLimit is null)
+        if (limits is null)
             return null;
 
-        // Overage info is always present; use it for the weekly display
-        if (rateLimit.OverageResetsAt.HasValue)
+        var usedPercent = limits.SevenDayUtilization;
+        var resetDesc = limits.SevenDayReset > 0
+            ? FormatResetCountdown(limits.SevenDayReset, "Weekly")
+            : null;
+
+        return new UsageSnapshot
         {
-            var overageResetDesc = FormatResetCountdown(rateLimit.OverageResetsAt.Value, "Overage");
-
-            return new UsageSnapshot
-            {
-                UsedPercent = 0,
-                UsageLabel = rateLimit.OverageStatus switch
-                {
-                    "allowed" => "Overage: within limits",
-                    "allowed_warning" => "Overage: approaching limit",
-                    "rejected" => "Overage: at limit",
-                    _ => "Overage"
-                },
-                ResetsAt = DateTimeOffset.FromUnixTimeSeconds(rateLimit.OverageResetsAt.Value),
-                ResetDescription = overageResetDesc,
-                IsUnlimited = true,
-                CapturedAt = DateTimeOffset.UtcNow
-            };
-        }
-
-        return null;
+            UsedPercent = usedPercent,
+            UsageLabel = $"Weekly · all models: {usedPercent:P0}",
+            ResetsAt = limits.SevenDayReset > 0
+                ? DateTimeOffset.FromUnixTimeSeconds(limits.SevenDayReset)
+                : null,
+            ResetDescription = resetDesc,
+            IsUnlimited = false,
+            CapturedAt = DateTimeOffset.UtcNow
+        };
     }
 
     private static string FormatResetCountdown(long resetsAtEpoch, string windowName)
@@ -265,139 +256,103 @@ public sealed class ClaudeProvider : IUsageProvider
     }
 
     /// <summary>
-    /// Gets rate-limit data by invoking <c>claude -p</c> with stream-json output.
-    /// Results are cached for <see cref="RateLimitCacheTtl"/> to avoid excessive CLI calls.
+    /// Probes the Anthropic Messages API with the local OAuth token and parses
+    /// the <c>anthropic-ratelimit-unified-*</c> response headers for per-window utilization.
+    /// Results are cached for <see cref="CacheTtl"/> to avoid excessive API calls.
     /// </summary>
-    private async Task<RateLimitInfo?> GetRateLimitInfoAsync(CancellationToken ct)
+    private async Task<UnifiedRateLimits?> FetchRateLimitsAsync(string? accessToken, CancellationToken ct)
     {
         // Return cached value if still fresh
-        if (_cachedRateLimit is not null &&
-            DateTimeOffset.UtcNow - _rateLimitCachedAt < RateLimitCacheTtl)
+        if (_cachedLimits is not null &&
+            DateTimeOffset.UtcNow - _limitsCachedAt < CacheTtl)
         {
-            return _cachedRateLimit;
+            return _cachedLimits;
+        }
+
+        if (string.IsNullOrEmpty(accessToken))
+        {
+            _logger.LogDebug("No OAuth access token available for rate-limit probe");
+            return _cachedLimits;
         }
 
         try
         {
-            var claudePath = FindClaudeCli();
-            if (claudePath is null)
-            {
-                _logger.LogDebug("Claude CLI not found on PATH");
-                return _cachedRateLimit; // Return stale cache if available
-            }
-
-            var psi = new ProcessStartInfo
-            {
-                FileName = claudePath,
-                Arguments = "-p x --model haiku --verbose --output-format stream-json --no-session-persistence",
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                UseShellExecute = false,
-                CreateNoWindow = true
-            };
-
-            using var process = Process.Start(psi);
-            if (process is null)
-            {
-                _logger.LogDebug("Failed to start claude process");
-                return _cachedRateLimit;
-            }
+            using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.anthropic.com/v1/messages");
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+            request.Headers.TryAddWithoutValidation("anthropic-version", "2023-06-01");
+            request.Headers.TryAddWithoutValidation("anthropic-beta", "oauth-2025-04-20");
+            request.Content = new StringContent(ProbeRequestBody, Encoding.UTF8, "application/json");
 
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            cts.CancelAfter(CliTimeout);
+            cts.CancelAfter(ApiTimeout);
 
-            RateLimitInfo? result = null;
+            using var response = await Http.SendAsync(request, cts.Token);
 
-            // Read stream-json lines looking for rate_limit_event
-            while (!cts.Token.IsCancellationRequested)
+            if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized)
             {
-                var line = await process.StandardOutput.ReadLineAsync(cts.Token);
-                if (line is null) break;
-
-                if (!line.Contains("rate_limit_event", StringComparison.Ordinal))
-                    continue;
-
-                result = ParseRateLimitEvent(line);
-                if (result is not null)
-                    break;
+                _logger.LogWarning("Claude API returned 401 — OAuth token may be expired");
+                return null; // Don't return stale cache on auth failure
             }
 
-            // Don't wait forever for the process to exit
-            if (!process.HasExited)
-            {
-                try { process.Kill(entireProcessTree: true); }
-                catch { /* best effort */ }
-            }
+            // Rate-limit headers are present on success and most error responses
+            var result = ParseRateLimitHeaders(response.Headers);
 
             if (result is not null)
             {
-                _cachedRateLimit = result;
-                _rateLimitCachedAt = DateTimeOffset.UtcNow;
-                _logger.LogDebug("Claude rate limit: status={Status}, type={Type}, resetsAt={Reset}",
-                    result.Status, result.RateLimitType, result.ResetsAt);
+                _cachedLimits = result;
+                _limitsCachedAt = DateTimeOffset.UtcNow;
+                _logger.LogDebug("Claude rate limits: 5h={FiveH:P0}, 7d={SevenD:P0}, overage={Ovg:P0}",
+                    result.FiveHourUtilization, result.SevenDayUtilization, result.OverageUtilization);
             }
 
-            return result ?? _cachedRateLimit;
+            return result ?? _cachedLimits;
         }
         catch (OperationCanceledException)
         {
-            _logger.LogDebug("Claude CLI call timed out");
-            return _cachedRateLimit;
+            _logger.LogDebug("Claude API probe timed out");
+            return _cachedLimits;
         }
         catch (Exception ex)
         {
-            _logger.LogDebug(ex, "Claude CLI call failed");
-            return _cachedRateLimit;
+            _logger.LogDebug(ex, "Claude API probe failed");
+            return _cachedLimits;
         }
     }
 
-    private static string? FindClaudeCli()
+    private static UnifiedRateLimits? ParseRateLimitHeaders(HttpResponseHeaders headers)
     {
-        var userLocal = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-            ".local", "bin", "claude.exe");
+        static string? GetHeader(HttpResponseHeaders h, string name) =>
+            h.TryGetValues(name, out var values) ? values.FirstOrDefault() : null;
 
-        if (File.Exists(userLocal))
-            return userLocal;
+        static double ParseDouble(string? value, double fallback = 0) =>
+            double.TryParse(value, System.Globalization.CultureInfo.InvariantCulture, out var d) ? d : fallback;
 
-        // Check PATH
-        var pathDirs = Environment.GetEnvironmentVariable("PATH")?.Split(Path.PathSeparator) ?? [];
-        foreach (var dir in pathDirs)
-        {
-            var candidate = Path.Combine(dir, "claude.exe");
-            if (File.Exists(candidate))
-                return candidate;
-        }
+        static long ParseLong(string? value, long fallback = 0) =>
+            long.TryParse(value, out var l) ? l : fallback;
 
-        return null;
-    }
+        var fiveHUtil = GetHeader(headers, "anthropic-ratelimit-unified-5h-utilization");
+        var sevenDUtil = GetHeader(headers, "anthropic-ratelimit-unified-7d-utilization");
 
-    private RateLimitInfo? ParseRateLimitEvent(string json)
-    {
-        try
-        {
-            using var doc = JsonDocument.Parse(json);
-            var root = doc.RootElement;
-
-            if (!root.TryGetProperty("rate_limit_info", out var info))
-                return null;
-
-            return new RateLimitInfo
-            {
-                Status = info.TryGetProperty("status", out var s) ? s.GetString() : null,
-                ResetsAt = info.TryGetProperty("resetsAt", out var r) && r.ValueKind == JsonValueKind.Number ? r.GetInt64() : null,
-                RateLimitType = info.TryGetProperty("rateLimitType", out var t) ? t.GetString() : null,
-                Utilization = info.TryGetProperty("utilization", out var u) && u.ValueKind == JsonValueKind.Number ? u.GetDouble() : null,
-                OverageStatus = info.TryGetProperty("overageStatus", out var os) ? os.GetString() : null,
-                OverageResetsAt = info.TryGetProperty("overageResetsAt", out var or) && or.ValueKind == JsonValueKind.Number ? or.GetInt64() : null,
-                IsUsingOverage = info.TryGetProperty("isUsingOverage", out var uo) && uo.ValueKind == JsonValueKind.True
-            };
-        }
-        catch (Exception ex)
-        {
-            _logger.LogDebug(ex, "Failed to parse rate_limit_event");
+        // If neither utilization header is present, the response didn't include rate-limit data
+        if (fiveHUtil is null && sevenDUtil is null)
             return null;
-        }
+
+        return new UnifiedRateLimits
+        {
+            FiveHourUtilization = ParseDouble(fiveHUtil),
+            FiveHourReset = ParseLong(GetHeader(headers, "anthropic-ratelimit-unified-5h-reset")),
+            FiveHourStatus = GetHeader(headers, "anthropic-ratelimit-unified-5h-status") ?? "unknown",
+
+            SevenDayUtilization = ParseDouble(sevenDUtil),
+            SevenDayReset = ParseLong(GetHeader(headers, "anthropic-ratelimit-unified-7d-reset")),
+            SevenDayStatus = GetHeader(headers, "anthropic-ratelimit-unified-7d-status") ?? "unknown",
+
+            OverageUtilization = ParseDouble(GetHeader(headers, "anthropic-ratelimit-unified-overage-utilization")),
+            OverageReset = ParseLong(GetHeader(headers, "anthropic-ratelimit-unified-overage-reset")),
+            OverageStatus = GetHeader(headers, "anthropic-ratelimit-unified-overage-status") ?? "unknown",
+
+            RepresentativeClaim = GetHeader(headers, "anthropic-ratelimit-unified-representative-claim")
+        };
     }
 
     private ClaudeCredentials? ReadCredentials()
@@ -418,7 +373,8 @@ public sealed class ClaudeProvider : IUsageProvider
             {
                 SubscriptionType = oauth.TryGetProperty("subscriptionType", out var st) ? st.GetString() : null,
                 RateLimitTier = oauth.TryGetProperty("rateLimitTier", out var rlt) ? rlt.GetString() : null,
-                ExpiresAt = oauth.TryGetProperty("expiresAt", out var ea) ? ea.GetInt64() : 0
+                ExpiresAt = oauth.TryGetProperty("expiresAt", out var ea) ? ea.GetInt64() : 0,
+                AccessToken = oauth.TryGetProperty("accessToken", out var at) ? at.GetString() : null
             };
         }
         catch (Exception ex)
@@ -554,15 +510,21 @@ public sealed class ClaudeProvider : IUsageProvider
         return ModelPricing["claude-sonnet-4-6"];
     }
 
-    private sealed record RateLimitInfo
+    private sealed record UnifiedRateLimits
     {
-        public string? Status { get; init; }
-        public long? ResetsAt { get; init; }
-        public string? RateLimitType { get; init; }
-        public double? Utilization { get; init; }
-        public string? OverageStatus { get; init; }
-        public long? OverageResetsAt { get; init; }
-        public bool IsUsingOverage { get; init; }
+        public double FiveHourUtilization { get; init; }
+        public long FiveHourReset { get; init; }
+        public string FiveHourStatus { get; init; } = "unknown";
+
+        public double SevenDayUtilization { get; init; }
+        public long SevenDayReset { get; init; }
+        public string SevenDayStatus { get; init; } = "unknown";
+
+        public double OverageUtilization { get; init; }
+        public long OverageReset { get; init; }
+        public string OverageStatus { get; init; } = "unknown";
+
+        public string? RepresentativeClaim { get; init; }
     }
 
     private sealed record ClaudeCredentials
@@ -570,6 +532,7 @@ public sealed class ClaudeProvider : IUsageProvider
         public string? SubscriptionType { get; init; }
         public string? RateLimitTier { get; init; }
         public long ExpiresAt { get; init; }
+        public string? AccessToken { get; init; }
     }
 
     private sealed record ClaudeAccountInfo
