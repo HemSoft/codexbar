@@ -70,6 +70,8 @@ public sealed class MainViewModel : IDisposable
                 card.IsHighUsage = false;
                 card.ShowUsagePercent = true;
                 card.IsError = true;
+                card.Bars.Clear();
+                card.HasBars = false;
                 return;
             }
 
@@ -81,6 +83,8 @@ public sealed class MainViewModel : IDisposable
             card.WeeklyPercent = 0;
             card.IsHighUsage = false;
             card.ShowUsagePercent = true;
+            card.Bars.Clear();
+            card.HasBars = false;
 
             if (result.SessionUsage is not null)
             {
@@ -165,6 +169,8 @@ public sealed class MainViewModel : IDisposable
                 errorCard.WeeklyPercent = 0;
                 errorCard.ResetText = null;
                 errorCard.IsHighUsage = false;
+                errorCard.Bars.Clear();
+                errorCard.HasBars = false;
             }
             return;
         }
@@ -207,10 +213,44 @@ public sealed class MainViewModel : IDisposable
                 card.IsHighUsage = false;
                 card.ShowUsagePercent = false;
                 card.IsError = true;
+                card.Bars.Clear();
+                card.HasBars = false;
                 continue;
             }
 
             card.IsError = false;
+
+            // Multi-bar display: if the item provides labelled bars, use them
+            if (item.Bars is { Count: > 0 })
+            {
+                ReconcileBars(card, item.Bars);
+                card.HasBars = true;
+
+                // Hide the legacy single-bar display
+                card.ShowUsagePercent = false;
+                card.WeeklyText = null;
+                card.WeeklyPercent = 0;
+                card.ResetText = null;
+
+                // Use PrimaryUsage for the status text only
+                if (item.PrimaryUsage is not null)
+                {
+                    card.StatusText = item.PrimaryUsage.UsageLabel ?? "No data";
+                    card.UsedPercent = item.PrimaryUsage.UsedPercent;
+                    card.IsHighUsage = item.PrimaryUsage.UsedPercent >= 0.8;
+                }
+                else
+                {
+                    card.StatusText = "No data";
+                    card.UsedPercent = 0;
+                    card.IsHighUsage = false;
+                }
+                continue;
+            }
+
+            // Legacy single-bar path
+            card.Bars.Clear();
+            card.HasBars = false;
 
             if (item.PrimaryUsage is not null)
             {
@@ -275,9 +315,83 @@ public sealed class MainViewModel : IDisposable
         }
     }
 
+    /// <summary>
+    /// Reconciles the bars collection on a card VM to match the incoming bar data.
+    /// </summary>
+    private static void ReconcileBars(ProviderCardViewModel card, IReadOnlyList<UsageBar> bars)
+    {
+        // Simple reconciliation: update in-place where possible, add/remove as needed
+        for (int i = 0; i < bars.Count; i++)
+        {
+            var bar = bars[i];
+            if (i < card.Bars.Count)
+            {
+                var existing = card.Bars[i];
+                existing.Label = bar.Label;
+                existing.UsedPercent = bar.UsedPercent;
+                existing.ResetDescription = bar.ResetDescription;
+                existing.IsHighUsage = bar.UsedPercent >= 0.8;
+            }
+            else
+            {
+                card.Bars.Add(new UsageBarViewModel
+                {
+                    Label = bar.Label,
+                    UsedPercent = bar.UsedPercent,
+                    ResetDescription = bar.ResetDescription,
+                    IsHighUsage = bar.UsedPercent >= 0.8
+                });
+            }
+        }
+
+        // Remove excess bars
+        while (card.Bars.Count > bars.Count)
+            card.Bars.RemoveAt(card.Bars.Count - 1);
+    }
+
     public void Dispose()
     {
         _refreshService.UsageUpdated -= OnUsageUpdated;
+    }
+}
+
+public sealed class UsageBarViewModel : INotifyPropertyChanged
+{
+    private string _label = "";
+    public string Label
+    {
+        get => _label;
+        set => SetField(ref _label, value);
+    }
+
+    private double _usedPercent;
+    public double UsedPercent
+    {
+        get => _usedPercent;
+        set => SetField(ref _usedPercent, value);
+    }
+
+    private string? _resetDescription;
+    public string? ResetDescription
+    {
+        get => _resetDescription;
+        set => SetField(ref _resetDescription, value);
+    }
+
+    private bool _isHighUsage;
+    public bool IsHighUsage
+    {
+        get => _isHighUsage;
+        set => SetField(ref _isHighUsage, value);
+    }
+
+    public event PropertyChangedEventHandler? PropertyChanged;
+
+    private void SetField<T>(ref T field, T value, [CallerMemberName] string? name = null)
+    {
+        if (EqualityComparer<T>.Default.Equals(field, value)) return;
+        field = value;
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
     }
 }
 
@@ -350,6 +464,19 @@ public sealed class ProviderCardViewModel : INotifyPropertyChanged
         get => _showUsagePercent;
         set => SetField(ref _showUsagePercent, value);
     }
+
+    private bool _hasBars;
+    public bool HasBars
+    {
+        get => _hasBars;
+        set => SetField(ref _hasBars, value);
+    }
+
+    /// <summary>
+    /// Multi-bar usage display. When populated, the UI renders one bar per entry
+    /// instead of the legacy single progress bar.
+    /// </summary>
+    public ObservableCollection<UsageBarViewModel> Bars { get; } = new();
 
     public event PropertyChangedEventHandler? PropertyChanged;
 

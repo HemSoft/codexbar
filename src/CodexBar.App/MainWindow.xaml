@@ -21,6 +21,9 @@
     <Window.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis" />
 
+        <!-- Inverse bool converter: true → Collapsed, false → Visible -->
+        <local:InverseBoolToVisibilityConverter x:Key="InverseBoolToVis" />
+
         <!-- Usage bar style: defaults to green and switches to red when IsHighUsage is true -->
         <Style x:Key="UsageBar" TargetType="ProgressBar">
             <Setter Property="Height" Value="8" />
@@ -71,51 +74,90 @@
                                 CornerRadius="8"
                                 Padding="14,12"
                                 Margin="0,0,0,8">
-                            <Grid>
-                                <Grid.RowDefinitions>
-                                    <RowDefinition Height="Auto" />
-                                    <RowDefinition Height="Auto" />
-                                    <RowDefinition Height="Auto" />
-                                    <RowDefinition Height="Auto" />
-                                </Grid.RowDefinitions>
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*" />
-                                    <ColumnDefinition Width="Auto" />
-                                </Grid.ColumnDefinitions>
+                            <StackPanel>
+                                <!-- Header row: name + primary percent -->
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="Auto" />
+                                    </Grid.ColumnDefinitions>
 
-                                <!-- Provider name -->
-                                <TextBlock Grid.Row="0" Grid.Column="0"
-                                           Text="{Binding DisplayName}"
-                                           FontSize="16" FontWeight="Medium"
-                                           Foreground="{StaticResource TextPrimaryBrush}" />
+                                    <TextBlock Grid.Column="0"
+                                               Text="{Binding DisplayName}"
+                                               FontSize="16" FontWeight="Medium"
+                                               Foreground="{StaticResource TextPrimaryBrush}" />
 
-                                <!-- Percentage (hidden for credit-based providers) -->
-                                <TextBlock Grid.Row="0" Grid.Column="1"
-                                           FontSize="15" FontWeight="Medium"
-                                           Foreground="{StaticResource TextSecondaryBrush}"
-                                           Visibility="{Binding ShowUsagePercent, Converter={StaticResource BoolToVis}}">
-                                    <TextBlock.Text>
-                                        <Binding Path="UsedPercent" StringFormat="{}{0:P0}" />
-                                    </TextBlock.Text>
-                                </TextBlock>
+                                    <!-- Percentage shown only for legacy single-bar cards -->
+                                    <TextBlock Grid.Column="1"
+                                               FontSize="15" FontWeight="Medium"
+                                               Foreground="{StaticResource TextSecondaryBrush}"
+                                               Visibility="{Binding ShowUsagePercent, Converter={StaticResource BoolToVis}}">
+                                        <TextBlock.Text>
+                                            <Binding Path="UsedPercent" StringFormat="{}{0:P0}" />
+                                        </TextBlock.Text>
+                                    </TextBlock>
+                                </Grid>
 
-                                <!-- Usage bar (hidden for credit-based providers) -->
-                                <ProgressBar Grid.Row="1" Grid.ColumnSpan="2"
-                                             Value="{Binding UsedPercent, Mode=OneWay}"
+                                <!-- Legacy single-bar (hidden when HasBars is true) -->
+                                <ProgressBar Value="{Binding UsedPercent, Mode=OneWay}"
                                              Style="{StaticResource UsageBar}"
-                                             Visibility="{Binding ShowUsagePercent, Converter={StaticResource BoolToVis}}"
+                                             Visibility="{Binding HasBars, Converter={StaticResource InverseBoolToVis}}"
                                              Margin="0,6,0,4" />
 
                                 <!-- Status text -->
-                                <TextBlock Grid.Row="2" Grid.ColumnSpan="2"
-                                           Text="{Binding StatusText}"
+                                <TextBlock Text="{Binding StatusText}"
                                            FontSize="13"
                                            Foreground="{StaticResource TextSecondaryBrush}"
                                            TextTrimming="CharacterEllipsis" />
 
-                                <!-- Weekly + Reset text -->
-                                <StackPanel Grid.Row="3" Grid.ColumnSpan="2"
-                                            Margin="0,2,0,0">
+                                <!-- Multi-bar display (visible when HasBars is true) -->
+                                <ItemsControl ItemsSource="{Binding Bars}"
+                                              Visibility="{Binding HasBars, Converter={StaticResource BoolToVis}}"
+                                              Margin="0,6,0,0">
+                                    <ItemsControl.ItemTemplate>
+                                        <DataTemplate>
+                                            <StackPanel Margin="0,0,0,4">
+                                                <!-- Bar label + percent + reset -->
+                                                <Grid Margin="0,0,0,3">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                    </Grid.ColumnDefinitions>
+
+                                                    <TextBlock Grid.Column="0"
+                                                               Text="{Binding Label}"
+                                                               FontSize="13" FontWeight="Medium"
+                                                               Foreground="{StaticResource TextPrimaryBrush}" />
+
+                                                    <StackPanel Grid.Column="1" Orientation="Horizontal">
+                                                        <TextBlock FontSize="13"
+                                                                   Foreground="{StaticResource TextSecondaryBrush}">
+                                                            <TextBlock.Text>
+                                                                <Binding Path="UsedPercent" StringFormat="{}{0:P0}" />
+                                                            </TextBlock.Text>
+                                                        </TextBlock>
+                                                        <TextBlock FontSize="13"
+                                                                   Foreground="{StaticResource TextSecondaryBrush}"
+                                                                   Margin="6,0,0,0"
+                                                                   Visibility="{Binding ResetDescription, Converter={x:Static local:NullToCollapsedConverter.Instance}}">
+                                                            <TextBlock.Text>
+                                                                <Binding Path="ResetDescription" StringFormat="{}· {0}" />
+                                                            </TextBlock.Text>
+                                                        </TextBlock>
+                                                    </StackPanel>
+                                                </Grid>
+
+                                                <!-- Progress bar -->
+                                                <ProgressBar Value="{Binding UsedPercent, Mode=OneWay}"
+                                                             Style="{StaticResource UsageBar}" />
+                                            </StackPanel>
+                                        </DataTemplate>
+                                    </ItemsControl.ItemTemplate>
+                                </ItemsControl>
+
+                                <!-- Legacy weekly + reset text (hidden when HasBars) -->
+                                <StackPanel Margin="0,2,0,0"
+                                            Visibility="{Binding HasBars, Converter={StaticResource InverseBoolToVis}}">
                                     <TextBlock Text="{Binding WeeklyText}"
                                                FontSize="12"
                                                Foreground="{StaticResource TextSecondaryBrush}"
@@ -125,7 +167,7 @@
                                                Foreground="{StaticResource TextSecondaryBrush}"
                                                Visibility="{Binding ResetText, Converter={x:Static local:NullToCollapsedConverter.Instance}}" />
                                 </StackPanel>
-                            </Grid>
+                            </StackPanel>
                         </Border>
                     </DataTemplate>
                 </ItemsControl.ItemTemplate>

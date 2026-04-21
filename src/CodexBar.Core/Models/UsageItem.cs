@@ -20,6 +20,13 @@ public sealed record UsageItem
     /// <summary>Optional secondary usage snapshot (e.g., chat or weekly).</summary>
     public UsageSnapshot? SecondaryUsage { get; init; }
 
+    /// <summary>
+    /// Multiple labelled usage bars to display (e.g., 5-hour, weekly-all, weekly-per-model).
+    /// When populated, the UI renders one progress bar per entry instead of the
+    /// single-bar <see cref="PrimaryUsage"/>/<see cref="SecondaryUsage"/> layout.
+    /// </summary>
+    public IReadOnlyList<UsageBar>? Bars { get; init; }
+
     /// <summary>Credit balance if this item uses a credit system.</summary>
     public decimal? CreditsRemaining { get; init; }
 

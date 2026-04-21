@@ -124,6 +124,7 @@ public sealed class ClaudeProvider : IUsageProvider
 
             var sessionSnapshot = BuildSessionSnapshot(limits, displaySub, totalTokens, equivalentCost, accountInfo);
             var weeklySnapshot = BuildWeeklySnapshot(limits);
+            var bars = BuildUsageBars(limits);
 
             var itemKey = "claude:code";
             var itemDisplayName = accountName is not null
@@ -136,6 +137,7 @@ public sealed class ClaudeProvider : IUsageProvider
                 DisplayName = itemDisplayName,
                 PrimaryUsage = sessionSnapshot,
                 SecondaryUsage = weeklySnapshot,
+                Bars = bars,
                 Success = true
             };
 
@@ -226,6 +228,100 @@ public sealed class ClaudeProvider : IUsageProvider
             IsUnlimited = false,
             CapturedAt = DateTimeOffset.UtcNow
         };
+    }
+
+    /// <summary>
+    /// Builds the list of labelled usage bars matching Claude's own UI:
+    /// 1. 5-hour limit  2. Weekly · all models  3. Weekly · [model class] (from representative claim)
+    /// </summary>
+    private static List<UsageBar>? BuildUsageBars(UnifiedRateLimits? limits)
+    {
+        if (limits is null)
+            return null;
+
+        var bars = new List<UsageBar>(3);
+
+        // Bar 1: 5-hour limit
+        bars.Add(new UsageBar
+        {
+            Label = "5-hour limit",
+            UsedPercent = limits.FiveHourUtilization,
+            ResetDescription = limits.FiveHourReset > 0
+                ? FormatBarReset(limits.FiveHourReset)
+                : null,
+            ResetsAt = limits.FiveHourReset > 0
+                ? DateTimeOffset.FromUnixTimeSeconds(limits.FiveHourReset)
+                : null
+        });
+
+        // Bar 2: Weekly · all models
+        bars.Add(new UsageBar
+        {
+            Label = "Weekly · all models",
+            UsedPercent = limits.SevenDayUtilization,
+            ResetDescription = limits.SevenDayReset > 0
+                ? FormatBarReset(limits.SevenDayReset)
+                : null,
+            ResetsAt = limits.SevenDayReset > 0
+                ? DateTimeOffset.FromUnixTimeSeconds(limits.SevenDayReset)
+                : null
+        });
+
+        // Bar 3: Weekly · [model class] (representative claim / per-model-class limit)
+        var claimLabel = PrettifyRepresentativeClaim(limits.RepresentativeClaim);
+        bars.Add(new UsageBar
+        {
+            Label = $"Weekly · {claimLabel}",
+            UsedPercent = limits.OverageUtilization,
+            ResetDescription = limits.OverageReset > 0
+                ? FormatBarReset(limits.OverageReset)
+                : null,
+            ResetsAt = limits.OverageReset > 0
+                ? DateTimeOffset.FromUnixTimeSeconds(limits.OverageReset)
+                : null
+        });
+
+        return bars;
+    }
+
+    /// <summary>
+    /// Formats a compact reset string for the bar's right-side display (e.g., "Resets 2h", "Resets 2d").
+    /// </summary>
+    private static string FormatBarReset(long resetsAtEpoch)
+    {
+        var remaining = DateTimeOffset.FromUnixTimeSeconds(resetsAtEpoch) - DateTimeOffset.UtcNow;
+        if (remaining <= TimeSpan.Zero) return "Resets now";
+        if (remaining.TotalDays >= 1) return $"Resets {remaining.Days}d";
+        if (remaining.TotalHours >= 1) return $"Resets {(int)remaining.TotalHours}h";
+        return $"Resets {remaining.Minutes}m";
+    }
+
+    /// <summary>
+    /// Converts a raw representative claim slug (e.g., "claude_design", "claude-design")
+    /// into a human-friendly label (e.g., "Claude Design").
+    /// </summary>
+    private static string PrettifyRepresentativeClaim(string? claim)
+    {
+        if (string.IsNullOrWhiteSpace(claim))
+            return "Model class";
+
+        // Strip "claude_" / "claude-" prefix if present, then title-case
+        var normalized = claim
+            .Replace("claude_", "", StringComparison.OrdinalIgnoreCase)
+            .Replace("claude-", "", StringComparison.OrdinalIgnoreCase)
+            .Replace('_', ' ')
+            .Replace('-', ' ')
+            .Trim();
+
+        if (normalized.Length == 0)
+            return claim;
+
+        // Title-case each word
+        var words = normalized.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+        for (int i = 0; i < words.Length; i++)
+            words[i] = char.ToUpperInvariant(words[i][0]) + words[i][1..].ToLowerInvariant();
+
+        return string.Join(' ', words);
     }
 
     private static string FormatResetCountdown(long resetsAtEpoch, string windowName)
