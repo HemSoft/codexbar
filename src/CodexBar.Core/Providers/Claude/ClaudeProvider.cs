@@ -52,10 +52,11 @@ public sealed class ClaudeProvider : IUsageProvider
             ["claude-haiku-3-5"]  = (0.80, 4.0,  1.0,   0.08),
         };
 
-    // Cache the last known rate-limit data so we don't probe the API on every refresh
+    // Cache the last known rate-limit data so we don't probe the API on every refresh.
+    // TTL is 30 min to avoid burning subscription quota with frequent probes (~48 req/day vs ~288).
     private UnifiedRateLimits? _cachedLimits;
-    private DateTimeOffset _limitsCachedAt;
-    private static readonly TimeSpan CacheTtl = TimeSpan.FromMinutes(5);
+    private long _limitsCachedAtTicks; // stored as ticks for atomic reads via Volatile
+    private static readonly TimeSpan CacheTtl = TimeSpan.FromMinutes(30);
     private readonly SemaphoreSlim _cacheLock = new(1, 1);
 
     public ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFactory httpClientFactory, SettingsService settings)
@@ -278,9 +279,11 @@ public sealed class ClaudeProvider : IUsageProvider
     /// </summary>
     private async Task<UnifiedRateLimits?> FetchRateLimitsAsync(string? accessToken, CancellationToken ct)
     {
-        // Return cached value if still fresh (lock-free read for the common case)
+        // Return cached value if still fresh (lock-free read using atomic ticks)
+        var cachedTicks = Volatile.Read(ref _limitsCachedAtTicks);
         if (_cachedLimits is not null &&
-            DateTimeOffset.UtcNow - _limitsCachedAt < CacheTtl)
+            cachedTicks > 0 &&
+            DateTimeOffset.UtcNow.UtcTicks - cachedTicks < CacheTtl.Ticks)
         {
             return _cachedLimits;
         }
@@ -295,8 +298,10 @@ public sealed class ClaudeProvider : IUsageProvider
         try
         {
             // Re-check after acquiring lock — another call may have refreshed the cache
+            cachedTicks = Volatile.Read(ref _limitsCachedAtTicks);
             if (_cachedLimits is not null &&
-                DateTimeOffset.UtcNow - _limitsCachedAt < CacheTtl)
+                cachedTicks > 0 &&
+                DateTimeOffset.UtcNow.UtcTicks - cachedTicks < CacheTtl.Ticks)
             {
                 return _cachedLimits;
             }
@@ -327,7 +332,7 @@ public sealed class ClaudeProvider : IUsageProvider
             if (result is not null)
             {
                 _cachedLimits = result;
-                _limitsCachedAt = DateTimeOffset.UtcNow;
+                Volatile.Write(ref _limitsCachedAtTicks, DateTimeOffset.UtcNow.UtcTicks);
                 _logger.LogDebug("Claude rate limits: 5h={FiveH:P0}, 7d={SevenD:P0}, overage={Ovg:P0}",
                     result.FiveHourUtilization, result.SevenDayUtilization, result.OverageUtilization);
             }
