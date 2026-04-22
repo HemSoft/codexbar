@@ -8,22 +8,15 @@
         mc:Ignorable="d"
         d:DataContext="{d:DesignInstance Type=vm:MainViewModel, IsDesignTimeCreatable=False}"
         Title="CodexBar"
-        Width="340" Height="550"
-        MinWidth="260" MinHeight="200"
+        SizeToContent="Height" Width="340"
+        MaxHeight="800"
         WindowStyle="None"
         AllowsTransparency="True"
-        Background="#01000000"
+        Background="Transparent"
         ShowInTaskbar="False"
         Topmost="True"
-        ResizeMode="CanResize"
+        ResizeMode="NoResize"
         Deactivated="Window_Deactivated">
-
-    <WindowChrome.WindowChrome>
-        <WindowChrome CaptionHeight="2000"
-                      ResizeBorderThickness="6"
-                      GlassFrameThickness="0"
-                      CornerRadius="0" />
-    </WindowChrome.WindowChrome>
 
     <Window.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis" />
@@ -47,14 +40,11 @@
         </Style>
     </Window.Resources>
 
-    <Border x:Name="RootBorder" Background="{StaticResource BackgroundBrush}"
+    <Border Background="{StaticResource BackgroundBrush}"
             CornerRadius="12"
             BorderBrush="#3F3F5F"
             BorderThickness="1"
             Margin="8">
-        <Border.LayoutTransform>
-            <ScaleTransform x:Name="ZoomTransform" ScaleX="1" ScaleY="1" />
-        </Border.LayoutTransform>
         <Border.Effect>
             <DropShadowEffect BlurRadius="16" ShadowDepth="4" Opacity="0.4" />
         </Border.Effect>
