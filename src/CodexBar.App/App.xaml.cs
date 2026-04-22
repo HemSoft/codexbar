@@ -94,6 +94,26 @@ public partial class App : Application
         };
         menu.Items.Add(refreshItem);
 
+        var startupItem = new System.Windows.Controls.MenuItem
+        {
+            Header = "Start with Windows",
+            IsCheckable = true,
+            IsChecked = StartupManager.IsEnabled()
+        };
+        startupItem.Click += (_, _) =>
+        {
+            try
+            {
+                StartupManager.SetEnabled(startupItem.IsChecked);
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"[CodexBar] Failed to set startup: {ex.Message}");
+                startupItem.IsChecked = StartupManager.IsEnabled();
+            }
+        };
+        menu.Items.Add(startupItem);
+
         menu.Items.Add(new System.Windows.Controls.Separator());
 
         var exitItem = new System.Windows.Controls.MenuItem { Header = "Exit" };

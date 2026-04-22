@@ -7,6 +7,9 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
     <RootNamespace>CodexBar.App</RootNamespace>
+    <Version>1.0.0</Version>
+    <AssemblyTitle>CodexBar</AssemblyTitle>
+    <Description>Windows system tray app for AI provider usage monitoring</Description>
   </PropertyGroup>
 
   <ItemGroup>

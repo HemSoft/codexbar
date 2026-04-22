@@ -45,6 +45,9 @@
             BorderBrush="#3F3F5F"
             BorderThickness="1"
             Margin="8">
+        <Border.LayoutTransform>
+            <ScaleTransform x:Name="ZoomTransform" ScaleX="1" ScaleY="1" />
+        </Border.LayoutTransform>
         <Border.Effect>
             <DropShadowEffect BlurRadius="16" ShadowDepth="4" Opacity="0.4" />
         </Border.Effect>
@@ -177,7 +180,7 @@
             <!-- Footer -->
             <StackPanel Grid.Row="2" Orientation="Horizontal"
                         HorizontalAlignment="Right" Margin="0,8,0,0">
-                <TextBlock Text="v0.1.0"
+                <TextBlock Text="v1.0.0"
                            Foreground="{StaticResource TextSecondaryBrush}"
                            FontSize="12" />
             </StackPanel>
