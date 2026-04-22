@@ -14,6 +14,7 @@ public partial class MainWindow : Window
     private double _zoomLevel = 1.0;
     private double _lastWidth;
     private double _lastHeight;
+    private bool _hasUserPosition;
 
     public MainWindow(SettingsService settings)
     {
@@ -30,10 +31,23 @@ public partial class MainWindow : Window
         if (appSettings.WindowHeight is > 0)
             Height = appSettings.WindowHeight.Value;
 
+        if (appSettings.WindowLeft is not null && appSettings.WindowTop is not null)
+        {
+            Left = appSettings.WindowLeft.Value;
+            Top = appSettings.WindowTop.Value;
+            _hasUserPosition = true;
+        }
+
         _lastWidth = Width;
         _lastHeight = Height;
 
-        Loaded += (_, _) => PositionNearTray();
+        Loaded += (_, _) =>
+        {
+            if (_hasUserPosition)
+                EnsureOnScreen();
+            else
+                PositionNearTray();
+        };
         SizeChanged += OnSizeChanged;
         PreviewMouseWheel += OnPreviewMouseWheel;
     }
@@ -44,12 +58,19 @@ public partial class MainWindow : Window
         {
             _lastWidth = ActualWidth;
             _lastHeight = ActualHeight;
+
+            // Only nudge if the window actually extends beyond the work area
+            var workArea = SystemParameters.WorkArea;
+            if (Left + ActualWidth > workArea.Right || Top + ActualHeight > workArea.Bottom
+                || Left < workArea.Left || Top < workArea.Top)
+            {
+                EnsureOnScreen();
+            }
         }
-        if (IsLoaded) PositionNearTray();
     }
 
     /// <summary>
-    /// Called by App.ShowPopup() after Show() to restore size and zoom.
+    /// Called by App.ShowPopup() after Show() to restore size, zoom, and position.
     /// </summary>
     public void RestoreState()
     {
@@ -57,6 +78,11 @@ public partial class MainWindow : Window
         Height = _lastHeight;
         ZoomTransform.ScaleX = _zoomLevel;
         ZoomTransform.ScaleY = _zoomLevel;
+
+        if (_hasUserPosition)
+            EnsureOnScreen();
+        else
+            PositionNearTray();
     }
 
     protected override void OnActivated(EventArgs e)
@@ -110,6 +136,27 @@ public partial class MainWindow : Window
         Top = Math.Max(0, workArea.Bottom - ActualHeight - 8);
     }
 
+    private void EnsureOnScreen()
+    {
+        var workArea = SystemParameters.WorkArea;
+        if (Left + ActualWidth > workArea.Right)
+            Left = Math.Max(workArea.Left, workArea.Right - ActualWidth);
+        if (Top + ActualHeight > workArea.Bottom)
+            Top = Math.Max(workArea.Top, workArea.Bottom - ActualHeight);
+        if (Left < workArea.Left) Left = workArea.Left;
+        if (Top < workArea.Top) Top = workArea.Top;
+    }
+
+    private void Border_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (e.ChangedButton == MouseButton.Left && IsLoaded)
+        {
+            _hasUserPosition = true;
+            try { DragMove(); }
+            catch (InvalidOperationException) { }
+        }
+    }
+
     private void Window_Deactivated(object? sender, EventArgs e)
     {
         SaveWindowState();
@@ -124,6 +171,8 @@ public partial class MainWindow : Window
             settings.ZoomLevel = _zoomLevel;
             settings.WindowWidth = _lastWidth;
             settings.WindowHeight = _lastHeight;
+            settings.WindowLeft = Left;
+            settings.WindowTop = Top;
             _settings.Save(settings);
         }
         catch

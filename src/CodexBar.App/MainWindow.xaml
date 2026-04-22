@@ -12,7 +12,7 @@
         MaxHeight="800"
         WindowStyle="None"
         AllowsTransparency="True"
-        Background="Transparent"
+        Background="#01000000"
         ShowInTaskbar="False"
         Topmost="True"
         ResizeMode="NoResize"
@@ -44,7 +44,8 @@
             CornerRadius="12"
             BorderBrush="#3F3F5F"
             BorderThickness="1"
-            Margin="8">
+            Margin="8"
+            MouseLeftButtonDown="Border_MouseLeftButtonDown">
         <Border.LayoutTransform>
             <ScaleTransform x:Name="ZoomTransform" ScaleX="1" ScaleY="1" />
         </Border.LayoutTransform>

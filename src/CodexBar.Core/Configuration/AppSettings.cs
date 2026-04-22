@@ -32,6 +32,13 @@ public sealed class AppSettings
     /// <summary>Saved window height (null = use default).</summary>
     [JsonPropertyName("windowHeight")]
     public double? WindowHeight { get; set; }
+    /// <summary>Saved window left position (null = position near tray).</summary>
+    [JsonPropertyName("windowLeft")]
+    public double? WindowLeft { get; set; }
+
+    /// <summary>Saved window top position (null = position near tray).</summary>
+    [JsonPropertyName("windowTop")]
+    public double? WindowTop { get; set; }
 }
 
 public sealed class ProviderSettings

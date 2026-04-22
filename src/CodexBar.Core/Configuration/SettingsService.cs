@@ -67,6 +67,8 @@ public sealed class SettingsService
                 ZoomLevel = settings.ZoomLevel is > 0 and <= 5 ? settings.ZoomLevel : 1.0,
                 WindowWidth = settings.WindowWidth,
                 WindowHeight = settings.WindowHeight,
+                WindowLeft = settings.WindowLeft,
+                WindowTop = settings.WindowTop,
                 Providers = providers.ToDictionary(
                     kvp => kvp.Key,
                     kvp => new ProviderSettings
@@ -202,6 +204,8 @@ public sealed class SettingsService
         ZoomLevel = source.ZoomLevel,
         WindowWidth = source.WindowWidth,
         WindowHeight = source.WindowHeight,
+        WindowLeft = source.WindowLeft,
+        WindowTop = source.WindowTop,
         Providers = (source.Providers ?? new Dictionary<string, ProviderSettings>())
             .ToDictionary(
                 kvp => kvp.Key,
