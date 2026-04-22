@@ -5,7 +5,6 @@
              ShutdownMode="OnExplicitShutdown">
     <Application.Resources>
         <!-- Provider colors -->
-        <SolidColorBrush x:Key="GeminiColor" Color="#4285F4" />
         <SolidColorBrush x:Key="OpenRouterColor" Color="#6366F1" />
         <SolidColorBrush x:Key="CopilotColor" Color="#238636" />
         <SolidColorBrush x:Key="BackgroundBrush" Color="#1E1E2E" />

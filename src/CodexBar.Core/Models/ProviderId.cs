@@ -5,7 +5,6 @@ namespace CodexBar.Core.Models;
 /// </summary>
 public enum ProviderId
 {
-    Gemini,
     OpenRouter,
     Copilot,
     Claude

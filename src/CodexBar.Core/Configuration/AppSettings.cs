@@ -20,6 +20,18 @@ public sealed class AppSettings
     /// </summary>
     [JsonPropertyName("copilotAccounts")]
     public List<string> CopilotAccounts { get; set; } = new();
+
+    /// <summary>UI zoom level (1.0 = 100%). Persisted across restarts.</summary>
+    [JsonPropertyName("zoomLevel")]
+    public double ZoomLevel { get; set; } = 1.0;
+
+    /// <summary>Saved window width (null = use default).</summary>
+    [JsonPropertyName("windowWidth")]
+    public double? WindowWidth { get; set; }
+
+    /// <summary>Saved window height (null = use default).</summary>
+    [JsonPropertyName("windowHeight")]
+    public double? WindowHeight { get; set; }
 }
 
 public sealed class ProviderSettings

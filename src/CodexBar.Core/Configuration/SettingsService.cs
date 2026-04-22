@@ -64,6 +64,9 @@ public sealed class SettingsService
             {
                 RefreshIntervalSeconds = settings.RefreshIntervalSeconds,
                 CopilotAccounts = (settings.CopilotAccounts ?? []).ToList(),
+                ZoomLevel = settings.ZoomLevel is > 0 and <= 5 ? settings.ZoomLevel : 1.0,
+                WindowWidth = settings.WindowWidth,
+                WindowHeight = settings.WindowHeight,
                 Providers = providers.ToDictionary(
                     kvp => kvp.Key,
                     kvp => new ProviderSettings
@@ -186,7 +189,6 @@ public sealed class SettingsService
         RefreshIntervalSeconds = 120,
         Providers = new Dictionary<string, ProviderSettings>
         {
-            [ProviderId.Gemini.ToString()] = new() { Enabled = true },
             [ProviderId.OpenRouter.ToString()] = new() { Enabled = true },
             [ProviderId.Copilot.ToString()] = new() { Enabled = true },
             [ProviderId.Claude.ToString()] = new() { Enabled = true }
@@ -197,6 +199,9 @@ public sealed class SettingsService
     {
         RefreshIntervalSeconds = source.RefreshIntervalSeconds,
         CopilotAccounts = (source.CopilotAccounts ?? []).ToList(),
+        ZoomLevel = source.ZoomLevel,
+        WindowWidth = source.WindowWidth,
+        WindowHeight = source.WindowHeight,
         Providers = (source.Providers ?? new Dictionary<string, ProviderSettings>())
             .ToDictionary(
                 kvp => kvp.Key,

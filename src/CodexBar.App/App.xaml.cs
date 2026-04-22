@@ -1,12 +1,13 @@
-﻿using System.Drawing;
+﻿using System.Diagnostics;
+using System.Drawing;
 using System.Runtime.InteropServices;
 using System.Windows;
+using System.Windows.Threading;
 using CodexBar.App.ViewModels;
 using CodexBar.Core.Configuration;
 using CodexBar.Core.Providers;
 using CodexBar.Core.Providers.Claude;
 using CodexBar.Core.Providers.Copilot;
-using CodexBar.Core.Providers.Gemini;
 using CodexBar.Core.Providers.OpenRouter;
 using CodexBar.Core.Services;
 using Microsoft.Extensions.DependencyInjection;
@@ -26,6 +27,9 @@ public partial class App : Application
     {
         base.OnStartup(e);
 
+        DispatcherUnhandledException += OnDispatcherUnhandledException;
+        AppDomain.CurrentDomain.UnhandledException += OnDomainUnhandledException;
+
         var services = new ServiceCollection();
         ConfigureServices(services);
         _services = services.BuildServiceProvider();
@@ -38,6 +42,17 @@ public partial class App : Application
         _refreshService.Start();
     }
 
+    private static void OnDispatcherUnhandledException(object sender, DispatcherUnhandledExceptionEventArgs e)
+    {
+        Debug.WriteLine($"[CodexBar] Unhandled dispatcher exception: {e.Exception}");
+        e.Handled = true; // Prevent crash — keep tray icon alive
+    }
+
+    private static void OnDomainUnhandledException(object sender, UnhandledExceptionEventArgs e)
+    {
+        Debug.WriteLine($"[CodexBar] Unhandled domain exception: {e.ExceptionObject}");
+    }
+
     private static void ConfigureServices(IServiceCollection services)
     {
         services.AddLogging(b => b.AddConsole().SetMinimumLevel(LogLevel.Debug));
@@ -47,7 +62,6 @@ public partial class App : Application
 
         services.AddSingleton<SettingsService>();
 
-        services.AddSingleton<IUsageProvider, GeminiProvider>();
         services.AddSingleton<IUsageProvider, OpenRouterProvider>();
         services.AddSingleton<IUsageProvider, CopilotProvider>();
         services.AddSingleton<IUsageProvider, ClaudeProvider>();
@@ -64,7 +78,7 @@ public partial class App : Application
             Icon = CreateDefaultIcon(),
             ContextMenu = CreateContextMenu()
         };
-        _trayIcon.TrayLeftMouseUp += (_, _) => ShowPopup();
+        _trayIcon.TrayMouseMove += (_, _) => ShowPopup();
         _trayIcon.ForceCreate();
     }
 
@@ -91,13 +105,24 @@ public partial class App : Application
 
     private void ShowPopup()
     {
-        if (_mainWindow is null)
+        try
         {
-            _mainWindow = new MainWindow { DataContext = _viewModel };
-            _mainWindow.Closed += (_, _) => _mainWindow = null;
+            if (_mainWindow is { IsVisible: true }) return;
+
+            var settingsService = _services!.GetRequiredService<SettingsService>();
+            if (_mainWindow is null)
+            {
+                _mainWindow = new MainWindow(settingsService) { DataContext = _viewModel };
+                _mainWindow.Closed += (_, _) => _mainWindow = null;
+            }
+            _mainWindow.Show();
+            _mainWindow.RestoreState();
+            _mainWindow.Activate();
         }
-        _mainWindow.Show();
-        _mainWindow.Activate();
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"[CodexBar] ShowPopup error: {ex.Message}");
+        }
     }
 
     private static Icon CreateDefaultIcon()
