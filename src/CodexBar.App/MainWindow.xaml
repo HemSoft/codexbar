@@ -64,7 +64,7 @@
                     Background="Transparent"
                     Cursor="SizeAll"
                     Margin="0,0,0,12"
-                    MouseLeftButtonDown="TitleBar_MouseLeftButtonDown">
+                    PreviewMouseLeftButtonDown="TitleBar_MouseLeftButtonDown">
                 <TextBlock Text="🎚️ CodexBar"
                            FontSize="20" FontWeight="SemiBold"
                            Foreground="{StaticResource TextPrimaryBrush}" />

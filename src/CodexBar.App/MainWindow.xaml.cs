@@ -172,6 +172,7 @@ public partial class MainWindow : Window
     {
         if (e.ChangedButton == MouseButton.Left && IsLoaded)
         {
+            e.Handled = true;
             _hasUserPosition = true;
             _isDragging = true;
             try { DragMove(); }
