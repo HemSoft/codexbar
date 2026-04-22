@@ -24,7 +24,11 @@ public partial class MainWindow : Window
     private double _lastHeight;
     private bool _hasUserPosition;
     private bool _isDragging;
-    private DateTime _dragEndedAtUtc;
+    private DateTime _dragEndedAtUtc = DateTime.MinValue;
+    private Point _dragStartMouseScreen;
+    private double _dragStartLeft;
+    private double _dragStartTop;
+    private UIElement? _capturedTitleBar;
 
     public MainWindow(SettingsService settings)
     {
@@ -170,19 +174,51 @@ public partial class MainWindow : Window
 
     private void TitleBar_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
-        if (e.ChangedButton == MouseButton.Left && IsLoaded)
+        if (e.ChangedButton == MouseButton.Left && IsLoaded && sender is UIElement titleBar)
         {
             e.Handled = true;
             _hasUserPosition = true;
             _isDragging = true;
-            try { DragMove(); }
-            catch (InvalidOperationException) { }
-            finally
-            {
-                _isDragging = false;
-                _dragEndedAtUtc = DateTime.UtcNow;
-            }
+            _hideTimer.Stop();
+            _dragStartMouseScreen = PointToScreen(e.GetPosition(this));
+            _dragStartLeft = Left;
+            _dragStartTop = Top;
+            Activate();
+            _capturedTitleBar = titleBar;
+            titleBar.CaptureMouse();
         }
+    }
+
+    private void TitleBar_MouseMove(object sender, MouseEventArgs e)
+    {
+        if (!_isDragging)
+            return;
+
+        if (e.LeftButton != MouseButtonState.Pressed)
+        {
+            EndTitleBarDrag();
+            return;
+        }
+
+        var currentMouseScreen = PointToScreen(e.GetPosition(this));
+        Left = _dragStartLeft + (currentMouseScreen.X - _dragStartMouseScreen.X);
+        Top = _dragStartTop + (currentMouseScreen.Y - _dragStartMouseScreen.Y);
+        e.Handled = true;
+    }
+
+    private void TitleBar_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        if (!_isDragging)
+            return;
+
+        e.Handled = true;
+        EndTitleBarDrag();
+    }
+
+    private void TitleBar_LostMouseCapture(object sender, MouseEventArgs e)
+    {
+        if (_isDragging)
+            EndTitleBarDrag();
     }
 
     private void Window_Deactivated(object? sender, EventArgs e)
@@ -230,5 +266,18 @@ public partial class MainWindow : Window
         {
             // Best-effort — don't crash on save failure
         }
+    }
+
+    private void EndTitleBarDrag()
+    {
+        _isDragging = false;
+        _dragEndedAtUtc = DateTime.UtcNow;
+        var capturedTitleBar = _capturedTitleBar;
+        _capturedTitleBar = null;
+
+        if (capturedTitleBar?.IsMouseCaptured == true)
+            capturedTitleBar.ReleaseMouseCapture();
+
+        SaveWindowState();
     }
 }
