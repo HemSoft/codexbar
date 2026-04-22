@@ -117,7 +117,11 @@ public partial class App : Application
         menu.Items.Add(new System.Windows.Controls.Separator());
 
         var exitItem = new System.Windows.Controls.MenuItem { Header = "Exit" };
-        exitItem.Click += (_, _) => Shutdown();
+        exitItem.Click += (_, _) =>
+        {
+            _mainWindow?.SaveWindowState();
+            Shutdown();
+        };
         menu.Items.Add(exitItem);
 
         return menu;
@@ -176,6 +180,7 @@ public partial class App : Application
 
     protected override void OnExit(ExitEventArgs e)
     {
+        _mainWindow?.SaveWindowState();
         // Only dispose non-DI resources manually. _viewModel and _refreshService
         // are DI singletons — ServiceProvider.Dispose() handles their lifetime.
         _trayIcon?.Dispose();

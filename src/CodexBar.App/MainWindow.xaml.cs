@@ -1,5 +1,6 @@
 ﻿using System.Windows;
 using System.Windows.Input;
+using System.Windows.Threading;
 using CodexBar.Core.Configuration;
 
 namespace CodexBar.App;
@@ -10,16 +11,28 @@ public partial class MainWindow : Window
     private const double MinZoom = 0.5;
     private const double MaxZoom = 3.0;
 
+    /// <summary>Duration after a drag ends during which Deactivated is suppressed.</summary>
+    private static readonly TimeSpan DragCooldown = TimeSpan.FromMilliseconds(500);
+
+    /// <summary>Delay before hiding the window on deactivation, allowing reactivation to cancel.</summary>
+    private static readonly TimeSpan HideDelay = TimeSpan.FromMilliseconds(150);
+
     private readonly SettingsService _settings;
+    private readonly DispatcherTimer _hideTimer;
     private double _zoomLevel = 1.0;
     private double _lastWidth;
     private double _lastHeight;
     private bool _hasUserPosition;
+    private bool _isDragging;
+    private DateTime _dragEndedAtUtc;
 
     public MainWindow(SettingsService settings)
     {
         _settings = settings;
         InitializeComponent();
+
+        _hideTimer = new DispatcherTimer { Interval = HideDelay };
+        _hideTimer.Tick += HideTimer_Tick;
 
         var appSettings = _settings.Load();
         _zoomLevel = Math.Clamp(appSettings.ZoomLevel, MinZoom, MaxZoom);
@@ -88,7 +101,15 @@ public partial class MainWindow : Window
     protected override void OnActivated(EventArgs e)
     {
         base.OnActivated(e);
+        _hideTimer.Stop();
         Focus();
+    }
+
+    protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
+    {
+        _hideTimer.Stop();
+        SaveWindowState();
+        base.OnClosing(e);
     }
 
     protected override void OnKeyDown(KeyEventArgs e)
@@ -147,23 +168,42 @@ public partial class MainWindow : Window
         if (Top < workArea.Top) Top = workArea.Top;
     }
 
-    private void Border_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    private void TitleBar_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
         if (e.ChangedButton == MouseButton.Left && IsLoaded)
         {
             _hasUserPosition = true;
+            _isDragging = true;
             try { DragMove(); }
             catch (InvalidOperationException) { }
+            finally
+            {
+                _isDragging = false;
+                _dragEndedAtUtc = DateTime.UtcNow;
+            }
         }
     }
 
     private void Window_Deactivated(object? sender, EventArgs e)
     {
+        if (_isDragging) return;
+        if ((DateTime.UtcNow - _dragEndedAtUtc) < DragCooldown) return;
+
+        _hideTimer.Stop();
+        _hideTimer.Start();
+    }
+
+    private void HideTimer_Tick(object? sender, EventArgs e)
+    {
+        _hideTimer.Stop();
+        if (IsActive || _isDragging) return;
+
         SaveWindowState();
         Hide();
     }
 
-    private void SaveWindowState()
+    /// <summary>Persists window geometry to disk. Safe to call multiple times.</summary>
+    internal void SaveWindowState()
     {
         try
         {
@@ -171,8 +211,18 @@ public partial class MainWindow : Window
             settings.ZoomLevel = _zoomLevel;
             settings.WindowWidth = _lastWidth;
             settings.WindowHeight = _lastHeight;
-            settings.WindowLeft = Left;
-            settings.WindowTop = Top;
+
+            if (_hasUserPosition)
+            {
+                settings.WindowLeft = Left;
+                settings.WindowTop = Top;
+            }
+            else
+            {
+                settings.WindowLeft = null;
+                settings.WindowTop = null;
+            }
+
             _settings.Save(settings);
         }
         catch
