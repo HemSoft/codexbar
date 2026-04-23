@@ -1,5 +1,7 @@
-﻿using System.Windows;
+using System.Windows;
 using System.Windows.Input;
+using System.Windows.Interop;
+using System.Windows.Media;
 using System.Windows.Threading;
 using CodexBar.Core.Configuration;
 
@@ -10,6 +12,20 @@ public partial class MainWindow : Window
     private const double ZoomStep = 0.1;
     private const double MinZoom = 0.5;
     private const double MaxZoom = 3.0;
+
+    private const int WM_NCHITTEST = 0x0084;
+    private const int WM_ENTERSIZEMOVE = 0x0231;
+    private const int WM_EXITSIZEMOVE = 0x0232;
+    private const int WM_SETCURSOR = 0x0020;
+    private const int HTCAPTION = 2;
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern IntPtr LoadCursor(IntPtr hInstance, IntPtr lpCursorName);
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern IntPtr SetCursor(IntPtr hCursor);
+
+    private static readonly IntPtr IDC_SIZEALL = new IntPtr(32646);
 
     /// <summary>Duration after a drag ends during which Deactivated is suppressed.</summary>
     private static readonly TimeSpan DragCooldown = TimeSpan.FromMilliseconds(500);
@@ -25,10 +41,7 @@ public partial class MainWindow : Window
     private bool _hasUserPosition;
     private bool _isDragging;
     private DateTime _dragEndedAtUtc = DateTime.MinValue;
-    private Point _dragStartMouseScreen;
-    private double _dragStartLeft;
-    private double _dragStartTop;
-    private UIElement? _capturedTitleBar;
+    private HwndSource? _hwndSource;
 
     public MainWindow(SettingsService settings)
     {
@@ -172,54 +185,72 @@ public partial class MainWindow : Window
         if (Top < workArea.Top) Top = workArea.Top;
     }
 
-    private void TitleBar_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    protected override void OnSourceInitialized(EventArgs e)
     {
-        if (e.ChangedButton == MouseButton.Left && IsLoaded && sender is UIElement titleBar)
+        base.OnSourceInitialized(e);
+        _hwndSource = PresentationSource.FromVisual(this) as HwndSource;
+        _hwndSource?.AddHook(WndProc);
+    }
+
+    private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
+    {
+        switch (msg)
         {
-            e.Handled = true;
-            _hasUserPosition = true;
-            _isDragging = true;
-            _hideTimer.Stop();
-            _dragStartMouseScreen = PointToScreen(e.GetPosition(this));
-            _dragStartLeft = Left;
-            _dragStartTop = Top;
-            Activate();
-            _capturedTitleBar = titleBar;
-            titleBar.CaptureMouse();
+            case WM_NCHITTEST:
+                return HandleNcHitTest(lParam, ref handled);
+            case WM_SETCURSOR:
+                if (LowWord((long)lParam) == HTCAPTION)
+                {
+                    SetCursor(LoadCursor(IntPtr.Zero, IDC_SIZEALL));
+                    handled = true;
+                    return (IntPtr)1;
+                }
+                break;
+            case WM_ENTERSIZEMOVE:
+                _isDragging = true;
+                _hasUserPosition = true;
+                _hideTimer.Stop();
+                break;
+            case WM_EXITSIZEMOVE:
+                _isDragging = false;
+                _dragEndedAtUtc = DateTime.UtcNow;
+                SaveWindowState();
+                break;
         }
+        return IntPtr.Zero;
     }
 
-    private void TitleBar_MouseMove(object sender, MouseEventArgs e)
+    private IntPtr HandleNcHitTest(IntPtr lParam, ref bool handled)
     {
-        if (!_isDragging)
-            return;
+        if (_hwndSource?.CompositionTarget == null)
+            return IntPtr.Zero;
 
-        if (e.LeftButton != MouseButtonState.Pressed)
+        var screenX = (short)(lParam.ToInt64() & 0xFFFF);
+        var screenY = (short)((lParam.ToInt64() >> 16) & 0xFFFF);
+
+        var transform = _hwndSource.CompositionTarget.TransformFromDevice;
+        var wpfScreenPoint = transform.Transform(new Point(screenX, screenY));
+        var windowPoint = PointFromScreen(wpfScreenPoint);
+
+        var result = VisualTreeHelper.HitTest(this, windowPoint);
+        if (result != null)
         {
-            EndTitleBarDrag();
-            return;
+            var visual = result.VisualHit;
+            while (visual != null)
+            {
+                if (visual == TitleBarBorder)
+                {
+                    handled = true;
+                    return (IntPtr)HTCAPTION;
+                }
+                visual = VisualTreeHelper.GetParent(visual);
+            }
         }
 
-        var currentMouseScreen = PointToScreen(e.GetPosition(this));
-        Left = _dragStartLeft + (currentMouseScreen.X - _dragStartMouseScreen.X);
-        Top = _dragStartTop + (currentMouseScreen.Y - _dragStartMouseScreen.Y);
-        e.Handled = true;
+        return IntPtr.Zero;
     }
 
-    private void TitleBar_MouseLeftButtonUp(object sender, MouseButtonEventArgs e)
-    {
-        if (!_isDragging)
-            return;
-
-        e.Handled = true;
-        EndTitleBarDrag();
-    }
-
-    private void TitleBar_LostMouseCapture(object sender, MouseEventArgs e)
-    {
-        if (_isDragging)
-            EndTitleBarDrag();
-    }
+    private static short LowWord(long value) => (short)(value & 0xFFFF);
 
     private void Window_Deactivated(object? sender, EventArgs e)
     {
@@ -268,16 +299,5 @@ public partial class MainWindow : Window
         }
     }
 
-    private void EndTitleBarDrag()
-    {
-        _isDragging = false;
-        _dragEndedAtUtc = DateTime.UtcNow;
-        var capturedTitleBar = _capturedTitleBar;
-        _capturedTitleBar = null;
-
-        if (capturedTitleBar?.IsMouseCaptured == true)
-            capturedTitleBar.ReleaseMouseCapture();
-
-        SaveWindowState();
-    }
 }
+

@@ -1,4 +1,4 @@
-﻿<Window x:Class="CodexBar.App.MainWindow"
+<Window x:Class="CodexBar.App.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
@@ -59,18 +59,16 @@
                 <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
 
-            <!-- Title bar (drag to reposition) -->
-            <Border Grid.Row="0"
+            <!-- Title bar (drag to reposition via WM_NCHITTEST HTCAPTION) -->
+            <Border x:Name="TitleBarBorder"
+                    Grid.Row="0"
                     Background="Transparent"
                     Cursor="SizeAll"
-                    Margin="0,0,0,12"
-                    PreviewMouseLeftButtonDown="TitleBar_MouseLeftButtonDown"
-                    PreviewMouseMove="TitleBar_MouseMove"
-                    PreviewMouseLeftButtonUp="TitleBar_MouseLeftButtonUp"
-                    LostMouseCapture="TitleBar_LostMouseCapture">
+                    Margin="0,0,0,12">
                 <TextBlock Text="🎚️ CodexBar"
                            FontSize="20" FontWeight="SemiBold"
-                           Foreground="{StaticResource TextPrimaryBrush}" />
+                           Foreground="{StaticResource TextPrimaryBrush}"
+                           IsHitTestVisible="False" />
             </Border>
 
             <!-- Provider cards -->

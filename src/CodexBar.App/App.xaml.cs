@@ -1,4 +1,4 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using System.Drawing;
 using System.Runtime.InteropServices;
 using System.Windows;
@@ -55,7 +55,7 @@ public partial class App : Application
 
     private static void ConfigureServices(IServiceCollection services)
     {
-        services.AddLogging(b => b.AddConsole().SetMinimumLevel(LogLevel.Debug));
+        services.AddLogging(b => b.AddConsole().AddFile().SetMinimumLevel(LogLevel.Debug));
         services.AddHttpClient();
         services.ConfigureHttpClientDefaults(b =>
             b.ConfigureHttpClient(c => c.Timeout = TimeSpan.FromSeconds(15)));
