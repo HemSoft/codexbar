@@ -9,13 +9,13 @@
         d:DataContext="{d:DesignInstance Type=vm:MainViewModel, IsDesignTimeCreatable=False}"
         Title="CodexBar"
         SizeToContent="Height" Width="340"
-        MaxHeight="800"
+        MaxHeight="1400"
         WindowStyle="None"
         AllowsTransparency="True"
         Background="#01000000"
         ShowInTaskbar="False"
         Topmost="True"
-        ResizeMode="NoResize"
+        ResizeMode="CanResizeWithGrip"
         Deactivated="Window_Deactivated">
 
     <Window.Resources>
@@ -106,17 +106,30 @@
                                     </TextBlock>
                                 </Grid>
 
-                                <!-- Legacy single-bar (hidden when HasBars is true) -->
+                                <!-- Legacy single-bar (hidden for multi-bar and credits cards) -->
                                 <ProgressBar Value="{Binding UsedPercent, Mode=OneWay}"
                                              Style="{StaticResource UsageBar}"
-                                             Visibility="{Binding HasBars, Converter={StaticResource InverseBoolToVis}}"
+                                             Visibility="{Binding ShowProgressBar, Converter={StaticResource BoolToVis}}"
                                              Margin="0,6,0,4" />
 
-                                <!-- Status text -->
+                                <!-- Credits display: large bold amount + "credits remaining" label -->
+                                <StackPanel Visibility="{Binding IsCreditsDisplay, Converter={StaticResource BoolToVis}}"
+                                            Margin="0,6,0,0">
+                                    <TextBlock Text="{Binding StatusText}"
+                                               FontSize="26" FontWeight="SemiBold"
+                                               Foreground="{StaticResource TextPrimaryBrush}" />
+                                    <TextBlock Text="credits remaining"
+                                               FontSize="12"
+                                               Foreground="{StaticResource TextSecondaryBrush}"
+                                               Margin="0,2,0,0" />
+                                </StackPanel>
+
+                                <!-- Status text (non-credits cards) -->
                                 <TextBlock Text="{Binding StatusText}"
                                            FontSize="13"
                                            Foreground="{StaticResource TextSecondaryBrush}"
-                                           TextTrimming="CharacterEllipsis" />
+                                           TextTrimming="CharacterEllipsis"
+                                           Visibility="{Binding IsCreditsDisplay, Converter={StaticResource InverseBoolToVis}}" />
 
                                 <!-- Multi-bar display (visible when HasBars is true) -->
                                 <ItemsControl ItemsSource="{Binding Bars}"

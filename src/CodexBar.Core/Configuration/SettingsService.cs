@@ -49,7 +49,38 @@ public sealed class SettingsService
     {
         lock (_lock)
         {
+            MergeFromDisk(settings);
             SaveInternal(settings);
+        }
+    }
+
+    /// <summary>
+    /// Merges provider entries and workspace IDs that exist on disk but are absent from
+    /// the in-memory settings. Prevents an in-flight Save from clobbering credentials that
+    /// were added to the file while the app was running.
+    /// </summary>
+    private void MergeFromDisk(AppSettings settings)
+    {
+        if (!File.Exists(SettingsPath)) return;
+        try
+        {
+            var diskJson = File.ReadAllText(SettingsPath);
+            var disk = JsonSerializer.Deserialize<AppSettings>(diskJson, JsonOptions);
+            if (disk is null) return;
+
+            settings.Providers ??= new Dictionary<string, ProviderSettings>();
+            foreach (var (key, value) in disk.Providers ?? new Dictionary<string, ProviderSettings>())
+            {
+                if (!settings.Providers.ContainsKey(key))
+                    settings.Providers[key] = value ?? new ProviderSettings();
+            }
+
+            if (settings.OpenCodeGoWorkspaceId is null && disk.OpenCodeGoWorkspaceId is not null)
+                settings.OpenCodeGoWorkspaceId = disk.OpenCodeGoWorkspaceId;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "MergeFromDisk skipped — could not read {Path}", SettingsPath);
         }
     }
 
@@ -64,6 +95,7 @@ public sealed class SettingsService
             {
                 RefreshIntervalSeconds = settings.RefreshIntervalSeconds,
                 CopilotAccounts = (settings.CopilotAccounts ?? []).ToList(),
+                OpenCodeGoWorkspaceId = string.IsNullOrWhiteSpace(settings.OpenCodeGoWorkspaceId) ? null : settings.OpenCodeGoWorkspaceId,
                 ZoomLevel = settings.ZoomLevel is > 0 and <= 5 ? settings.ZoomLevel : 1.0,
                 WindowWidth = settings.WindowWidth,
                 WindowHeight = settings.WindowHeight,
@@ -123,6 +155,17 @@ public sealed class SettingsService
         {
             var settings = EnsureCached();
             return !settings.Providers.TryGetValue(providerId.ToString(), out var ps) || ps is null || ps.Enabled;
+        }
+    }
+
+    /// <summary>
+    /// Returns the OpenCode Go workspace ID from settings (env var takes precedence in the provider).
+    /// </summary>
+    public string? GetOpenCodeGoWorkspaceId()
+    {
+        lock (_lock)
+        {
+            return EnsureCached().OpenCodeGoWorkspaceId;
         }
     }
 
@@ -193,7 +236,8 @@ public sealed class SettingsService
         {
             [ProviderId.OpenRouter.ToString()] = new() { Enabled = true },
             [ProviderId.Copilot.ToString()] = new() { Enabled = true },
-            [ProviderId.Claude.ToString()] = new() { Enabled = true }
+            [ProviderId.Claude.ToString()] = new() { Enabled = false },
+            [ProviderId.OpenCodeGo.ToString()] = new() { Enabled = true }
         }
     };
 
@@ -201,6 +245,7 @@ public sealed class SettingsService
     {
         RefreshIntervalSeconds = source.RefreshIntervalSeconds,
         CopilotAccounts = (source.CopilotAccounts ?? []).ToList(),
+        OpenCodeGoWorkspaceId = source.OpenCodeGoWorkspaceId,
         ZoomLevel = source.ZoomLevel,
         WindowWidth = source.WindowWidth,
         WindowHeight = source.WindowHeight,

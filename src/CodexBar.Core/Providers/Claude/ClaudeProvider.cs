@@ -127,7 +127,13 @@ public sealed class ClaudeProvider : IUsageProvider
                     if (tokenExpiry < DateTimeOffset.UtcNow)
                     {
                         _logger.LogWarning("Claude OAuth token expired at {Expiry}, attempting refresh", tokenExpiry);
-                        credentials = await TryRefreshTokenAsync(credentials, ct) ?? credentials;
+                        var refreshed = await TryRefreshTokenAsync(credentials, ct);
+                        if (refreshed is null)
+                        {
+                            return ProviderUsageResult.Failure(ProviderId.Claude,
+                                "Claude login expired and could not be refreshed. Run 'claude' in terminal and sign in again.");
+                        }
+                        credentials = refreshed;
                     }
                     else
                     {
@@ -265,12 +271,12 @@ public sealed class ClaudeProvider : IUsageProvider
     }
 
     /// <summary>
-    /// Builds the list of labelled usage bars matching Claude's own UI:
-    /// 1. 5-hour limit  2. Weekly · all models  3. Weekly · [model class] (from representative claim)
+    /// Builds the labelled usage bars for the Claude Code windows that are visible
+    /// and actionable in Claude's usage UI: 5-hour and weekly.
     /// </summary>
     private static List<UsageBar> BuildUsageBars(UnifiedRateLimits? limits)
     {
-        var bars = new List<UsageBar>(3);
+        var bars = new List<UsageBar>(2);
 
         bars.Add(new UsageBar
         {
@@ -296,19 +302,6 @@ public sealed class ClaudeProvider : IUsageProvider
                 : null
         });
 
-        var claimLabel = PrettifyRepresentativeClaim(limits?.RepresentativeClaim);
-        bars.Add(new UsageBar
-        {
-            Label = $"Weekly · {claimLabel}",
-            UsedPercent = limits?.OverageUtilization ?? 0,
-            ResetDescription = limits is not null && limits.OverageReset > 0
-                ? FormatBarReset(limits.OverageReset)
-                : null,
-            ResetsAt = limits is not null && limits.OverageReset > 0
-                ? DateTimeOffset.FromUnixTimeSeconds(limits.OverageReset)
-                : null
-        });
-
         return bars;
     }
 
@@ -322,34 +315,6 @@ public sealed class ClaudeProvider : IUsageProvider
         if (remaining.TotalDays >= 1) return $"Resets {remaining.Days}d";
         if (remaining.TotalHours >= 1) return $"Resets {(int)remaining.TotalHours}h";
         return $"Resets {remaining.Minutes}m";
-    }
-
-    /// <summary>
-    /// Converts a raw representative claim slug (e.g., "claude_design", "claude-design")
-    /// into a human-friendly label (e.g., "Claude Design").
-    /// </summary>
-    private static string PrettifyRepresentativeClaim(string? claim)
-    {
-        if (string.IsNullOrWhiteSpace(claim))
-            return "Model class";
-
-        // Strip "claude_" / "claude-" prefix if present, then title-case
-        var normalized = claim
-            .Replace("claude_", "", StringComparison.OrdinalIgnoreCase)
-            .Replace("claude-", "", StringComparison.OrdinalIgnoreCase)
-            .Replace('_', ' ')
-            .Replace('-', ' ')
-            .Trim();
-
-        if (normalized.Length == 0)
-            return claim;
-
-        // Title-case each word
-        var words = normalized.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        for (int i = 0; i < words.Length; i++)
-            words[i] = char.ToUpperInvariant(words[i][0]) + words[i][1..].ToLowerInvariant();
-
-        return string.Join(' ', words);
     }
 
     private static string FormatResetCountdown(long resetsAtEpoch, string windowName)
@@ -451,13 +416,6 @@ public sealed class ClaudeProvider : IUsageProvider
             if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized)
             {
                 _logger.LogWarning("Claude API returned 401 — OAuth token may be expired");
-                if (result is not null)
-                {
-                    _logger.LogInformation("Claude: rate-limit headers present despite 401, using them");
-                    _cachedLimits = result;
-                    Volatile.Write(ref _limitsCachedAtTicks, DateTimeOffset.UtcNow.UtcTicks);
-                    return result;
-                }
                 return null;
             }
 
@@ -465,8 +423,8 @@ public sealed class ClaudeProvider : IUsageProvider
             {
                 _cachedLimits = result;
                 Volatile.Write(ref _limitsCachedAtTicks, DateTimeOffset.UtcNow.UtcTicks);
-                _logger.LogDebug("Claude rate limits: 5h={FiveH:P0}, 7d={SevenD:P0}, overage={Ovg:P0}",
-                    result.FiveHourUtilization, result.SevenDayUtilization, result.OverageUtilization);
+                _logger.LogDebug("Claude rate limits: 5h={FiveH:P0}, 7d={SevenD:P0}",
+                    result.FiveHourUtilization, result.SevenDayUtilization);
             }
             else
             {
@@ -644,13 +602,7 @@ public sealed class ClaudeProvider : IUsageProvider
 
             SevenDayUtilization = ParseDouble(sevenDUtil),
             SevenDayReset = ParseLong(GetHeader(headers, "anthropic-ratelimit-unified-7d-reset")),
-            SevenDayStatus = GetHeader(headers, "anthropic-ratelimit-unified-7d-status") ?? "unknown",
-
-            OverageUtilization = ParseDouble(GetHeader(headers, "anthropic-ratelimit-unified-overage-utilization")),
-            OverageReset = ParseLong(GetHeader(headers, "anthropic-ratelimit-unified-overage-reset")),
-            OverageStatus = GetHeader(headers, "anthropic-ratelimit-unified-overage-status") ?? "unknown",
-
-            RepresentativeClaim = GetHeader(headers, "anthropic-ratelimit-unified-representative-claim")
+            SevenDayStatus = GetHeader(headers, "anthropic-ratelimit-unified-7d-status") ?? "unknown"
         };
     }
 
@@ -830,12 +782,6 @@ public sealed class ClaudeProvider : IUsageProvider
         public double SevenDayUtilization { get; init; }
         public long SevenDayReset { get; init; }
         public string SevenDayStatus { get; init; } = "unknown";
-
-        public double OverageUtilization { get; init; }
-        public long OverageReset { get; init; }
-        public string OverageStatus { get; init; } = "unknown";
-
-        public string? RepresentativeClaim { get; init; }
     }
 
     private sealed record ClaudeCredentials
