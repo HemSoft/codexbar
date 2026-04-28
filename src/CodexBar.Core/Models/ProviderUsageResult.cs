@@ -37,4 +37,11 @@ public sealed record ProviderUsageResult
             Success = false,
             ErrorMessage = error
         };
+
+    public static ProviderUsageResult EmptySuccess(ProviderId provider) =>
+        new()
+        {
+            Provider = provider,
+            Success = true
+        };
 }

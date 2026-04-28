@@ -247,7 +247,7 @@ public sealed class ClaudeProvider : IUsageProvider
         };
     }
 
-    private static UsageSnapshot? BuildWeeklySnapshot(UnifiedRateLimits? limits)
+    internal static UsageSnapshot? BuildWeeklySnapshot(UnifiedRateLimits? limits)
     {
         if (limits is null)
             return null;
@@ -274,7 +274,7 @@ public sealed class ClaudeProvider : IUsageProvider
     /// Builds the labelled usage bars for the Claude Code windows that are visible
     /// and actionable in Claude's usage UI: 5-hour and weekly.
     /// </summary>
-    private static List<UsageBar> BuildUsageBars(UnifiedRateLimits? limits)
+    internal static List<UsageBar> BuildUsageBars(UnifiedRateLimits? limits)
     {
         var bars = new List<UsageBar>(2);
 
@@ -308,7 +308,7 @@ public sealed class ClaudeProvider : IUsageProvider
     /// <summary>
     /// Formats a compact reset string for the bar's right-side display (e.g., "Resets 2h", "Resets 2d").
     /// </summary>
-    private static string FormatBarReset(long resetsAtEpoch)
+    internal static string FormatBarReset(long resetsAtEpoch)
     {
         var remaining = DateTimeOffset.FromUnixTimeSeconds(resetsAtEpoch) - DateTimeOffset.UtcNow;
         if (remaining <= TimeSpan.Zero) return "Resets now";
@@ -317,7 +317,7 @@ public sealed class ClaudeProvider : IUsageProvider
         return $"Resets {remaining.Minutes}m";
     }
 
-    private static string FormatResetCountdown(long resetsAtEpoch, string windowName)
+    internal static string FormatResetCountdown(long resetsAtEpoch, string windowName)
     {
         var resetsAt = DateTimeOffset.FromUnixTimeSeconds(resetsAtEpoch);
         var remaining = resetsAt - DateTimeOffset.UtcNow;
@@ -333,7 +333,7 @@ public sealed class ClaudeProvider : IUsageProvider
         return $"{windowName} resets in {remaining.Minutes}m";
     }
 
-    private static string FormatTokenCount(long totalTokens) =>
+    internal static string FormatTokenCount(long totalTokens) =>
         totalTokens switch
         {
             >= 1_000_000_000 => $"{totalTokens / 1_000_000_000.0:F1}B tokens",
@@ -342,7 +342,7 @@ public sealed class ClaudeProvider : IUsageProvider
             _ => $"{totalTokens} tokens"
         };
 
-    private static string FormatUsageLabel(
+    internal static string FormatUsageLabel(
         string subscriptionType,
         long totalTokens,
         double equivalentCost,
@@ -707,7 +707,7 @@ public sealed class ClaudeProvider : IUsageProvider
         }
     }
 
-    private static long CalculateTotalTokens(ClaudeStatsCache? stats)
+    internal static long CalculateTotalTokens(ClaudeStatsCache? stats)
     {
         if (stats is null)
             return 0;
@@ -719,7 +719,7 @@ public sealed class ClaudeProvider : IUsageProvider
     /// <summary>
     /// Calculates what the token usage would have cost at standard API pricing.
     /// </summary>
-    private static double CalculateEquivalentCost(ClaudeStatsCache? stats)
+    internal static double CalculateEquivalentCost(ClaudeStatsCache? stats)
     {
         if (stats is null)
             return 0;
@@ -743,7 +743,7 @@ public sealed class ClaudeProvider : IUsageProvider
     /// Resolves pricing for a model ID by matching against known model families.
     /// Falls back to Sonnet pricing for unknown models.
     /// </summary>
-    private static (double InputPerMTok, double OutputPerMTok, double CacheWritePerMTok, double CacheReadPerMTok) ResolvePricing(string modelId)
+    internal static (double InputPerMTok, double OutputPerMTok, double CacheWritePerMTok, double CacheReadPerMTok) ResolvePricing(string modelId)
     {
         // Exact match first
         if (ModelPricing.TryGetValue(modelId, out var exactMatch))
@@ -773,7 +773,7 @@ public sealed class ClaudeProvider : IUsageProvider
         return ModelPricing["claude-sonnet-4-6"];
     }
 
-    private sealed record UnifiedRateLimits
+    internal sealed record UnifiedRateLimits
     {
         public double FiveHourUtilization { get; init; }
         public long FiveHourReset { get; init; }
@@ -793,21 +793,21 @@ public sealed class ClaudeProvider : IUsageProvider
         public string? RefreshToken { get; init; }
     }
 
-    private sealed record ClaudeAccountInfo
+    internal sealed record ClaudeAccountInfo
     {
         public string? DisplayName { get; init; }
         public string? BillingType { get; init; }
         public bool HasExtraUsageEnabled { get; init; }
     }
 
-    private sealed class ClaudeStatsCache
+    internal sealed class ClaudeStatsCache
     {
         public int TotalSessions { get; init; }
         public int TotalMessages { get; init; }
         public List<ClaudeModelUsage> ModelUsages { get; } = [];
     }
 
-    private sealed record ClaudeModelUsage
+    internal sealed record ClaudeModelUsage
     {
         public string ModelId { get; init; } = "";
         public long InputTokens { get; init; }
