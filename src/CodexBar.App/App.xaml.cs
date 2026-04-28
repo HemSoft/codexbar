@@ -62,6 +62,7 @@ public partial class App : Application
             b.ConfigureHttpClient(c => c.Timeout = TimeSpan.FromSeconds(15)));
 
         services.AddSingleton<SettingsService>();
+        services.AddSingleton<ISettingsService>(sp => sp.GetRequiredService<SettingsService>());
 
         services.AddSingleton<IUsageProvider, OpenRouterProvider>();
         services.AddSingleton<IUsageProvider, CopilotProvider>();

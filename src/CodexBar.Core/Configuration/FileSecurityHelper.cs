@@ -10,7 +10,7 @@ namespace CodexBar.Core.Configuration;
 /// Shared utility for writing files with owner-only permissions.
 /// Ensures no window exists where sensitive files (API keys, OAuth tokens) have default permissions.
 /// </summary>
-public static class FileSecurityHelper
+internal static class FileSecurityHelper
 {
     /// <summary>
     /// Creates a file with owner-only permissions and writes content to it.

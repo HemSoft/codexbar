@@ -41,7 +41,7 @@ public sealed class CopilotProvider : IUsageProvider
 
     private readonly ILogger<CopilotProvider> _logger;
     private readonly IHttpClientFactory _httpClientFactory;
-    private readonly SettingsService _settings;
+    private readonly ISettingsService _settings;
 
     // Cached account list — refreshed on startup or auth failure
     private readonly SemaphoreSlim _accountsLock = new(1, 1);
@@ -50,7 +50,7 @@ public sealed class CopilotProvider : IUsageProvider
     private string? _lastDiscoveryError;
     private readonly ConcurrentDictionary<string, string> _tokenCache = new(StringComparer.OrdinalIgnoreCase);
 
-    public CopilotProvider(ILogger<CopilotProvider> logger, IHttpClientFactory httpClientFactory, SettingsService settings)
+    public CopilotProvider(ILogger<CopilotProvider> logger, IHttpClientFactory httpClientFactory, ISettingsService settings)
     {
         _logger = logger;
         _httpClientFactory = httpClientFactory;
@@ -176,18 +176,12 @@ public sealed class CopilotProvider : IUsageProvider
         try
         {
             using var process = StartGhAuthStatusProcess();
-            var stderrTask = process.StandardError.ReadToEndAsync();
-            var stdoutTask = process.StandardOutput.ReadToEndAsync();
-
-            var exitCode = await WaitForGhProcessAsync(process, TimeSpan.FromSeconds(10), ct, stderrTask, stdoutTask);
+            var (exitCode, stderr, _) = await WaitForGhProcessAsync(process, TimeSpan.FromSeconds(10), ct);
             if (exitCode is null)
             {
                 _lastDiscoveryError = "GitHub CLI (gh) timed out. Ensure 'gh' is responsive.";
                 return accounts;
             }
-
-            var stderr = await stderrTask;
-            await stdoutTask;
 
             if (exitCode != 0)
             {
@@ -231,18 +225,22 @@ public sealed class CopilotProvider : IUsageProvider
             }
         };
 
-    private static async Task<int?> WaitForGhProcessAsync(
-        Process process, TimeSpan timeout, CancellationToken ct,
-        Task<string> stderrTask, Task<string> stdoutTask)
+    private static async Task<(int? exitCode, string stderr, string stdout)> WaitForGhProcessAsync(
+        Process process, TimeSpan timeout, CancellationToken ct)
     {
         process.Start();
+        var stderrTask = process.StandardError.ReadToEndAsync();
+        var stdoutTask = process.StandardOutput.ReadToEndAsync();
+
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeoutCts.CancelAfter(timeout);
 
         try
         {
             await process.WaitForExitAsync(timeoutCts.Token);
-            return process.ExitCode;
+            var stderr = await stderrTask;
+            var stdout = await stdoutTask;
+            return (process.ExitCode, stderr, stdout);
         }
         catch (OperationCanceledException)
         {
@@ -253,7 +251,7 @@ public sealed class CopilotProvider : IUsageProvider
             if (ct.IsCancellationRequested)
                 throw;
 
-            return null;
+            return (null, string.Empty, string.Empty);
         }
     }
 

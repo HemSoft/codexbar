@@ -16,7 +16,7 @@ namespace CodexBar.Core.Providers.Claude;
 public sealed class ClaudeProvider : IUsageProvider
 {
     private readonly ILogger<ClaudeProvider> _logger;
-    private readonly SettingsService _settings;
+    private readonly ISettingsService _settings;
     private readonly IHttpClientFactory _httpClientFactory;
 
     private static readonly string ClaudeDir =
@@ -59,7 +59,7 @@ public sealed class ClaudeProvider : IUsageProvider
     private static readonly TimeSpan CacheTtl = TimeSpan.FromMinutes(30);
     private readonly SemaphoreSlim _cacheLock = new(1, 1);
 
-    public ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFactory httpClientFactory, SettingsService settings)
+    public ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFactory httpClientFactory, ISettingsService settings)
     {
         _logger = logger;
         _httpClientFactory = httpClientFactory;
@@ -77,6 +77,12 @@ public sealed class ClaudeProvider : IUsageProvider
         SupportsWeeklyUsage = true,
         SupportsCredits = false
     };
+
+    /// <summary>
+    /// Normalises a Unix epoch that may be in milliseconds to seconds.
+    /// </summary>
+    private static long NormalizeEpochToSeconds(long value) =>
+        value > 1_000_000_000_000 ? value / 1000 : value;
 
     public Task<bool> IsAvailableAsync(CancellationToken ct = default)
     {
@@ -120,9 +126,7 @@ public sealed class ClaudeProvider : IUsageProvider
             {
                 try
                 {
-                    var expiresAtSeconds = credentials.ExpiresAt > 1_000_000_000_000
-                        ? credentials.ExpiresAt / 1000
-                        : credentials.ExpiresAt;
+                    var expiresAtSeconds = NormalizeEpochToSeconds(credentials.ExpiresAt);
                     var tokenExpiry = DateTimeOffset.FromUnixTimeSeconds(expiresAtSeconds);
                     if (tokenExpiry < DateTimeOffset.UtcNow)
                     {
@@ -514,7 +518,7 @@ public sealed class ClaudeProvider : IUsageProvider
             PersistCredentials(updatedCreds);
 
             _logger.LogInformation("Claude OAuth token refreshed successfully, valid until {Expiry}",
-                newExpiresAt > 0 ? DateTimeOffset.FromUnixTimeSeconds(newExpiresAt > 1_000_000_000_000 ? newExpiresAt / 1000 : newExpiresAt).ToString("o") : "unknown");
+                newExpiresAt > 0 ? DateTimeOffset.FromUnixTimeSeconds(NormalizeEpochToSeconds(newExpiresAt)).ToString("o") : "unknown");
 
             return updatedCreds;
         }
@@ -535,40 +539,44 @@ public sealed class ClaudeProvider : IUsageProvider
             using var doc = JsonDocument.Parse(json);
             var root = doc.RootElement;
 
-            using var stream = new FileStream(CredentialsPath, FileMode.Create, FileAccess.Write, FileShare.None);
-            using var writer = new Utf8JsonWriter(stream, new JsonWriterOptions { Indented = true });
-
-            writer.WriteStartObject();
-
-            foreach (var prop in root.EnumerateObject())
+            var tempPath = CredentialsPath + ".tmp";
+            using (var stream = FileSecurityHelper.CreateRestrictedFileStream(tempPath))
+            using (var writer = new Utf8JsonWriter(stream, new JsonWriterOptions { Indented = true }))
             {
-                if (prop.NameEquals("claudeAiOauth"))
-                {
-                    writer.WritePropertyName("claudeAiOauth");
-                    writer.WriteStartObject();
+                writer.WriteStartObject();
 
-                    foreach (var oauthProp in prop.Value.EnumerateObject())
+                foreach (var prop in root.EnumerateObject())
+                {
+                    if (prop.NameEquals("claudeAiOauth"))
                     {
-                        if (oauthProp.NameEquals("accessToken"))
-                            writer.WriteString("accessToken", credentials.AccessToken);
-                        else if (oauthProp.NameEquals("refreshToken") && credentials.RefreshToken is not null)
-                            writer.WriteString("refreshToken", credentials.RefreshToken);
-                        else if (oauthProp.NameEquals("expiresAt"))
-                            writer.WriteNumber("expiresAt", credentials.ExpiresAt);
-                        else
-                            oauthProp.WriteTo(writer);
-                    }
+                        writer.WritePropertyName("claudeAiOauth");
+                        writer.WriteStartObject();
 
-                    writer.WriteEndObject();
+                        foreach (var oauthProp in prop.Value.EnumerateObject())
+                        {
+                            if (oauthProp.NameEquals("accessToken"))
+                                writer.WriteString("accessToken", credentials.AccessToken);
+                            else if (oauthProp.NameEquals("refreshToken") && credentials.RefreshToken is not null)
+                                writer.WriteString("refreshToken", credentials.RefreshToken);
+                            else if (oauthProp.NameEquals("expiresAt"))
+                                writer.WriteNumber("expiresAt", credentials.ExpiresAt);
+                            else
+                                oauthProp.WriteTo(writer);
+                        }
+
+                        writer.WriteEndObject();
+                    }
+                    else
+                    {
+                        prop.WriteTo(writer);
+                    }
                 }
-                else
-                {
-                    prop.WriteTo(writer);
-                }
+
+                writer.WriteEndObject();
+                writer.Flush();
             }
 
-            writer.WriteEndObject();
-            writer.Flush();
+            File.Move(tempPath, CredentialsPath, overwrite: true);
         }
         catch (Exception ex)
         {

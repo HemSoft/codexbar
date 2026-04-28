@@ -1,3 +1,4 @@
+using CodexBar.Core.Configuration;
 using CodexBar.Core.Models;
 using CodexBar.Core.Providers.OpenRouter;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -25,10 +26,15 @@ public class OpenRouterProviderTests
         public System.Net.Http.HttpClient CreateClient(string name) => new();
     }
 
-    private sealed class DummySettingsService
+    private sealed class DummySettingsService : ISettingsService
     {
-        // SettingsService is sealed, so we use it directly with its public ctor
-        public Core.Configuration.SettingsService Instance { get; } =
-            new Core.Configuration.SettingsService(NullLogger<Core.Configuration.SettingsService>.Instance);
+        public ISettingsService Instance => this;
+
+        public AppSettings Load() => new();
+        public void Save(AppSettings settings) { }
+        public string? GetApiKey(ProviderId providerId) => null;
+        public bool IsProviderEnabled(ProviderId providerId) => true;
+        public string? GetOpenCodeGoWorkspaceId() => null;
+        public IReadOnlyList<string> GetCopilotAccounts() => [];
     }
 }

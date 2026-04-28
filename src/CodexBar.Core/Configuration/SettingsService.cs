@@ -17,7 +17,7 @@ namespace CodexBar.Core.Configuration;
 /// protected by OS-level user permissions (~/.codexbar/).
 /// </para>
 /// </summary>
-public sealed class SettingsService
+public sealed class SettingsService : ISettingsService
 {
     private static readonly string SettingsDir =
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codexbar");

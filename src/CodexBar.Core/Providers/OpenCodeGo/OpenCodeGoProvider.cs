@@ -16,7 +16,7 @@ public sealed partial class OpenCodeGoProvider : IUsageProvider
 {
     private readonly ILogger<OpenCodeGoProvider> _logger;
     private readonly IHttpClientFactory _httpClientFactory;
-    private readonly SettingsService _settings;
+    private readonly ISettingsService _settings;
 
     private const string DashboardPrefix = "https://opencode.ai/workspace/";
     private const string DashboardSuffix = "/go";
@@ -28,7 +28,7 @@ public sealed partial class OpenCodeGoProvider : IUsageProvider
     public OpenCodeGoProvider(
         ILogger<OpenCodeGoProvider> logger,
         IHttpClientFactory httpClientFactory,
-        SettingsService settings)
+        ISettingsService settings)
     {
         _logger = logger;
         _httpClientFactory = httpClientFactory;
@@ -250,6 +250,9 @@ public sealed partial class OpenCodeGoProvider : IUsageProvider
             Environment.GetEnvironmentVariable("OPENCODE_GO_WORKSPACE_ID")
             ?? _settings.GetOpenCodeGoWorkspaceId();
 
+        // The auth cookie is stored in the generic apiKey field for this provider.
+        // It is a browser session cookie (not a traditional API key) obtained from
+        // the OpenCode Go dashboard after signing in.
         var authCookie =
             Environment.GetEnvironmentVariable("OPENCODE_GO_AUTH_COOKIE")
             ?? _settings.GetApiKey(ProviderId.OpenCodeGo);
