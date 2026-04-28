@@ -15,7 +15,7 @@ internal static class FileSecurityHelper
     /// <summary>
     /// Creates a file with owner-only permissions and writes content to it.
     /// </summary>
-    internal static void WriteRestrictedFile(string filePath, string content)
+    public static void WriteRestrictedFile(string filePath, string content)
     {
         using var fs = CreateRestrictedFileStream(filePath);
         using var writer = new StreamWriter(fs);
@@ -27,7 +27,7 @@ internal static class FileSecurityHelper
     /// On Windows: uses a <see cref="FileSecurity"/> ACL granting FullControl only to the current user.
     /// On Unix: uses <see cref="FileStreamOptions.UnixCreateMode"/> to set chmod 600 atomically.
     /// </summary>
-    internal static FileStream CreateRestrictedFileStream(string filePath)
+    public static FileStream CreateRestrictedFileStream(string filePath)
     {
 #if WINDOWS
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))

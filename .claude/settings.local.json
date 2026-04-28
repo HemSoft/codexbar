@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "WebFetch(domain:opencode.ai)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(dotnet build *)",
+      "Bash(curl *)",
+      "Bash(grep -oE \"\\(rolling|weekly|monthly\\)Usage[^}]{0,120}\")"
+    ]
+  }
+}

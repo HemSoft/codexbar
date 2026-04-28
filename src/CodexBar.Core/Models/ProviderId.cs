@@ -7,5 +7,6 @@ public enum ProviderId
 {
     OpenRouter,
     Copilot,
-    Claude
+    Claude,
+    OpenCodeGo
 }

@@ -16,7 +16,7 @@ namespace CodexBar.Core.Providers.Claude;
 public sealed class ClaudeProvider : IUsageProvider
 {
     private readonly ILogger<ClaudeProvider> _logger;
-    private readonly SettingsService _settings;
+    private readonly ISettingsService _settings;
     private readonly IHttpClientFactory _httpClientFactory;
 
     private static readonly string ClaudeDir =
@@ -59,7 +59,7 @@ public sealed class ClaudeProvider : IUsageProvider
     private static readonly TimeSpan CacheTtl = TimeSpan.FromMinutes(30);
     private readonly SemaphoreSlim _cacheLock = new(1, 1);
 
-    public ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFactory httpClientFactory, SettingsService settings)
+    public ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFactory httpClientFactory, ISettingsService settings)
     {
         _logger = logger;
         _httpClientFactory = httpClientFactory;
@@ -77,6 +77,12 @@ public sealed class ClaudeProvider : IUsageProvider
         SupportsWeeklyUsage = true,
         SupportsCredits = false
     };
+
+    /// <summary>
+    /// Normalises a Unix epoch that may be in milliseconds to seconds.
+    /// </summary>
+    private static long NormalizeEpochToSeconds(long value) =>
+        value > 1_000_000_000_000 ? value / 1000 : value;
 
     public Task<bool> IsAvailableAsync(CancellationToken ct = default)
     {
@@ -115,6 +121,38 @@ public sealed class ClaudeProvider : IUsageProvider
             else
                 displaySub = char.ToUpperInvariant(subscriptionType[0]) + subscriptionType[1..];
             var accountName = accountInfo?.DisplayName;
+
+            if (credentials.ExpiresAt > 0)
+            {
+                try
+                {
+                    var expiresAtSeconds = NormalizeEpochToSeconds(credentials.ExpiresAt);
+                    var tokenExpiry = DateTimeOffset.FromUnixTimeSeconds(expiresAtSeconds);
+                    if (tokenExpiry < DateTimeOffset.UtcNow)
+                    {
+                        _logger.LogWarning("Claude OAuth token expired at {Expiry}, attempting refresh", tokenExpiry);
+                        var refreshed = await TryRefreshTokenAsync(credentials, ct);
+                        if (refreshed is null)
+                        {
+                            return ProviderUsageResult.Failure(ProviderId.Claude,
+                                "Claude login expired and could not be refreshed. Run 'claude' in terminal and sign in again.");
+                        }
+                        credentials = refreshed;
+                    }
+                    else
+                    {
+                        _logger.LogDebug("Claude OAuth token valid until {Expiry}", tokenExpiry);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "Claude OAuth token expiry value {ExpiresAt} could not be parsed", credentials.ExpiresAt);
+                }
+            }
+            else
+            {
+                _logger.LogDebug("Claude OAuth token has no expiry set");
+            }
 
             var equivalentCost = CalculateEquivalentCost(stats);
             var totalTokens = CalculateTotalTokens(stats);
@@ -199,15 +237,21 @@ public sealed class ClaudeProvider : IUsageProvider
         }
 
         // Fallback: no API data available
+        var fallbackLabel = FormatUsageLabel(subscriptionType, totalTokens, equivalentCost, accountInfo);
+        if (!string.IsNullOrEmpty(fallbackLabel))
+            fallbackLabel += " · Rate limits unavailable";
+        else
+            fallbackLabel = "Rate limits unavailable";
+
         return new UsageSnapshot
         {
             IsUnlimited = true,
-            UsageLabel = FormatUsageLabel(subscriptionType, totalTokens, equivalentCost, accountInfo),
+            UsageLabel = fallbackLabel,
             CapturedAt = DateTimeOffset.UtcNow
         };
     }
 
-    private static UsageSnapshot? BuildWeeklySnapshot(UnifiedRateLimits? limits)
+    internal static UsageSnapshot? BuildWeeklySnapshot(UnifiedRateLimits? limits)
     {
         if (limits is null)
             return null;
@@ -231,53 +275,34 @@ public sealed class ClaudeProvider : IUsageProvider
     }
 
     /// <summary>
-    /// Builds the list of labelled usage bars matching Claude's own UI:
-    /// 1. 5-hour limit  2. Weekly · all models  3. Weekly · [model class] (from representative claim)
+    /// Builds the labelled usage bars for the Claude Code windows that are visible
+    /// and actionable in Claude's usage UI: 5-hour and weekly.
     /// </summary>
-    private static List<UsageBar>? BuildUsageBars(UnifiedRateLimits? limits)
+    internal static List<UsageBar> BuildUsageBars(UnifiedRateLimits? limits)
     {
-        if (limits is null)
-            return null;
+        var bars = new List<UsageBar>(2);
 
-        var bars = new List<UsageBar>(3);
-
-        // Bar 1: 5-hour limit
         bars.Add(new UsageBar
         {
             Label = "5-hour limit",
-            UsedPercent = limits.FiveHourUtilization,
-            ResetDescription = limits.FiveHourReset > 0
+            UsedPercent = limits?.FiveHourUtilization ?? 0,
+            ResetDescription = limits is not null && limits.FiveHourReset > 0
                 ? FormatBarReset(limits.FiveHourReset)
                 : null,
-            ResetsAt = limits.FiveHourReset > 0
+            ResetsAt = limits is not null && limits.FiveHourReset > 0
                 ? DateTimeOffset.FromUnixTimeSeconds(limits.FiveHourReset)
                 : null
         });
 
-        // Bar 2: Weekly · all models
         bars.Add(new UsageBar
         {
             Label = "Weekly · all models",
-            UsedPercent = limits.SevenDayUtilization,
-            ResetDescription = limits.SevenDayReset > 0
+            UsedPercent = limits?.SevenDayUtilization ?? 0,
+            ResetDescription = limits is not null && limits.SevenDayReset > 0
                 ? FormatBarReset(limits.SevenDayReset)
                 : null,
-            ResetsAt = limits.SevenDayReset > 0
+            ResetsAt = limits is not null && limits.SevenDayReset > 0
                 ? DateTimeOffset.FromUnixTimeSeconds(limits.SevenDayReset)
-                : null
-        });
-
-        // Bar 3: Weekly · [model class] (representative claim / per-model-class limit)
-        var claimLabel = PrettifyRepresentativeClaim(limits.RepresentativeClaim);
-        bars.Add(new UsageBar
-        {
-            Label = $"Weekly · {claimLabel}",
-            UsedPercent = limits.OverageUtilization,
-            ResetDescription = limits.OverageReset > 0
-                ? FormatBarReset(limits.OverageReset)
-                : null,
-            ResetsAt = limits.OverageReset > 0
-                ? DateTimeOffset.FromUnixTimeSeconds(limits.OverageReset)
                 : null
         });
 
@@ -287,7 +312,7 @@ public sealed class ClaudeProvider : IUsageProvider
     /// <summary>
     /// Formats a compact reset string for the bar's right-side display (e.g., "Resets 2h", "Resets 2d").
     /// </summary>
-    private static string FormatBarReset(long resetsAtEpoch)
+    internal static string FormatBarReset(long resetsAtEpoch)
     {
         var remaining = DateTimeOffset.FromUnixTimeSeconds(resetsAtEpoch) - DateTimeOffset.UtcNow;
         if (remaining <= TimeSpan.Zero) return "Resets now";
@@ -296,35 +321,7 @@ public sealed class ClaudeProvider : IUsageProvider
         return $"Resets {remaining.Minutes}m";
     }
 
-    /// <summary>
-    /// Converts a raw representative claim slug (e.g., "claude_design", "claude-design")
-    /// into a human-friendly label (e.g., "Claude Design").
-    /// </summary>
-    private static string PrettifyRepresentativeClaim(string? claim)
-    {
-        if (string.IsNullOrWhiteSpace(claim))
-            return "Model class";
-
-        // Strip "claude_" / "claude-" prefix if present, then title-case
-        var normalized = claim
-            .Replace("claude_", "", StringComparison.OrdinalIgnoreCase)
-            .Replace("claude-", "", StringComparison.OrdinalIgnoreCase)
-            .Replace('_', ' ')
-            .Replace('-', ' ')
-            .Trim();
-
-        if (normalized.Length == 0)
-            return claim;
-
-        // Title-case each word
-        var words = normalized.Split(' ', StringSplitOptions.RemoveEmptyEntries);
-        for (int i = 0; i < words.Length; i++)
-            words[i] = char.ToUpperInvariant(words[i][0]) + words[i][1..].ToLowerInvariant();
-
-        return string.Join(' ', words);
-    }
-
-    private static string FormatResetCountdown(long resetsAtEpoch, string windowName)
+    internal static string FormatResetCountdown(long resetsAtEpoch, string windowName)
     {
         var resetsAt = DateTimeOffset.FromUnixTimeSeconds(resetsAtEpoch);
         var remaining = resetsAt - DateTimeOffset.UtcNow;
@@ -340,7 +337,7 @@ public sealed class ClaudeProvider : IUsageProvider
         return $"{windowName} resets in {remaining.Minutes}m";
     }
 
-    private static string FormatTokenCount(long totalTokens) =>
+    internal static string FormatTokenCount(long totalTokens) =>
         totalTokens switch
         {
             >= 1_000_000_000 => $"{totalTokens / 1_000_000_000.0:F1}B tokens",
@@ -349,7 +346,7 @@ public sealed class ClaudeProvider : IUsageProvider
             _ => $"{totalTokens} tokens"
         };
 
-    private static string FormatUsageLabel(
+    internal static string FormatUsageLabel(
         string subscriptionType,
         long totalTokens,
         double equivalentCost,
@@ -386,7 +383,7 @@ public sealed class ClaudeProvider : IUsageProvider
 
         if (string.IsNullOrEmpty(accessToken))
         {
-            _logger.LogDebug("No OAuth access token available for rate-limit probe");
+            _logger.LogWarning("Claude: no OAuth access token available for rate-limit probe");
             return _cachedLimits;
         }
 
@@ -416,21 +413,28 @@ public sealed class ClaudeProvider : IUsageProvider
 
             using var response = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cts.Token);
 
+            _logger.LogDebug("Claude API probe returned status {StatusCode}", (int)response.StatusCode);
+
+            var result = ParseRateLimitHeaders(response.Headers);
+
             if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized)
             {
                 _logger.LogWarning("Claude API returned 401 — OAuth token may be expired");
-                return null; // Don't return stale cache on auth failure
+                return null;
             }
-
-            // Rate-limit headers are present on success and most error responses
-            var result = ParseRateLimitHeaders(response.Headers);
 
             if (result is not null)
             {
                 _cachedLimits = result;
                 Volatile.Write(ref _limitsCachedAtTicks, DateTimeOffset.UtcNow.UtcTicks);
-                _logger.LogDebug("Claude rate limits: 5h={FiveH:P0}, 7d={SevenD:P0}, overage={Ovg:P0}",
-                    result.FiveHourUtilization, result.SevenDayUtilization, result.OverageUtilization);
+                _logger.LogDebug("Claude rate limits: 5h={FiveH:P0}, 7d={SevenD:P0}",
+                    result.FiveHourUtilization, result.SevenDayUtilization);
+            }
+            else
+            {
+                var headerNames = string.Join(", ", response.Headers.Select(h => h.Key));
+                _logger.LogWarning("Claude API rate-limit headers not found. Status={StatusCode}, Response headers: {Headers}",
+                    (int)response.StatusCode, headerNames);
             }
 
             return result ?? _cachedLimits;
@@ -440,14 +444,143 @@ public sealed class ClaudeProvider : IUsageProvider
             _logger.LogDebug("Claude API probe timed out");
             return _cachedLimits;
         }
+        catch (HttpRequestException ex)
+        {
+            _logger.LogWarning(ex, "Claude API probe failed (HTTP): {Message}", ex.Message);
+            return _cachedLimits;
+        }
         catch (Exception ex)
         {
-            _logger.LogDebug(ex, "Claude API probe failed");
+            _logger.LogWarning(ex, "Claude API probe failed: {Type}: {Message}", ex.GetType().Name, ex.Message);
             return _cachedLimits;
         }
         finally
         {
             _cacheLock.Release();
+        }
+    }
+
+    private async Task<ClaudeCredentials?> TryRefreshTokenAsync(ClaudeCredentials credentials, CancellationToken ct)
+    {
+        if (string.IsNullOrEmpty(credentials.RefreshToken))
+        {
+            _logger.LogDebug("No refresh token available, cannot refresh");
+            return null;
+        }
+
+        try
+        {
+            using var httpClient = _httpClientFactory.CreateClient();
+            httpClient.Timeout = TimeSpan.FromSeconds(15);
+
+            var body = JsonSerializer.Serialize(new
+            {
+                grant_type = "refresh_token",
+                refresh_token = credentials.RefreshToken
+            });
+
+            using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.anthropic.com/v1/oauth/token")
+            {
+                Content = new StringContent(body, Encoding.UTF8, "application/json")
+            };
+            request.Headers.TryAddWithoutValidation("anthropic-version", "2023-06-01");
+
+            using var response = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                var errorBody = await response.Content.ReadAsStringAsync(ct);
+                _logger.LogWarning("Claude token refresh failed with status {StatusCode}: {Body}", (int)response.StatusCode, errorBody);
+                return null;
+            }
+
+            var json = await response.Content.ReadAsStringAsync(ct);
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+
+            var newAccessToken = root.TryGetProperty("access_token", out var at) ? at.GetString() : null;
+            var newRefreshToken = root.TryGetProperty("refresh_token", out var rt) ? rt.GetString() : null;
+            var newExpiresAt = root.TryGetProperty("expires_at", out var ea) ? ea.GetInt64() : 0;
+
+            if (string.IsNullOrEmpty(newAccessToken))
+            {
+                _logger.LogWarning("Claude token refresh response missing access_token");
+                return null;
+            }
+
+            var updatedCreds = credentials with
+            {
+                AccessToken = newAccessToken,
+                RefreshToken = newRefreshToken ?? credentials.RefreshToken,
+                ExpiresAt = newExpiresAt
+            };
+
+            PersistCredentials(updatedCreds);
+
+            _logger.LogInformation("Claude OAuth token refreshed successfully, valid until {Expiry}",
+                newExpiresAt > 0 ? DateTimeOffset.FromUnixTimeSeconds(NormalizeEpochToSeconds(newExpiresAt)).ToString("o") : "unknown");
+
+            return updatedCreds;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Claude token refresh failed: {Message}", ex.Message);
+            return null;
+        }
+    }
+
+    private void PersistCredentials(ClaudeCredentials credentials)
+    {
+        try
+        {
+            if (!File.Exists(CredentialsPath)) return;
+
+            var json = File.ReadAllText(CredentialsPath);
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+
+            var tempPath = CredentialsPath + ".tmp";
+            using (var stream = FileSecurityHelper.CreateRestrictedFileStream(tempPath))
+            using (var writer = new Utf8JsonWriter(stream, new JsonWriterOptions { Indented = true }))
+            {
+                writer.WriteStartObject();
+
+                foreach (var prop in root.EnumerateObject())
+                {
+                    if (prop.NameEquals("claudeAiOauth"))
+                    {
+                        writer.WritePropertyName("claudeAiOauth");
+                        writer.WriteStartObject();
+
+                        foreach (var oauthProp in prop.Value.EnumerateObject())
+                        {
+                            if (oauthProp.NameEquals("accessToken"))
+                                writer.WriteString("accessToken", credentials.AccessToken);
+                            else if (oauthProp.NameEquals("refreshToken") && credentials.RefreshToken is not null)
+                                writer.WriteString("refreshToken", credentials.RefreshToken);
+                            else if (oauthProp.NameEquals("expiresAt"))
+                                writer.WriteNumber("expiresAt", credentials.ExpiresAt);
+                            else
+                                oauthProp.WriteTo(writer);
+                        }
+
+                        writer.WriteEndObject();
+                    }
+                    else
+                    {
+                        prop.WriteTo(writer);
+                    }
+                }
+
+                writer.WriteEndObject();
+                writer.Flush();
+            }
+
+            File.Move(tempPath, CredentialsPath, overwrite: true);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to persist refreshed Claude credentials");
         }
     }
 
@@ -477,13 +610,7 @@ public sealed class ClaudeProvider : IUsageProvider
 
             SevenDayUtilization = ParseDouble(sevenDUtil),
             SevenDayReset = ParseLong(GetHeader(headers, "anthropic-ratelimit-unified-7d-reset")),
-            SevenDayStatus = GetHeader(headers, "anthropic-ratelimit-unified-7d-status") ?? "unknown",
-
-            OverageUtilization = ParseDouble(GetHeader(headers, "anthropic-ratelimit-unified-overage-utilization")),
-            OverageReset = ParseLong(GetHeader(headers, "anthropic-ratelimit-unified-overage-reset")),
-            OverageStatus = GetHeader(headers, "anthropic-ratelimit-unified-overage-status") ?? "unknown",
-
-            RepresentativeClaim = GetHeader(headers, "anthropic-ratelimit-unified-representative-claim")
+            SevenDayStatus = GetHeader(headers, "anthropic-ratelimit-unified-7d-status") ?? "unknown"
         };
     }
 
@@ -506,7 +633,8 @@ public sealed class ClaudeProvider : IUsageProvider
                 SubscriptionType = oauth.TryGetProperty("subscriptionType", out var st) ? st.GetString() : null,
                 RateLimitTier = oauth.TryGetProperty("rateLimitTier", out var rlt) ? rlt.GetString() : null,
                 ExpiresAt = oauth.TryGetProperty("expiresAt", out var ea) ? ea.GetInt64() : 0,
-                AccessToken = oauth.TryGetProperty("accessToken", out var at) ? at.GetString() : null
+                AccessToken = oauth.TryGetProperty("accessToken", out var at) ? at.GetString() : null,
+                RefreshToken = oauth.TryGetProperty("refreshToken", out var rt) ? rt.GetString() : null
             };
         }
         catch (Exception ex)
@@ -587,7 +715,7 @@ public sealed class ClaudeProvider : IUsageProvider
         }
     }
 
-    private static long CalculateTotalTokens(ClaudeStatsCache? stats)
+    internal static long CalculateTotalTokens(ClaudeStatsCache? stats)
     {
         if (stats is null)
             return 0;
@@ -599,7 +727,7 @@ public sealed class ClaudeProvider : IUsageProvider
     /// <summary>
     /// Calculates what the token usage would have cost at standard API pricing.
     /// </summary>
-    private static double CalculateEquivalentCost(ClaudeStatsCache? stats)
+    internal static double CalculateEquivalentCost(ClaudeStatsCache? stats)
     {
         if (stats is null)
             return 0;
@@ -623,7 +751,7 @@ public sealed class ClaudeProvider : IUsageProvider
     /// Resolves pricing for a model ID by matching against known model families.
     /// Falls back to Sonnet pricing for unknown models.
     /// </summary>
-    private static (double InputPerMTok, double OutputPerMTok, double CacheWritePerMTok, double CacheReadPerMTok) ResolvePricing(string modelId)
+    internal static (double InputPerMTok, double OutputPerMTok, double CacheWritePerMTok, double CacheReadPerMTok) ResolvePricing(string modelId)
     {
         // Exact match first
         if (ModelPricing.TryGetValue(modelId, out var exactMatch))
@@ -653,7 +781,7 @@ public sealed class ClaudeProvider : IUsageProvider
         return ModelPricing["claude-sonnet-4-6"];
     }
 
-    private sealed record UnifiedRateLimits
+    internal sealed record UnifiedRateLimits
     {
         public double FiveHourUtilization { get; init; }
         public long FiveHourReset { get; init; }
@@ -662,12 +790,6 @@ public sealed class ClaudeProvider : IUsageProvider
         public double SevenDayUtilization { get; init; }
         public long SevenDayReset { get; init; }
         public string SevenDayStatus { get; init; } = "unknown";
-
-        public double OverageUtilization { get; init; }
-        public long OverageReset { get; init; }
-        public string OverageStatus { get; init; } = "unknown";
-
-        public string? RepresentativeClaim { get; init; }
     }
 
     private sealed record ClaudeCredentials
@@ -676,23 +798,24 @@ public sealed class ClaudeProvider : IUsageProvider
         public string? RateLimitTier { get; init; }
         public long ExpiresAt { get; init; }
         public string? AccessToken { get; init; }
+        public string? RefreshToken { get; init; }
     }
 
-    private sealed record ClaudeAccountInfo
+    internal sealed record ClaudeAccountInfo
     {
         public string? DisplayName { get; init; }
         public string? BillingType { get; init; }
         public bool HasExtraUsageEnabled { get; init; }
     }
 
-    private sealed class ClaudeStatsCache
+    internal sealed class ClaudeStatsCache
     {
         public int TotalSessions { get; init; }
         public int TotalMessages { get; init; }
         public List<ClaudeModelUsage> ModelUsages { get; } = [];
     }
 
-    private sealed record ClaudeModelUsage
+    internal sealed record ClaudeModelUsage
     {
         public string ModelId { get; init; } = "";
         public long InputTokens { get; init; }

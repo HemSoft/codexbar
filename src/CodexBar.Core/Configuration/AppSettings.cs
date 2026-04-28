@@ -21,6 +21,13 @@ public sealed class AppSettings
     [JsonPropertyName("copilotAccounts")]
     public List<string> CopilotAccounts { get; set; } = new();
 
+    /// <summary>
+    /// OpenCode Go workspace ID used to construct the dashboard scrape URL.
+    /// Can also be supplied via the OPENCODE_GO_WORKSPACE_ID environment variable.
+    /// </summary>
+    [JsonPropertyName("openCodeGoWorkspaceId")]
+    public string? OpenCodeGoWorkspaceId { get; set; }
+
     /// <summary>UI zoom level (1.0 = 100%). Persisted across restarts.</summary>
     [JsonPropertyName("zoomLevel")]
     public double ZoomLevel { get; set; } = 1.0;

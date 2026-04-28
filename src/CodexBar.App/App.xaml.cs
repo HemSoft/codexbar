@@ -1,4 +1,4 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using System.Drawing;
 using System.Runtime.InteropServices;
 using System.Windows;
@@ -8,6 +8,7 @@ using CodexBar.Core.Configuration;
 using CodexBar.Core.Providers;
 using CodexBar.Core.Providers.Claude;
 using CodexBar.Core.Providers.Copilot;
+using CodexBar.Core.Providers.OpenCodeGo;
 using CodexBar.Core.Providers.OpenRouter;
 using CodexBar.Core.Services;
 using Microsoft.Extensions.DependencyInjection;
@@ -55,16 +56,18 @@ public partial class App : Application
 
     private static void ConfigureServices(IServiceCollection services)
     {
-        services.AddLogging(b => b.AddConsole().SetMinimumLevel(LogLevel.Debug));
+        services.AddLogging(b => b.AddConsole().AddFile().SetMinimumLevel(LogLevel.Debug));
         services.AddHttpClient();
         services.ConfigureHttpClientDefaults(b =>
             b.ConfigureHttpClient(c => c.Timeout = TimeSpan.FromSeconds(15)));
 
         services.AddSingleton<SettingsService>();
+        services.AddSingleton<ISettingsService>(sp => sp.GetRequiredService<SettingsService>());
 
         services.AddSingleton<IUsageProvider, OpenRouterProvider>();
         services.AddSingleton<IUsageProvider, CopilotProvider>();
         services.AddSingleton<IUsageProvider, ClaudeProvider>();
+        services.AddSingleton<IUsageProvider, OpenCodeGoProvider>();
 
         services.AddSingleton<UsageRefreshService>();
         services.AddSingleton<MainViewModel>();
@@ -117,7 +120,11 @@ public partial class App : Application
         menu.Items.Add(new System.Windows.Controls.Separator());
 
         var exitItem = new System.Windows.Controls.MenuItem { Header = "Exit" };
-        exitItem.Click += (_, _) => Shutdown();
+        exitItem.Click += (_, _) =>
+        {
+            _mainWindow?.SaveWindowState();
+            Shutdown();
+        };
         menu.Items.Add(exitItem);
 
         return menu;
@@ -176,6 +183,7 @@ public partial class App : Application
 
     protected override void OnExit(ExitEventArgs e)
     {
+        _mainWindow?.SaveWindowState();
         // Only dispose non-DI resources manually. _viewModel and _refreshService
         // are DI singletons — ServiceProvider.Dispose() handles their lifetime.
         _trayIcon?.Dispose();

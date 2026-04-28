@@ -15,11 +15,11 @@ public sealed class OpenRouterProvider : IUsageProvider
 {
     private readonly ILogger<OpenRouterProvider> _logger;
     private readonly IHttpClientFactory _httpClientFactory;
-    private readonly SettingsService _settings;
+    private readonly ISettingsService _settings;
 
     private const string BaseUrl = "https://openrouter.ai/api/v1";
 
-    public OpenRouterProvider(ILogger<OpenRouterProvider> logger, IHttpClientFactory httpClientFactory, SettingsService settings)
+    public OpenRouterProvider(ILogger<OpenRouterProvider> logger, IHttpClientFactory httpClientFactory, ISettingsService settings)
     {
         _logger = logger;
         _httpClientFactory = httpClientFactory;

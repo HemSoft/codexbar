@@ -41,7 +41,7 @@ public sealed class CopilotProvider : IUsageProvider
 
     private readonly ILogger<CopilotProvider> _logger;
     private readonly IHttpClientFactory _httpClientFactory;
-    private readonly SettingsService _settings;
+    private readonly ISettingsService _settings;
 
     // Cached account list — refreshed on startup or auth failure
     private readonly SemaphoreSlim _accountsLock = new(1, 1);
@@ -50,7 +50,7 @@ public sealed class CopilotProvider : IUsageProvider
     private string? _lastDiscoveryError;
     private readonly ConcurrentDictionary<string, string> _tokenCache = new(StringComparer.OrdinalIgnoreCase);
 
-    public CopilotProvider(ILogger<CopilotProvider> logger, IHttpClientFactory httpClientFactory, SettingsService settings)
+    public CopilotProvider(ILogger<CopilotProvider> logger, IHttpClientFactory httpClientFactory, ISettingsService settings)
     {
         _logger = logger;
         _httpClientFactory = httpClientFactory;
@@ -170,98 +170,32 @@ public sealed class CopilotProvider : IUsageProvider
     /// </summary>
     private async Task<List<string>> DiscoverGhAccountsAsync(CancellationToken ct)
     {
-        var accounts = new List<string>();
         _lastDiscoveryError = null;
+        var accounts = new List<string>();
+
         try
         {
-            using var process = new Process
+            using var process = StartGhAuthStatusProcess();
+            var (exitCode, stderr, _) = await WaitForGhProcessAsync(process, TimeSpan.FromSeconds(10), ct);
+            if (exitCode is null)
             {
-                StartInfo = new ProcessStartInfo
-                {
-                    FileName = "gh",
-                    Arguments = "auth status --hostname github.com",
-                    UseShellExecute = false,
-                    CreateNoWindow = true,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true
-                }
-            };
-            process.Start();
-
-            var stderrTask = process.StandardError.ReadToEndAsync();
-            var stdoutTask = process.StandardOutput.ReadToEndAsync();
-
-            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            timeoutCts.CancelAfter(TimeSpan.FromSeconds(10));
-
-            try
-            {
-                await process.WaitForExitAsync(timeoutCts.Token);
-            }
-            catch (OperationCanceledException)
-            {
-                try { process.Kill(); } catch { /* best-effort */ }
-                try { await stderrTask; } catch { /* best-effort after kill */ }
-                try { await stdoutTask; } catch { /* best-effort after kill */ }
-
-                if (ct.IsCancellationRequested)
-                    throw; // Propagate caller cancellation after cleanup
-
-                // Timeout only
-                _logger.LogWarning("gh auth status timed out");
                 _lastDiscoveryError = "GitHub CLI (gh) timed out. Ensure 'gh' is responsive.";
                 return accounts;
             }
 
-            var stderr = await stderrTask;
-            await stdoutTask; // drain stdout
-
-            if (process.ExitCode != 0)
+            if (exitCode != 0)
             {
-                _logger.LogWarning("gh auth status exited with code {ExitCode}: {Stderr}",
-                    process.ExitCode, stderr.Trim());
-                _lastDiscoveryError = $"GitHub CLI (gh) auth failed (exit code {process.ExitCode}). Run 'gh auth login'.";
+                _logger.LogWarning("gh auth status exited with code {ExitCode}: {Stderr}", exitCode, stderr.Trim());
+                _lastDiscoveryError = $"GitHub CLI (gh) auth failed (exit code {exitCode}). Run 'gh auth login'.";
                 return accounts;
             }
 
-            // Parse "Logged in to github.com account <username>" or
-            // "Logged in to github.com as <username>" (format varies across gh versions)
-            foreach (var line in stderr.Split('\n'))
-            {
-                var trimmed = line.Trim();
-                if (!trimmed.Contains("Logged in to github.com", StringComparison.OrdinalIgnoreCase))
-                    continue;
-
-                // Try "account <username>" first, then "as <username>"
-                string? username = null;
-                var accountIdx = trimmed.IndexOf("account ", StringComparison.OrdinalIgnoreCase);
-                if (accountIdx >= 0)
-                {
-                    var rest = trimmed[(accountIdx + "account ".Length)..];
-                    var spaceIdx = rest.IndexOf(' ');
-                    username = spaceIdx >= 0 ? rest[..spaceIdx] : rest;
-                }
-                else
-                {
-                    var asIdx = trimmed.IndexOf(" as ", StringComparison.OrdinalIgnoreCase);
-                    if (asIdx >= 0)
-                    {
-                        var rest = trimmed[(asIdx + " as ".Length)..];
-                        var spaceIdx = rest.IndexOf(' ');
-                        username = spaceIdx >= 0 ? rest[..spaceIdx] : rest;
-                    }
-                }
-
-                if (!string.IsNullOrWhiteSpace(username))
-                    accounts.Add(username.Trim());
-            }
-
-            _logger.LogDebug("Discovered {Count} gh CLI accounts: {Accounts}",
-                accounts.Count, string.Join(", ", accounts));
+            accounts = ExtractUsernamesFromGhStatus(stderr);
+            _logger.LogDebug("Discovered {Count} gh CLI accounts: {Accounts}", accounts.Count, string.Join(", ", accounts));
         }
         catch (OperationCanceledException)
         {
-            throw; // Propagate cancellation
+            throw;
         }
         catch (Win32Exception ex)
         {
@@ -275,6 +209,87 @@ public sealed class CopilotProvider : IUsageProvider
         }
 
         return accounts;
+    }
+
+    private static Process StartGhAuthStatusProcess() =>
+        new()
+        {
+            StartInfo = new ProcessStartInfo
+            {
+                FileName = "gh",
+                Arguments = "auth status --hostname github.com",
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            }
+        };
+
+    private static async Task<(int? exitCode, string stderr, string stdout)> WaitForGhProcessAsync(
+        Process process, TimeSpan timeout, CancellationToken ct)
+    {
+        process.Start();
+        var stderrTask = process.StandardError.ReadToEndAsync();
+        var stdoutTask = process.StandardOutput.ReadToEndAsync();
+
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeoutCts.CancelAfter(timeout);
+
+        try
+        {
+            await process.WaitForExitAsync(timeoutCts.Token);
+            var stderr = await stderrTask;
+            var stdout = await stdoutTask;
+            return (process.ExitCode, stderr, stdout);
+        }
+        catch (OperationCanceledException)
+        {
+            try { process.Kill(); } catch { }
+            try { await stderrTask; } catch { }
+            try { await stdoutTask; } catch { }
+
+            if (ct.IsCancellationRequested)
+                throw;
+
+            return (null, string.Empty, string.Empty);
+        }
+    }
+
+    internal static List<string> ExtractUsernamesFromGhStatus(string stderr)
+    {
+        var accounts = new List<string>();
+        foreach (var line in stderr.Split('\n'))
+        {
+            var trimmed = line.Trim();
+            if (!trimmed.Contains("Logged in to github.com", StringComparison.OrdinalIgnoreCase))
+                continue;
+
+            var username = ExtractUsername(trimmed);
+            if (!string.IsNullOrWhiteSpace(username))
+                accounts.Add(username.Trim());
+        }
+        return accounts;
+    }
+
+    internal static string? ExtractUsername(string line)
+    {
+        var accountIdx = line.IndexOf("account ", StringComparison.OrdinalIgnoreCase);
+        if (accountIdx >= 0)
+        {
+            var rest = line[(accountIdx + "account ".Length)..];
+            var spaceIdx = rest.IndexOf(' ');
+            return spaceIdx >= 0 ? rest[..spaceIdx] : rest;
+        }
+
+        var asIdx = line.IndexOf(" as ", StringComparison.OrdinalIgnoreCase);
+        if (asIdx >= 0)
+        {
+            var rest = line[(asIdx + " as ".Length)..];
+            var spaceIdx = rest.IndexOf(' ');
+            return spaceIdx >= 0 ? rest[..spaceIdx] : rest;
+        }
+
+        return null;
     }
 
     /// <summary>
@@ -504,7 +519,7 @@ public sealed class CopilotProvider : IUsageProvider
         };
     }
 
-    private static string FormatDisplayName(string username, string? plan)
+    internal static string FormatDisplayName(string username, string? plan)
     {
         var planLabel = plan switch
         {
@@ -517,7 +532,7 @@ public sealed class CopilotProvider : IUsageProvider
         return planLabel is not null ? $"Copilot · {username} ({planLabel})" : $"Copilot · {username}";
     }
 
-    private static string FormatQuotaLabel(string quotaLabel) => quotaLabel switch
+    internal static string FormatQuotaLabel(string quotaLabel) => quotaLabel switch
     {
         "premium" => "Premium interactions",
         "chat" => "Chat",
@@ -526,59 +541,8 @@ public sealed class CopilotProvider : IUsageProvider
 
     private static UsageSnapshot BuildUsageSnapshot(CopilotQuotaSnapshot quota, string? resetDateUtc, string quotaLabel = "premium")
     {
-        double usedPercent;
-        string usageLabel;
-        bool isUnlimited = false;
-
-        if (quota.Unlimited)
-        {
-            usedPercent = 0;
-            usageLabel = "Unlimited";
-            isUnlimited = true;
-        }
-        else if (quota.Entitlement <= 0)
-        {
-            usedPercent = 0;
-            usageLabel = "No quota";
-        }
-        else
-        {
-            var used = Math.Clamp(quota.Entitlement - quota.Remaining, 0, quota.Entitlement);
-            usedPercent = (double)used / quota.Entitlement;
-
-            var overageRequests = ComputeOverageRequests(quota);
-            if (overageRequests > 0)
-            {
-                if (quota.OveragePermitted)
-                {
-                    var overageCost = overageRequests * OverageCostPerRequest;
-                    usageLabel = $"{used:N0} / {quota.Entitlement:N0} {FormatQuotaLabel(quotaLabel)} (+{overageRequests:N0} overage, ${overageCost:F2})";
-                }
-                else
-                {
-                    usageLabel = $"{used:N0} / {quota.Entitlement:N0} {FormatQuotaLabel(quotaLabel)} (over limit)";
-                }
-            }
-            else
-            {
-                usageLabel = $"{used:N0} / {quota.Entitlement:N0} {FormatQuotaLabel(quotaLabel)}";
-            }
-        }
-
-        DateTimeOffset? resetsAt = null;
-        string? resetDescription = null;
-        if (resetDateUtc is not null && DateTimeOffset.TryParse(resetDateUtc, out var parsed))
-        {
-            resetsAt = parsed;
-            var remaining = parsed - DateTimeOffset.UtcNow;
-            resetDescription = remaining.TotalDays switch
-            {
-                < 0 => "Reset overdue",
-                < 1 => $"Resets in {remaining.Hours}h {remaining.Minutes}m",
-                < 2 => "Resets tomorrow",
-                _ => $"Resets in {(int)remaining.TotalDays}d"
-            };
-        }
+        var (usedPercent, usageLabel, isUnlimited) = ComputeUsageMetrics(quota, quotaLabel);
+        var (resetsAt, resetDescription) = ParseReset(resetDateUtc);
 
         return new UsageSnapshot
         {
@@ -588,6 +552,48 @@ public sealed class CopilotProvider : IUsageProvider
             ResetDescription = resetDescription,
             IsUnlimited = isUnlimited
         };
+    }
+
+    internal static (double UsedPercent, string UsageLabel, bool IsUnlimited) ComputeUsageMetrics(CopilotQuotaSnapshot quota, string quotaLabel)
+    {
+        if (quota.Unlimited)
+            return (0, "Unlimited", true);
+
+        if (quota.Entitlement <= 0)
+            return (0, "No quota", false);
+
+        var used = Math.Clamp(quota.Entitlement - quota.Remaining, 0, quota.Entitlement);
+        var usedPercent = (double)used / quota.Entitlement;
+        var label = BuildUsageLabel(used, quota.Entitlement, quotaLabel, ComputeOverageRequests(quota), quota.OveragePermitted);
+        return (usedPercent, label, false);
+    }
+
+    private static string BuildUsageLabel(int used, int entitlement, string quotaLabel, int overageRequests, bool overagePermitted)
+    {
+        var baseLabel = $"{used:N0} / {entitlement:N0} {FormatQuotaLabel(quotaLabel)}";
+        if (overageRequests <= 0)
+            return baseLabel;
+
+        return overagePermitted
+            ? $"{baseLabel} (+{overageRequests:N0} overage, ${overageRequests * OverageCostPerRequest:F2})"
+            : $"{baseLabel} (over limit)";
+    }
+
+    internal static (DateTimeOffset? ResetsAt, string? ResetDescription) ParseReset(string? resetDateUtc)
+    {
+        if (resetDateUtc is null || !DateTimeOffset.TryParse(resetDateUtc, out var parsed))
+            return (null, null);
+
+        var remaining = parsed - DateTimeOffset.UtcNow;
+        var description = remaining.TotalDays switch
+        {
+            < 0 => "Reset overdue",
+            < 1 => $"Resets in {remaining.Hours}h {remaining.Minutes}m",
+            < 2 => "Resets tomorrow",
+            _ => $"Resets in {(int)remaining.TotalDays}d"
+        };
+
+        return (parsed, description);
     }
 
     private static int ComputeOverageRequests(CopilotQuotaSnapshot premium)

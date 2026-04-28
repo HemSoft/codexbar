@@ -46,3 +46,10 @@ publish/
 
 # Copilot hooks (local-only)
 .github/hooks/
+
+coverage-report/
+
+TestResults/
+
+# Temporary build artefacts that must never be committed
+bin_check_temp/

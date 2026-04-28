@@ -20,12 +20,11 @@ public sealed class MainViewModel : IDisposable
         _refreshService = refreshService;
         _refreshService.UsageUpdated += OnUsageUpdated;
 
-        // Initialize cards for non-Copilot/non-Claude providers
-        // (Copilot and Claude use dynamic cards via Items reconciliation;
-        //  Claude stays visible via IsAvailableAsync returning true when enabled)
+        // Initialize cards for non-Copilot/non-Claude/non-OpenCodeGo providers
+        // (those three use dynamic cards via Items reconciliation)
         foreach (ProviderId id in Enum.GetValues<ProviderId>())
         {
-            if (id is ProviderId.Copilot or ProviderId.Claude) continue;
+            if (id is ProviderId.Copilot or ProviderId.Claude or ProviderId.OpenCodeGo) continue;
 
             var card = new ProviderCardViewModel
             {
@@ -53,6 +52,12 @@ public sealed class MainViewModel : IDisposable
             if (id == ProviderId.Claude)
             {
                 ReconcileItemCards(ProviderId.Claude, "claude:", result);
+                return;
+            }
+
+            if (id == ProviderId.OpenCodeGo)
+            {
+                ReconcileItemCards(ProviderId.OpenCodeGo, "opencode-go:", result);
                 return;
             }
 
@@ -96,10 +101,11 @@ public sealed class MainViewModel : IDisposable
             }
             else if (result.CreditsRemaining is not null)
             {
-                card.StatusText = $"${result.CreditsRemaining:F2} remaining";
+                card.StatusText = $"${result.CreditsRemaining:F2}";
                 card.UsedPercent = 0;
                 card.IsHighUsage = false;
                 card.ShowUsagePercent = false;
+                card.IsCreditsDisplay = true;
             }
             else
             {
@@ -219,6 +225,7 @@ public sealed class MainViewModel : IDisposable
             }
 
             card.IsError = false;
+            card.IsCreditsDisplay = false;
 
             // Multi-bar display: if the item provides labelled bars, use them
             if (item.Bars is { Count: > 0 })
@@ -262,10 +269,11 @@ public sealed class MainViewModel : IDisposable
             }
             else if (item.CreditsRemaining is not null)
             {
-                card.StatusText = $"${item.CreditsRemaining:F2} remaining";
+                card.StatusText = $"${item.CreditsRemaining:F2}";
                 card.UsedPercent = 0;
                 card.IsHighUsage = false;
                 card.ShowUsagePercent = false;
+                card.IsCreditsDisplay = true;
                 card.ResetText = null;
             }
             else if (item.SecondaryUsage is not null)
@@ -469,8 +477,30 @@ public sealed class ProviderCardViewModel : INotifyPropertyChanged
     public bool HasBars
     {
         get => _hasBars;
-        set => SetField(ref _hasBars, value);
+        set
+        {
+            if (_hasBars == value) return;
+            _hasBars = value;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(HasBars)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ShowProgressBar)));
+        }
     }
+
+    private bool _isCreditsDisplay;
+    public bool IsCreditsDisplay
+    {
+        get => _isCreditsDisplay;
+        set
+        {
+            if (_isCreditsDisplay == value) return;
+            _isCreditsDisplay = value;
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsCreditsDisplay)));
+            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ShowProgressBar)));
+        }
+    }
+
+    /// <summary>True when the card should show a progress bar (not a credits display, not a multi-bar card).</summary>
+    public bool ShowProgressBar => !HasBars && !IsCreditsDisplay;
 
     /// <summary>
     /// Multi-bar usage display. When populated, the UI renders one bar per entry

@@ -1,4 +1,4 @@
-﻿<Window x:Class="CodexBar.App.MainWindow"
+<Window x:Class="CodexBar.App.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
@@ -9,13 +9,13 @@
         d:DataContext="{d:DesignInstance Type=vm:MainViewModel, IsDesignTimeCreatable=False}"
         Title="CodexBar"
         SizeToContent="Height" Width="340"
-        MaxHeight="800"
+        MaxHeight="1400"
         WindowStyle="None"
         AllowsTransparency="True"
         Background="#01000000"
         ShowInTaskbar="False"
         Topmost="True"
-        ResizeMode="NoResize"
+        ResizeMode="CanResizeWithGrip"
         Deactivated="Window_Deactivated">
 
     <Window.Resources>
@@ -44,8 +44,7 @@
             CornerRadius="12"
             BorderBrush="#3F3F5F"
             BorderThickness="1"
-            Margin="8"
-            MouseLeftButtonDown="Border_MouseLeftButtonDown">
+            Margin="8">
         <Border.LayoutTransform>
             <ScaleTransform x:Name="ZoomTransform" ScaleX="1" ScaleY="1" />
         </Border.LayoutTransform>
@@ -60,12 +59,17 @@
                 <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
 
-            <!-- Header -->
-            <TextBlock Grid.Row="0"
-                       Text="🎚️ CodexBar"
-                       FontSize="20" FontWeight="SemiBold"
-                       Foreground="{StaticResource TextPrimaryBrush}"
-                       Margin="0,0,0,12" />
+            <!-- Title bar (drag to reposition via WM_NCHITTEST HTCAPTION) -->
+            <Border x:Name="TitleBarBorder"
+                    Grid.Row="0"
+                    Background="Transparent"
+                    Cursor="SizeAll"
+                    Margin="0,0,0,12">
+                <TextBlock Text="🎚️ CodexBar"
+                           FontSize="20" FontWeight="SemiBold"
+                           Foreground="{StaticResource TextPrimaryBrush}"
+                           IsHitTestVisible="False" />
+            </Border>
 
             <!-- Provider cards -->
             <ScrollViewer Grid.Row="1"
@@ -102,17 +106,30 @@
                                     </TextBlock>
                                 </Grid>
 
-                                <!-- Legacy single-bar (hidden when HasBars is true) -->
+                                <!-- Legacy single-bar (hidden for multi-bar and credits cards) -->
                                 <ProgressBar Value="{Binding UsedPercent, Mode=OneWay}"
                                              Style="{StaticResource UsageBar}"
-                                             Visibility="{Binding HasBars, Converter={StaticResource InverseBoolToVis}}"
+                                             Visibility="{Binding ShowProgressBar, Converter={StaticResource BoolToVis}}"
                                              Margin="0,6,0,4" />
 
-                                <!-- Status text -->
+                                <!-- Credits display: large bold amount + "credits remaining" label -->
+                                <StackPanel Visibility="{Binding IsCreditsDisplay, Converter={StaticResource BoolToVis}}"
+                                            Margin="0,6,0,0">
+                                    <TextBlock Text="{Binding StatusText}"
+                                               FontSize="26" FontWeight="SemiBold"
+                                               Foreground="{StaticResource TextPrimaryBrush}" />
+                                    <TextBlock Text="credits remaining"
+                                               FontSize="12"
+                                               Foreground="{StaticResource TextSecondaryBrush}"
+                                               Margin="0,2,0,0" />
+                                </StackPanel>
+
+                                <!-- Status text (non-credits cards) -->
                                 <TextBlock Text="{Binding StatusText}"
                                            FontSize="13"
                                            Foreground="{StaticResource TextSecondaryBrush}"
-                                           TextTrimming="CharacterEllipsis" />
+                                           TextTrimming="CharacterEllipsis"
+                                           Visibility="{Binding IsCreditsDisplay, Converter={StaticResource InverseBoolToVis}}" />
 
                                 <!-- Multi-bar display (visible when HasBars is true) -->
                                 <ItemsControl ItemsSource="{Binding Bars}"
