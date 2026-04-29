@@ -562,7 +562,7 @@ public sealed class CopilotProvider : IUsageProvider
         if (quota.Entitlement <= 0)
             return (0, "No quota", false);
 
-        var used = Math.Clamp(quota.Entitlement - quota.Remaining, 0, quota.Entitlement);
+        var used = Math.Max(0, quota.Entitlement - quota.Remaining);
         var usedPercent = (double)used / quota.Entitlement;
         var label = BuildUsageLabel(used, quota.Entitlement, quotaLabel, ComputeOverageRequests(quota), quota.OveragePermitted);
         return (usedPercent, label, false);
@@ -575,7 +575,7 @@ public sealed class CopilotProvider : IUsageProvider
             return baseLabel;
 
         return overagePermitted
-            ? $"{baseLabel} (+{overageRequests:N0} overage, ${overageRequests * OverageCostPerRequest:F2})"
+            ? $"{baseLabel} (${overageRequests * OverageCostPerRequest:F2} overage)"
             : $"{baseLabel} (over limit)";
     }
 
