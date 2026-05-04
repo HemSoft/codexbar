@@ -1,14 +1,13 @@
-// <copyright file="SettingsService.cs" company="PlaceholderCompany">
-// Copyright (c) PlaceholderCompany. All rights reserved.
-// </copyright>
+// Copyright (c) HemSoft Developments. All rights reserved.
 
 namespace CodexBar.Core.Configuration;
 
-using System.Runtime.InteropServices;
 #if WINDOWS
 using System.Security.AccessControl;
 using System.Security.Principal;
 #endif
+
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using CodexBar.Core.Models;
 using Microsoft.Extensions.Logging;

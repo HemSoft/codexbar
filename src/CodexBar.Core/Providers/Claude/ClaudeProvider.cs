@@ -1,6 +1,4 @@
-// <copyright file="ClaudeProvider.cs" company="PlaceholderCompany">
-// Copyright (c) PlaceholderCompany. All rights reserved.
-// </copyright>
+// Copyright (c) HemSoft Developments. All rights reserved.
 
 namespace CodexBar.Core.Providers.Claude;
 

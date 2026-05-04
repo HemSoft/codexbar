@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
@@ -10,7 +10,7 @@
     <Version>1.0.0</Version>
     <AssemblyTitle>CodexBar</AssemblyTitle>
     <Description>Windows system tray app for AI provider usage monitoring</Description>
-    <NoWarn>SA0001;SA1600;SA1601;SA1602;SA1611;SA1616;SA1200;SA1201;SA1202;SA1203;SA1204;SA1214;SA1402;SA1115;SA1117;SA1118;SA1316;SA1413;SA1513;SA1649;SA1651</NoWarn>
+    <NoWarn>SA0001;SA1600;SA1601;SA1602;SA1611;SA1616;SA1201;SA1202;SA1203;SA1204;SA1214;SA1402;SA1115;SA1117;SA1118;SA1316;SA1413;SA1513;SA1649;SA1651</NoWarn>
   </PropertyGroup>
 
   <ItemGroup>
