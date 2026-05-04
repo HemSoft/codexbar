@@ -117,6 +117,7 @@ Automatically fix as many failing gates as possible in priority order.
 5. After all gates: re-run full `perfection audit` to confirm
 
 **Rules:**
+
 - Never skip a failing gate — attempt every fix
 - After each fix, re-run that specific gate to verify
 - If a fix introduces failures in other gates, roll back and try a different approach

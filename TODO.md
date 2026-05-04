@@ -7,7 +7,7 @@
 | 📋 | High | [#6 Add Stryker.NET mutation testing](#add-mutation-testing) | Target ≥ 80% mutation score |
 | 📋 | Medium | [#11 Create scorecard skill](#create-scorecard-skill) | Model after hs-buddy and relias-assistant scorecard skills |
 | 📋 | Medium | [#5 Add husky + lint-staged pre-commit hooks](#add-husky-hooks) | Auto-run dotnet format and dotnet test on commit |
-| 📋 | Low | [#10 Add markdownlint-cli](#add-markdownlint) | Lint README.md and other docs |
+| ✅ | Low | [#10 Add markdownlint-cli](#add-markdownlint) | markdownlint-cli added, CI step enforces, all docs pass (2026-05-04) |
 | 📋 | Low | [#8 Expand .gitignore patterns](#expand-gitignore) | Add .agents/, coverage/, TestResults/ exclusions |
 | ✅ | High | Fix 233 code formatting violations | Resolved with `dotnet format` (2026-05-04) |
 | ✅ | High | Add .editorconfig | Created with .NET C# conventions (2026-05-04) |
@@ -21,7 +21,7 @@
 
 ## Progress
 
-**Completed: 8 / 16** (50%)
+**Completed: 9 / 16** (56%)
 
 ---
 
@@ -89,7 +89,9 @@
 
 **Problem:** No markdown linting configured.
 
-**Solution:** Add `markdownlint-cli` or `markdownlint-cli2` to package.json (or as a global tool) and enforce in CI.
+**Solution:** Add `markdownlint-cli` to package.json and enforce in CI.
+
+**Status:** ✅ Complete (2026-05-04). `markdownlint-cli` added as devDependency, `.markdownlint.json` config exists with MD013/MD060 disabled, `npm run lint:md` script added, CI workflow runs lint check.
 
 ---
 

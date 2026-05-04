@@ -28,7 +28,7 @@ jobs:
         run: npm ci
 
       - name: Markdown Lint
-        run: npx markdownlint *.md
+        run: npm run lint:md
 
       - name: Restore
         run: dotnet restore
