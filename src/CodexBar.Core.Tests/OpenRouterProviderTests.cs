@@ -1,9 +1,13 @@
+// <copyright file="OpenRouterProviderTests.cs" company="PlaceholderCompany">
+// Copyright (c) PlaceholderCompany. All rights reserved.
+// </copyright>
+
+namespace CodexBar.Core.Tests;
+
 using CodexBar.Core.Configuration;
 using CodexBar.Core.Models;
 using CodexBar.Core.Providers.OpenRouter;
 using Microsoft.Extensions.Logging.Abstractions;
-
-namespace CodexBar.Core.Tests;
 
 public class OpenRouterProviderTests
 {
@@ -31,10 +35,17 @@ public class OpenRouterProviderTests
         public ISettingsService Instance => this;
 
         public AppSettings Load() => new();
-        public void Save(AppSettings settings) { }
+
+        public void Save(AppSettings settings)
+        {
+        }
+
         public string? GetApiKey(ProviderId providerId) => null;
+
         public bool IsProviderEnabled(ProviderId providerId) => true;
+
         public string? GetOpenCodeGoWorkspaceId() => null;
+
         public IReadOnlyList<string> GetCopilotAccounts() => [];
     }
 }

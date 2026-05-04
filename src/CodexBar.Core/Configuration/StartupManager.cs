@@ -1,7 +1,11 @@
-using System.Diagnostics;
-using Microsoft.Win32;
+// <copyright file="StartupManager.cs" company="PlaceholderCompany">
+// Copyright (c) PlaceholderCompany. All rights reserved.
+// </copyright>
 
 namespace CodexBar.Core.Configuration;
+
+using System.Diagnostics;
+using Microsoft.Win32;
 
 /// <summary>
 /// Manages the "Start with Windows" registry entry under HKCU\...\Run.
@@ -15,9 +19,13 @@ public static class StartupManager
     /// <summary>
     /// Returns true if the CodexBar autostart entry exists in the registry.
     /// </summary>
+    /// <returns></returns>
     public static bool IsEnabled()
     {
-        if (!OperatingSystem.IsWindows()) return false;
+        if (!OperatingSystem.IsWindows())
+        {
+            return false;
+        }
 
         try
         {
@@ -38,7 +46,10 @@ public static class StartupManager
     /// </summary>
     public static void SetEnabled(bool enabled)
     {
-        if (!OperatingSystem.IsWindows()) return;
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
 
         using var key = Registry.CurrentUser.OpenSubKey(RunKeyPath, writable: true)
             ?? throw new InvalidOperationException("Cannot open HKCU Run key");
@@ -47,10 +58,14 @@ public static class StartupManager
         {
             var exePath = Environment.ProcessPath;
             if (string.IsNullOrEmpty(exePath))
+            {
                 exePath = Process.GetCurrentProcess().MainModule?.FileName;
+            }
 
             if (string.IsNullOrEmpty(exePath))
+            {
                 throw new InvalidOperationException("Unable to determine executable path");
+            }
 
             key.SetValue(AppName, $"\"{exePath}\"");
         }

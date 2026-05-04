@@ -1,6 +1,10 @@
-using CodexBar.Core.Models;
+// <copyright file="ISettingsService.cs" company="PlaceholderCompany">
+// Copyright (c) PlaceholderCompany. All rights reserved.
+// </copyright>
 
 namespace CodexBar.Core.Configuration;
+
+using CodexBar.Core.Models;
 
 /// <summary>
 /// Contract for reading CodexBar settings and provider credentials.
@@ -10,9 +14,14 @@ namespace CodexBar.Core.Configuration;
 public interface ISettingsService
 {
     AppSettings Load();
+
     void Save(AppSettings settings);
+
     string? GetApiKey(ProviderId providerId);
+
     bool IsProviderEnabled(ProviderId providerId);
+
     string? GetOpenCodeGoWorkspaceId();
+
     IReadOnlyList<string> GetCopilotAccounts();
 }

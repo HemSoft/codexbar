@@ -1,34 +1,25 @@
-using CodexBar.Core.Providers.Claude;
-using CodexBar.Core.Models;
-using Xunit;
+// <copyright file="ClaudeProviderTests.cs" company="PlaceholderCompany">
+// Copyright (c) PlaceholderCompany. All rights reserved.
+// </copyright>
 
 namespace CodexBar.Core.Tests;
+
+using CodexBar.Core.Providers.Claude;
+using Xunit;
 
 public class ClaudeProviderTests
 {
     [Fact]
-    public void FormatTokenCount_Billions_ReturnsB()
-    {
-        Assert.Equal("1.5B tokens", ClaudeProvider.FormatTokenCount(1_500_000_000));
-    }
+    public void FormatTokenCount_Billions_ReturnsB() => Assert.Equal("1.5B tokens", ClaudeProvider.FormatTokenCount(1_500_000_000));
 
     [Fact]
-    public void FormatTokenCount_Millions_ReturnsM()
-    {
-        Assert.Equal("2.5M tokens", ClaudeProvider.FormatTokenCount(2_500_000));
-    }
+    public void FormatTokenCount_Millions_ReturnsM() => Assert.Equal("2.5M tokens", ClaudeProvider.FormatTokenCount(2_500_000));
 
     [Fact]
-    public void FormatTokenCount_Thousands_ReturnsK()
-    {
-        Assert.Equal("3.5K tokens", ClaudeProvider.FormatTokenCount(3_500));
-    }
+    public void FormatTokenCount_Thousands_ReturnsK() => Assert.Equal("3.5K tokens", ClaudeProvider.FormatTokenCount(3_500));
 
     [Fact]
-    public void FormatTokenCount_Small_ReturnsRaw()
-    {
-        Assert.Equal("42 tokens", ClaudeProvider.FormatTokenCount(42));
-    }
+    public void FormatTokenCount_Small_ReturnsRaw() => Assert.Equal("42 tokens", ClaudeProvider.FormatTokenCount(42));
 
     [Fact]
     public void FormatUsageLabel_WithCost_ReturnsCost()
@@ -90,10 +81,7 @@ public class ClaudeProviderTests
     }
 
     [Fact]
-    public void BuildWeeklySnapshot_Null_ReturnsNull()
-    {
-        Assert.Null(ClaudeProvider.BuildWeeklySnapshot(null));
-    }
+    public void BuildWeeklySnapshot_Null_ReturnsNull() => Assert.Null(ClaudeProvider.BuildWeeklySnapshot(null));
 
     [Fact]
     public void BuildUsageBars_WithLimits_ReturnsTwoBars()
@@ -103,7 +91,7 @@ public class ClaudeProviderTests
             FiveHourUtilization = 0.3,
             FiveHourReset = DateTimeOffset.UtcNow.AddHours(2).ToUnixTimeSeconds(),
             SevenDayUtilization = 0.7,
-            SevenDayReset = DateTimeOffset.UtcNow.AddDays(3).ToUnixTimeSeconds()
+            SevenDayReset = DateTimeOffset.UtcNow.AddDays(3).ToUnixTimeSeconds(),
         };
         var bars = ClaudeProvider.BuildUsageBars(limits);
         Assert.Equal(2, bars.Count);
@@ -123,10 +111,7 @@ public class ClaudeProviderTests
     }
 
     [Fact]
-    public void CalculateTotalTokens_Null_ReturnsZero()
-    {
-        Assert.Equal(0, ClaudeProvider.CalculateTotalTokens(null));
-    }
+    public void CalculateTotalTokens_Null_ReturnsZero() => Assert.Equal(0, ClaudeProvider.CalculateTotalTokens(null));
 
     [Fact]
     public void CalculateTotalTokens_WithUsages_ReturnsSum()
@@ -137,10 +122,7 @@ public class ClaudeProviderTests
     }
 
     [Fact]
-    public void CalculateEquivalentCost_Null_ReturnsZero()
-    {
-        Assert.Equal(0, ClaudeProvider.CalculateEquivalentCost(null));
-    }
+    public void CalculateEquivalentCost_Null_ReturnsZero() => Assert.Equal(0, ClaudeProvider.CalculateEquivalentCost(null));
 
     [Fact]
     public void ResolvePricing_ExactMatch_ReturnsPricing()

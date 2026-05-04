@@ -1,7 +1,11 @@
-using System.IO;
-using Xunit;
+// <copyright file="FileSecurityHelperTests.cs" company="PlaceholderCompany">
+// Copyright (c) PlaceholderCompany. All rights reserved.
+// </copyright>
 
 namespace CodexBar.Core.Tests;
+
+using System.IO;
+using Xunit;
 
 public class FileSecurityHelperTests
 {
@@ -33,7 +37,9 @@ public class FileSecurityHelperTests
         finally
         {
             if (File.Exists(path))
+            {
                 File.Delete(path);
+            }
         }
     }
 }

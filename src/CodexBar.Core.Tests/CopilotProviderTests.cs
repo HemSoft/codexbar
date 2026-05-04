@@ -1,7 +1,11 @@
-using CodexBar.Core.Providers.Copilot;
-using Xunit;
+// <copyright file="CopilotProviderTests.cs" company="PlaceholderCompany">
+// Copyright (c) PlaceholderCompany. All rights reserved.
+// </copyright>
 
 namespace CodexBar.Core.Tests;
+
+using CodexBar.Core.Providers.Copilot;
+using Xunit;
 
 public class CopilotProviderTests
 {

@@ -1,3 +1,9 @@
+// <copyright file="App.xaml.cs" company="PlaceholderCompany">
+// Copyright (c) PlaceholderCompany. All rights reserved.
+// </copyright>
+
+namespace CodexBar.App;
+
 using System.Diagnostics;
 using System.Drawing;
 using System.Runtime.InteropServices;
@@ -14,33 +20,31 @@ using CodexBar.Core.Services;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
-namespace CodexBar.App;
-
 public partial class App : Application
 {
-    private H.NotifyIcon.TaskbarIcon? _trayIcon;
-    private ServiceProvider? _services;
-    private UsageRefreshService? _refreshService;
-    private MainViewModel? _viewModel;
-    private MainWindow? _mainWindow;
+    private H.NotifyIcon.TaskbarIcon? trayIcon;
+    private ServiceProvider? services;
+    private UsageRefreshService? refreshService;
+    private MainViewModel? viewModel;
+    private MainWindow? mainWindow;
 
     protected override void OnStartup(StartupEventArgs e)
     {
         base.OnStartup(e);
 
-        DispatcherUnhandledException += OnDispatcherUnhandledException;
+        this.DispatcherUnhandledException += OnDispatcherUnhandledException;
         AppDomain.CurrentDomain.UnhandledException += OnDomainUnhandledException;
 
         var services = new ServiceCollection();
         ConfigureServices(services);
-        _services = services.BuildServiceProvider();
+        this.services = services.BuildServiceProvider();
 
-        _refreshService = _services.GetRequiredService<UsageRefreshService>();
-        _viewModel = _services.GetRequiredService<MainViewModel>();
+        this.refreshService = this.services.GetRequiredService<UsageRefreshService>();
+        this.viewModel = this.services.GetRequiredService<MainViewModel>();
 
-        InitializeTrayIcon();
+        this.InitializeTrayIcon();
 
-        _refreshService.Start();
+        this.refreshService.Start();
     }
 
     private static void OnDispatcherUnhandledException(object sender, DispatcherUnhandledExceptionEventArgs e)
@@ -49,10 +53,7 @@ public partial class App : Application
         e.Handled = true; // Prevent crash — keep tray icon alive
     }
 
-    private static void OnDomainUnhandledException(object sender, UnhandledExceptionEventArgs e)
-    {
-        Debug.WriteLine($"[CodexBar] Unhandled domain exception: {e.ExceptionObject}");
-    }
+    private static void OnDomainUnhandledException(object sender, UnhandledExceptionEventArgs e) => Debug.WriteLine($"[CodexBar] Unhandled domain exception: {e.ExceptionObject}");
 
     private static void ConfigureServices(IServiceCollection services)
     {
@@ -75,14 +76,14 @@ public partial class App : Application
 
     private void InitializeTrayIcon()
     {
-        _trayIcon = new H.NotifyIcon.TaskbarIcon
+        this.trayIcon = new H.NotifyIcon.TaskbarIcon
         {
             ToolTipText = "CodexBar — AI Usage Monitor",
             Icon = CreateDefaultIcon(),
-            ContextMenu = CreateContextMenu()
+            ContextMenu = this.CreateContextMenu(),
         };
-        _trayIcon.TrayMouseMove += (_, _) => ShowPopup();
-        _trayIcon.ForceCreate();
+        this.trayIcon.TrayMouseMove += (_, _) => this.ShowPopup();
+        this.trayIcon.ForceCreate();
     }
 
     private System.Windows.Controls.ContextMenu CreateContextMenu()
@@ -92,8 +93,10 @@ public partial class App : Application
         var refreshItem = new System.Windows.Controls.MenuItem { Header = "Refresh Now" };
         refreshItem.Click += async (_, _) =>
         {
-            if (_refreshService is not null)
-                await _refreshService.RefreshAllAsync();
+            if (this.refreshService is not null)
+            {
+                await this.refreshService.RefreshAllAsync();
+            }
         };
         menu.Items.Add(refreshItem);
 
@@ -101,7 +104,7 @@ public partial class App : Application
         {
             Header = "Start with Windows",
             IsCheckable = true,
-            IsChecked = StartupManager.IsEnabled()
+            IsChecked = StartupManager.IsEnabled(),
         };
         startupItem.Click += (_, _) =>
         {
@@ -122,8 +125,8 @@ public partial class App : Application
         var exitItem = new System.Windows.Controls.MenuItem { Header = "Exit" };
         exitItem.Click += (_, _) =>
         {
-            _mainWindow?.SaveWindowState();
-            Shutdown();
+            this.mainWindow?.SaveWindowState();
+            this.Shutdown();
         };
         menu.Items.Add(exitItem);
 
@@ -134,17 +137,21 @@ public partial class App : Application
     {
         try
         {
-            if (_mainWindow is { IsVisible: true }) return;
-
-            var settingsService = _services!.GetRequiredService<SettingsService>();
-            if (_mainWindow is null)
+            if (this.mainWindow is { IsVisible: true })
             {
-                _mainWindow = new MainWindow(settingsService) { DataContext = _viewModel };
-                _mainWindow.Closed += (_, _) => _mainWindow = null;
+                return;
             }
-            _mainWindow.Show();
-            _mainWindow.RestoreState();
-            _mainWindow.Activate();
+
+            var settingsService = this.services!.GetRequiredService<SettingsService>();
+            if (this.mainWindow is null)
+            {
+                this.mainWindow = new MainWindow(settingsService) { DataContext = this.viewModel };
+                this.mainWindow.Closed += (_, _) => this.mainWindow = null;
+            }
+
+            this.mainWindow.Show();
+            this.mainWindow.RestoreState();
+            this.mainWindow.Activate();
         }
         catch (Exception ex)
         {
@@ -183,11 +190,12 @@ public partial class App : Application
 
     protected override void OnExit(ExitEventArgs e)
     {
-        _mainWindow?.SaveWindowState();
+        this.mainWindow?.SaveWindowState();
+
         // Only dispose non-DI resources manually. _viewModel and _refreshService
         // are DI singletons — ServiceProvider.Dispose() handles their lifetime.
-        _trayIcon?.Dispose();
-        _services?.Dispose();
+        this.trayIcon?.Dispose();
+        this.services?.Dispose();
         base.OnExit(e);
     }
 }

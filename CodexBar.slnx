@@ -1,6 +1,7 @@
 <Solution>
   <Folder Name="/src/">
     <Project Path="src/CodexBar.App/CodexBar.App.csproj" />
+    <Project Path="src/CodexBar.App.Tests/CodexBar.App.Tests.csproj" />
     <Project Path="src/CodexBar.Core/CodexBar.Core.csproj" />
     <Project Path="src/CodexBar.Core.Tests/CodexBar.Core.Tests.csproj" />
   </Folder>

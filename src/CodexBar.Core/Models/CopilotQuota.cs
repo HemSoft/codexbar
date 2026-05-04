@@ -1,6 +1,10 @@
-using System.Text.Json.Serialization;
+// <copyright file="CopilotQuota.cs" company="PlaceholderCompany">
+// Copyright (c) PlaceholderCompany. All rights reserved.
+// </copyright>
 
 namespace CodexBar.Core.Models;
+
+using System.Text.Json.Serialization;
 
 /// <summary>
 /// Typed DTO for the /copilot_internal/user API response.
@@ -71,27 +75,27 @@ public sealed class CopilotQuotaSnapshot
 /// </summary>
 public sealed record CopilotAccountResult
 {
-    /// <summary>GitHub username for this account.</summary>
+    /// <summary>Gets gitHub username for this account.</summary>
     public required string Username { get; init; }
 
-    /// <summary>Plan type: enterprise, individual_pro, etc.</summary>
+    /// <summary>Gets plan type: enterprise, individual_pro, etc.</summary>
     public string? Plan { get; init; }
 
-    /// <summary>Orgs this account belongs to.</summary>
+    /// <summary>Gets orgs this account belongs to.</summary>
     public IReadOnlyList<string>? Organizations { get; init; }
 
-    /// <summary>Premium interactions quota snapshot.</summary>
+    /// <summary>Gets premium interactions quota snapshot.</summary>
     public CopilotQuotaSnapshot? PremiumInteractions { get; init; }
 
-    /// <summary>Chat quota snapshot.</summary>
+    /// <summary>Gets chat quota snapshot.</summary>
     public CopilotQuotaSnapshot? Chat { get; init; }
 
-    /// <summary>When the quota resets (UTC ISO 8601).</summary>
+    /// <summary>Gets when the quota resets (UTC ISO 8601).</summary>
     public string? QuotaResetDateUtc { get; init; }
 
-    /// <summary>Whether this account fetch succeeded.</summary>
+    /// <summary>Gets a value indicating whether whether this account fetch succeeded.</summary>
     public bool Success { get; init; }
 
-    /// <summary>Error message if fetch failed.</summary>
+    /// <summary>Gets error message if fetch failed.</summary>
     public string? ErrorMessage { get; init; }
 }

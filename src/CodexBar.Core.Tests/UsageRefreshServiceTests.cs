@@ -1,3 +1,9 @@
+// <copyright file="UsageRefreshServiceTests.cs" company="PlaceholderCompany">
+// Copyright (c) PlaceholderCompany. All rights reserved.
+// </copyright>
+
+namespace CodexBar.Core.Tests;
+
 using System;
 using System.Threading;
 using System.Threading.Tasks;
@@ -6,8 +12,6 @@ using CodexBar.Core.Providers;
 using CodexBar.Core.Services;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
-
-namespace CodexBar.Core.Tests;
 
 public class UsageRefreshServiceTests
 {
@@ -83,22 +87,16 @@ public class UsageRefreshServiceTests
         Assert.Equal(ProviderId.OpenCodeGo, firedId);
     }
 
-    private sealed class DummyProvider : IUsageProvider
+    private sealed class DummyProvider(bool available, ProviderUsageResult result) : IUsageProvider
     {
-        private readonly bool _available;
-        private readonly ProviderUsageResult _result;
+        private readonly bool available = available;
+        private readonly ProviderUsageResult result = result;
 
-        public DummyProvider(bool available, ProviderUsageResult result)
-        {
-            _available = available;
-            _result = result;
-        }
+        public ProviderMetadata Metadata => new() { Id = this.result.Provider, DisplayName = "Dummy", Description = "d" };
 
-        public ProviderMetadata Metadata => new() { Id = _result.Provider, DisplayName = "Dummy", Description = "d" };
+        public Task<bool> IsAvailableAsync(CancellationToken ct = default) => Task.FromResult(this.available);
 
-        public Task<bool> IsAvailableAsync(CancellationToken ct = default) => Task.FromResult(_available);
-
-        public Task<ProviderUsageResult> FetchUsageAsync(CancellationToken ct = default) => Task.FromResult(_result);
+        public Task<ProviderUsageResult> FetchUsageAsync(CancellationToken ct = default) => Task.FromResult(this.result);
     }
 
     private sealed class ThrowingProvider : IUsageProvider

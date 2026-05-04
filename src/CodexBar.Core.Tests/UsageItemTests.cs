@@ -1,7 +1,11 @@
-using CodexBar.Core.Models;
-using Xunit;
+// <copyright file="UsageItemTests.cs" company="PlaceholderCompany">
+// Copyright (c) PlaceholderCompany. All rights reserved.
+// </copyright>
 
 namespace CodexBar.Core.Tests;
+
+using CodexBar.Core.Models;
+using Xunit;
 
 public class UsageItemTests
 {

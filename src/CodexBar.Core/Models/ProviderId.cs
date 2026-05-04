@@ -1,3 +1,7 @@
+// <copyright file="ProviderId.cs" company="PlaceholderCompany">
+// Copyright (c) PlaceholderCompany. All rights reserved.
+// </copyright>
+
 namespace CodexBar.Core.Models;
 
 /// <summary>
@@ -8,5 +12,5 @@ public enum ProviderId
     OpenRouter,
     Copilot,
     Claude,
-    OpenCodeGo
+    OpenCodeGo,
 }

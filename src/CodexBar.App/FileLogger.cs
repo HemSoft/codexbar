@@ -1,23 +1,27 @@
+// <copyright file="FileLogger.cs" company="PlaceholderCompany">
+// Copyright (c) PlaceholderCompany. All rights reserved.
+// </copyright>
+
+namespace CodexBar.App;
+
 using System.IO;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
-namespace CodexBar.App;
-
 public sealed class FileLoggerProvider : ILoggerProvider
 {
-    private readonly string _logPath;
-    private readonly StreamWriter _writer;
-    private readonly Lock _lock = new();
+    private readonly string logPath;
+    private readonly StreamWriter writer;
+    private readonly Lock @lock = new();
 
     public FileLoggerProvider(string logPath)
     {
-        _logPath = logPath;
+        this.logPath = logPath;
         var dir = Path.GetDirectoryName(logPath)!;
         Directory.CreateDirectory(dir);
-        _writer = new StreamWriter(new FileStream(logPath, FileMode.Append, FileAccess.Write, FileShare.Read))
+        this.writer = new StreamWriter(new FileStream(logPath, FileMode.Append, FileAccess.Write, FileShare.Read))
         {
-            AutoFlush = true
+            AutoFlush = true,
         };
     }
 
@@ -25,15 +29,15 @@ public sealed class FileLoggerProvider : ILoggerProvider
 
     public void Dispose()
     {
-        _writer.Flush();
-        _writer.Dispose();
+        this.writer.Flush();
+        this.writer.Dispose();
     }
 
     internal void Write(string message)
     {
-        lock (_lock)
+        lock (this.@lock)
         {
-            _writer.WriteLine(message);
+            this.writer.WriteLine(message);
         }
     }
 
@@ -43,7 +47,9 @@ public sealed class FileLoggerProvider : ILoggerProvider
 
 file sealed class FileLogger(string categoryName, FileLoggerProvider provider) : ILogger
 {
-    public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+    public IDisposable? BeginScope<TState>(TState state)
+        where TState : notnull
+        => null;
 
     public bool IsEnabled(LogLevel logLevel) => true;
 
@@ -58,11 +64,14 @@ file sealed class FileLogger(string categoryName, FileLoggerProvider provider) :
             LogLevel.Warning => "WARN",
             LogLevel.Error => "EROR",
             LogLevel.Critical => "CRIT",
-            _ => "????"
+            _ => "????",
         };
         var message = $"{timestamp} [{level}] {categoryName}: {formatter(state, exception)}";
         if (exception is not null)
+        {
             message += Environment.NewLine + exception;
+        }
+
         provider.Write(message);
     }
 }

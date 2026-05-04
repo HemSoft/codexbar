@@ -1,10 +1,15 @@
-using System.Runtime.InteropServices;
+// <copyright file="FileSecurityHelper.cs" company="PlaceholderCompany">
+// Copyright (c) PlaceholderCompany. All rights reserved.
+// </copyright>
+
 #if WINDOWS
 using System.Security.AccessControl;
 using System.Security.Principal;
 #endif
 
 namespace CodexBar.Core.Configuration;
+
+using System.Runtime.InteropServices;
 
 /// <summary>
 /// Shared utility for writing files with owner-only permissions.
@@ -27,6 +32,7 @@ internal static class FileSecurityHelper
     /// On Windows: uses a <see cref="FileSecurity"/> ACL granting FullControl only to the current user.
     /// On Unix: uses <see cref="FileStreamOptions.UnixCreateMode"/> to set chmod 600 atomically.
     /// </summary>
+    /// <returns></returns>
     public static FileStream CreateRestrictedFileStream(string filePath)
     {
 #if WINDOWS
@@ -62,7 +68,7 @@ internal static class FileSecurityHelper
             {
                 Mode = FileMode.Create,
                 Access = FileAccess.Write,
-                UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite
+                UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite,
             });
         }
 

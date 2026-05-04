@@ -1,30 +1,37 @@
+// <copyright file="MainViewModel.cs" company="PlaceholderCompany">
+// Copyright (c) PlaceholderCompany. All rights reserved.
+// </copyright>
+
+namespace CodexBar.App.ViewModels;
+
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using CodexBar.Core.Models;
 using CodexBar.Core.Services;
 
-namespace CodexBar.App.ViewModels;
-
 public sealed class MainViewModel : IDisposable
 {
-    private readonly UsageRefreshService _refreshService;
+    private readonly UsageRefreshService refreshService;
 
-    public ObservableCollection<ProviderCardViewModel> Providers { get; } = new();
+    public ObservableCollection<ProviderCardViewModel> Providers { get; } = [];
 
     // Stable key → card view model for reconciliation
-    private readonly Dictionary<string, ProviderCardViewModel> _cardsByKey = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, ProviderCardViewModel> cardsByKey = new(StringComparer.OrdinalIgnoreCase);
 
     public MainViewModel(UsageRefreshService refreshService)
     {
-        _refreshService = refreshService;
-        _refreshService.UsageUpdated += OnUsageUpdated;
+        this.refreshService = refreshService;
+        this.refreshService.UsageUpdated += this.OnUsageUpdated;
 
         // Initialize cards for non-Copilot/non-Claude/non-OpenCodeGo providers
         // (those three use dynamic cards via Items reconciliation)
         foreach (ProviderId id in Enum.GetValues<ProviderId>())
         {
-            if (id is ProviderId.Copilot or ProviderId.Claude or ProviderId.OpenCodeGo) continue;
+            if (id is ProviderId.Copilot or ProviderId.Claude or ProviderId.OpenCodeGo)
+            {
+                continue;
+            }
 
             var card = new ProviderCardViewModel
             {
@@ -32,99 +39,99 @@ public sealed class MainViewModel : IDisposable
                 CardKey = id.ToString().ToLowerInvariant(),
                 DisplayName = id.ToString(),
                 StatusText = "Waiting…",
-                UsedPercent = 0
+                UsedPercent = 0,
             };
-            Providers.Add(card);
-            _cardsByKey[card.CardKey] = card;
+            this.Providers.Add(card);
+            this.cardsByKey[card.CardKey] = card;
         }
     }
 
-    private void OnUsageUpdated(ProviderId id, ProviderUsageResult result)
-    {
-        System.Windows.Application.Current?.Dispatcher.InvokeAsync(() =>
-        {
-            if (id == ProviderId.Copilot)
-            {
-                ReconcileCopilotCards(result);
-                return;
-            }
+    private void OnUsageUpdated(ProviderId id, ProviderUsageResult result) => System.Windows.Application.Current?.Dispatcher.InvokeAsync(() =>
+                                                                                   {
+                                                                                       if (id == ProviderId.Copilot)
+                                                                                       {
+                                                                                           this.ReconcileCopilotCards(result);
+                                                                                           return;
+                                                                                       }
 
-            if (id == ProviderId.Claude)
-            {
-                ReconcileItemCards(ProviderId.Claude, "claude:", result);
-                return;
-            }
+                                                                                       if (id == ProviderId.Claude)
+                                                                                       {
+                                                                                           this.ReconcileItemCards(ProviderId.Claude, "claude:", result);
+                                                                                           return;
+                                                                                       }
 
-            if (id == ProviderId.OpenCodeGo)
-            {
-                ReconcileItemCards(ProviderId.OpenCodeGo, "opencode-go:", result);
-                return;
-            }
+                                                                                       if (id == ProviderId.OpenCodeGo)
+                                                                                       {
+                                                                                           this.ReconcileItemCards(ProviderId.OpenCodeGo, "opencode-go:", result);
+                                                                                           return;
+                                                                                       }
 
-            // Legacy single-card path for non-Copilot providers
-            var key = id.ToString().ToLowerInvariant();
-            if (!_cardsByKey.TryGetValue(key, out var card)) return;
+                                                                                       // Legacy single-card path for non-Copilot providers
+                                                                                       var key = id.ToString().ToLowerInvariant();
+                                                                                       if (!this.cardsByKey.TryGetValue(key, out var card))
+                                                                                       {
+                                                                                           return;
+                                                                                       }
 
-            if (!result.Success)
-            {
-                card.StatusText = result.ErrorMessage ?? "Error";
-                card.UsedPercent = 0;
-                card.ResetText = null;
-                card.WeeklyText = null;
-                card.WeeklyPercent = 0;
-                card.IsHighUsage = false;
-                card.ShowUsagePercent = true;
-                card.IsError = true;
-                card.Bars.Clear();
-                card.HasBars = false;
-                return;
-            }
+                                                                                       if (!result.Success)
+                                                                                       {
+                                                                                           card.StatusText = result.ErrorMessage ?? "Error";
+                                                                                           card.UsedPercent = 0;
+                                                                                           card.ResetText = null;
+                                                                                           card.WeeklyText = null;
+                                                                                           card.WeeklyPercent = 0;
+                                                                                           card.IsHighUsage = false;
+                                                                                           card.ShowUsagePercent = true;
+                                                                                           card.IsError = true;
+                                                                                           card.Bars.Clear();
+                                                                                           card.HasBars = false;
+                                                                                           return;
+                                                                                       }
 
-            card.IsError = false;
-            card.StatusText = "No data";
-            card.UsedPercent = 0;
-            card.ResetText = null;
-            card.WeeklyText = null;
-            card.WeeklyPercent = 0;
-            card.IsHighUsage = false;
-            card.ShowUsagePercent = true;
-            card.Bars.Clear();
-            card.HasBars = false;
+                                                                                       card.IsError = false;
+                                                                                       card.StatusText = "No data";
+                                                                                       card.UsedPercent = 0;
+                                                                                       card.ResetText = null;
+                                                                                       card.WeeklyText = null;
+                                                                                       card.WeeklyPercent = 0;
+                                                                                       card.IsHighUsage = false;
+                                                                                       card.ShowUsagePercent = true;
+                                                                                       card.Bars.Clear();
+                                                                                       card.HasBars = false;
 
-            if (result.SessionUsage is not null)
-            {
-                card.UsedPercent = result.SessionUsage.UsedPercent;
-                card.StatusText = result.SessionUsage.UsageLabel ?? $"{result.SessionUsage.UsedPercent:P0} used";
-                card.ResetText = result.SessionUsage.ResetDescription;
-                card.IsHighUsage = result.SessionUsage.UsedPercent >= 0.8;
-                card.ShowUsagePercent = !result.SessionUsage.IsUnlimited;
-            }
-            else if (result.CreditsRemaining is not null)
-            {
-                card.StatusText = $"${result.CreditsRemaining:F2}";
-                card.UsedPercent = 0;
-                card.IsHighUsage = false;
-                card.ShowUsagePercent = false;
-                card.IsCreditsDisplay = true;
-            }
-            else
-            {
-                card.StatusText = "No data";
-            }
+                                                                                       if (result.SessionUsage is not null)
+                                                                                       {
+                                                                                           card.UsedPercent = result.SessionUsage.UsedPercent;
+                                                                                           card.StatusText = result.SessionUsage.UsageLabel ?? $"{result.SessionUsage.UsedPercent:P0} used";
+                                                                                           card.ResetText = result.SessionUsage.ResetDescription;
+                                                                                           card.IsHighUsage = result.SessionUsage.UsedPercent >= 0.8;
+                                                                                           card.ShowUsagePercent = !result.SessionUsage.IsUnlimited;
+                                                                                       }
+                                                                                       else if (result.CreditsRemaining is not null)
+                                                                                       {
+                                                                                           card.StatusText = $"${result.CreditsRemaining:F2}";
+                                                                                           card.UsedPercent = 0;
+                                                                                           card.IsHighUsage = false;
+                                                                                           card.ShowUsagePercent = false;
+                                                                                           card.IsCreditsDisplay = true;
+                                                                                       }
+                                                                                       else
+                                                                                       {
+                                                                                           card.StatusText = "No data";
+                                                                                       }
 
-            if (result.WeeklyUsage is not null)
-            {
-                card.WeeklyText = result.WeeklyUsage.UsageLabel;
-                card.WeeklyPercent = result.WeeklyUsage.UsedPercent;
-            }
-        });
-    }
+                                                                                       if (result.WeeklyUsage is not null)
+                                                                                       {
+                                                                                           card.WeeklyText = result.WeeklyUsage.UsageLabel;
+                                                                                           card.WeeklyPercent = result.WeeklyUsage.UsedPercent;
+                                                                                       }
+                                                                                   });
 
     /// <summary>
     /// Reconciles Copilot cards: update existing, add new, remove stale.
     /// </summary>
     private void ReconcileCopilotCards(ProviderUsageResult result) =>
-        ReconcileItemCards(ProviderId.Copilot, "copilot:", result);
+        this.ReconcileItemCards(ProviderId.Copilot, "copilot:", result);
 
     /// <summary>
     /// Generic reconciliation for providers that use per-item cards (e.g., Copilot, Claude).
@@ -139,19 +146,19 @@ public sealed class MainViewModel : IDisposable
         if (items is null || items.Count == 0)
         {
             // Remove stale account cards so they don't linger alongside the error
-            var staleAccountKeys = _cardsByKey.Keys
+            var staleAccountKeys = this.cardsByKey.Keys
                 .Where(k => k.StartsWith(keyPrefix, StringComparison.OrdinalIgnoreCase) && k != errorKey)
                 .ToList();
             foreach (var key in staleAccountKeys)
             {
-                if (_cardsByKey.TryGetValue(key, out var staleCard))
+                if (this.cardsByKey.TryGetValue(key, out var staleCard))
                 {
-                    Providers.Remove(staleCard);
-                    _cardsByKey.Remove(key);
+                    this.Providers.Remove(staleCard);
+                    this.cardsByKey.Remove(key);
                 }
             }
 
-            if (!_cardsByKey.TryGetValue(errorKey, out var errorCard))
+            if (!this.cardsByKey.TryGetValue(errorKey, out var errorCard))
             {
                 errorCard = new ProviderCardViewModel
                 {
@@ -160,10 +167,10 @@ public sealed class MainViewModel : IDisposable
                     DisplayName = providerDisplayName,
                     StatusText = result.ErrorMessage ?? "No accounts",
                     IsError = true,
-                    ShowUsagePercent = false
+                    ShowUsagePercent = false,
                 };
-                Providers.Add(errorCard);
-                _cardsByKey[errorKey] = errorCard;
+                this.Providers.Add(errorCard);
+                this.cardsByKey[errorKey] = errorCard;
             }
             else
             {
@@ -178,14 +185,15 @@ public sealed class MainViewModel : IDisposable
                 errorCard.Bars.Clear();
                 errorCard.HasBars = false;
             }
+
             return;
         }
 
         // Remove stale error card if items arrived
-        if (_cardsByKey.TryGetValue(errorKey, out var staleError))
+        if (this.cardsByKey.TryGetValue(errorKey, out var staleError))
         {
-            Providers.Remove(staleError);
-            _cardsByKey.Remove(errorKey);
+            this.Providers.Remove(staleError);
+            this.cardsByKey.Remove(errorKey);
         }
 
         var currentKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -194,17 +202,17 @@ public sealed class MainViewModel : IDisposable
         {
             currentKeys.Add(item.Key);
 
-            if (!_cardsByKey.TryGetValue(item.Key, out var card))
+            if (!this.cardsByKey.TryGetValue(item.Key, out var card))
             {
                 card = new ProviderCardViewModel
                 {
                     ProviderId = providerId,
                     CardKey = item.Key,
                     DisplayName = item.DisplayName,
-                    StatusText = "Loading…"
+                    StatusText = "Loading…",
                 };
-                Providers.Add(card);
-                _cardsByKey[item.Key] = card;
+                this.Providers.Add(card);
+                this.cardsByKey[item.Key] = card;
             }
 
             card.DisplayName = item.DisplayName;
@@ -252,6 +260,7 @@ public sealed class MainViewModel : IDisposable
                     card.UsedPercent = 0;
                     card.IsHighUsage = false;
                 }
+
                 continue;
             }
 
@@ -309,16 +318,16 @@ public sealed class MainViewModel : IDisposable
         }
 
         // Remove cards for accounts that are no longer present
-        var staleKeys = _cardsByKey.Keys
+        var staleKeys = this.cardsByKey.Keys
             .Where(k => k.StartsWith(keyPrefix, StringComparison.OrdinalIgnoreCase) && !currentKeys.Contains(k))
             .ToList();
 
         foreach (var key in staleKeys)
         {
-            if (_cardsByKey.TryGetValue(key, out var staleCard))
+            if (this.cardsByKey.TryGetValue(key, out var staleCard))
             {
-                Providers.Remove(staleCard);
-                _cardsByKey.Remove(key);
+                this.Providers.Remove(staleCard);
+                this.cardsByKey.Remove(key);
             }
         }
     }
@@ -347,59 +356,66 @@ public sealed class MainViewModel : IDisposable
                     Label = bar.Label,
                     UsedPercent = bar.UsedPercent,
                     ResetDescription = bar.ResetDescription,
-                    IsHighUsage = bar.UsedPercent >= 0.8
+                    IsHighUsage = bar.UsedPercent >= 0.8,
                 });
             }
         }
 
         // Remove excess bars
         while (card.Bars.Count > bars.Count)
+        {
             card.Bars.RemoveAt(card.Bars.Count - 1);
+        }
     }
 
-    public void Dispose()
-    {
-        _refreshService.UsageUpdated -= OnUsageUpdated;
-    }
+    public void Dispose() => this.refreshService.UsageUpdated -= this.OnUsageUpdated;
 }
 
 public sealed class UsageBarViewModel : INotifyPropertyChanged
 {
-    private string _label = "";
+    private string label = string.Empty;
+
     public string Label
     {
-        get => _label;
-        set => SetField(ref _label, value);
+        get => this.label;
+        set => this.SetField(ref this.label, value);
     }
 
-    private double _usedPercent;
+    private double usedPercent;
+
     public double UsedPercent
     {
-        get => _usedPercent;
-        set => SetField(ref _usedPercent, value);
+        get => this.usedPercent;
+        set => this.SetField(ref this.usedPercent, value);
     }
 
-    private string? _resetDescription;
+    private string? resetDescription;
+
     public string? ResetDescription
     {
-        get => _resetDescription;
-        set => SetField(ref _resetDescription, value);
+        get => this.resetDescription;
+        set => this.SetField(ref this.resetDescription, value);
     }
 
-    private bool _isHighUsage;
+    private bool isHighUsage;
+
     public bool IsHighUsage
     {
-        get => _isHighUsage;
-        set => SetField(ref _isHighUsage, value);
+        get => this.isHighUsage;
+        set => this.SetField(ref this.isHighUsage, value);
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
 
     private void SetField<T>(ref T field, T value, [CallerMemberName] string? name = null)
     {
-        if (EqualityComparer<T>.Default.Equals(field, value)) return;
+        if (EqualityComparer<T>.Default.Equals(field, value))
+        {
+            return;
+        }
+
         field = value;
-        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+        this.PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
     }
 }
 
@@ -407,113 +423,136 @@ public sealed class ProviderCardViewModel : INotifyPropertyChanged
 {
     public ProviderId ProviderId { get; init; }
 
-    /// <summary>Stable key for reconciliation (e.g., "gemini", "copilot:HemSoft").</summary>
-    public string CardKey { get; init; } = "";
+    /// <summary>Gets stable key for reconciliation (e.g., "gemini", "copilot:HemSoft").</summary>
+    public string CardKey { get; init; } = string.Empty;
 
-    private string _displayName = "";
+    private string displayName = string.Empty;
+
     public string DisplayName
     {
-        get => _displayName;
-        set => SetField(ref _displayName, value);
+        get => this.displayName;
+        set => this.SetField(ref this.displayName, value);
     }
 
-    private string _statusText = "Waiting…";
+    private string statusText = "Waiting…";
+
     public string StatusText
     {
-        get => _statusText;
-        set => SetField(ref _statusText, value);
+        get => this.statusText;
+        set => this.SetField(ref this.statusText, value);
     }
 
-    private string? _resetText;
+    private string? resetText;
+
     public string? ResetText
     {
-        get => _resetText;
-        set => SetField(ref _resetText, value);
+        get => this.resetText;
+        set => this.SetField(ref this.resetText, value);
     }
 
-    private string? _weeklyText;
+    private string? weeklyText;
+
     public string? WeeklyText
     {
-        get => _weeklyText;
-        set => SetField(ref _weeklyText, value);
+        get => this.weeklyText;
+        set => this.SetField(ref this.weeklyText, value);
     }
 
-    private double _usedPercent;
+    private double usedPercent;
+
     public double UsedPercent
     {
-        get => _usedPercent;
-        set => SetField(ref _usedPercent, value);
+        get => this.usedPercent;
+        set => this.SetField(ref this.usedPercent, value);
     }
 
-    private double _weeklyPercent;
+    private double weeklyPercent;
+
     public double WeeklyPercent
     {
-        get => _weeklyPercent;
-        set => SetField(ref _weeklyPercent, value);
+        get => this.weeklyPercent;
+        set => this.SetField(ref this.weeklyPercent, value);
     }
 
-    private bool _isError;
+    private bool isError;
+
     public bool IsError
     {
-        get => _isError;
-        set => SetField(ref _isError, value);
+        get => this.isError;
+        set => this.SetField(ref this.isError, value);
     }
 
-    private bool _isHighUsage;
+    private bool isHighUsage;
+
     public bool IsHighUsage
     {
-        get => _isHighUsage;
-        set => SetField(ref _isHighUsage, value);
+        get => this.isHighUsage;
+        set => this.SetField(ref this.isHighUsage, value);
     }
 
-    private bool _showUsagePercent = true;
+    private bool showUsagePercent = true;
+
     public bool ShowUsagePercent
     {
-        get => _showUsagePercent;
-        set => SetField(ref _showUsagePercent, value);
+        get => this.showUsagePercent;
+        set => this.SetField(ref this.showUsagePercent, value);
     }
 
-    private bool _hasBars;
+    private bool hasBars;
+
     public bool HasBars
     {
-        get => _hasBars;
+        get => this.hasBars;
         set
         {
-            if (_hasBars == value) return;
-            _hasBars = value;
-            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(HasBars)));
-            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ShowProgressBar)));
+            if (this.hasBars == value)
+            {
+                return;
+            }
+
+            this.hasBars = value;
+            this.PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(this.HasBars)));
+            this.PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(this.ShowProgressBar)));
         }
     }
 
-    private bool _isCreditsDisplay;
+    private bool isCreditsDisplay;
+
     public bool IsCreditsDisplay
     {
-        get => _isCreditsDisplay;
+        get => this.isCreditsDisplay;
         set
         {
-            if (_isCreditsDisplay == value) return;
-            _isCreditsDisplay = value;
-            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(IsCreditsDisplay)));
-            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(ShowProgressBar)));
+            if (this.isCreditsDisplay == value)
+            {
+                return;
+            }
+
+            this.isCreditsDisplay = value;
+            this.PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(this.IsCreditsDisplay)));
+            this.PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(this.ShowProgressBar)));
         }
     }
 
-    /// <summary>True when the card should show a progress bar (not a credits display, not a multi-bar card).</summary>
-    public bool ShowProgressBar => !HasBars && !IsCreditsDisplay;
+    /// <summary>Gets a value indicating whether true when the card should show a progress bar (not a credits display, not a multi-bar card).</summary>
+    public bool ShowProgressBar => !this.HasBars && !this.IsCreditsDisplay;
 
     /// <summary>
-    /// Multi-bar usage display. When populated, the UI renders one bar per entry
+    /// Gets multi-bar usage display. When populated, the UI renders one bar per entry
     /// instead of the legacy single progress bar.
     /// </summary>
-    public ObservableCollection<UsageBarViewModel> Bars { get; } = new();
+    public ObservableCollection<UsageBarViewModel> Bars { get; } = [];
 
     public event PropertyChangedEventHandler? PropertyChanged;
 
     private void SetField<T>(ref T field, T value, [CallerMemberName] string? name = null)
     {
-        if (EqualityComparer<T>.Default.Equals(field, value)) return;
+        if (EqualityComparer<T>.Default.Equals(field, value))
+        {
+            return;
+        }
+
         field = value;
-        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+        this.PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
     }
 }

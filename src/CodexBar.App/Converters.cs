@@ -1,8 +1,12 @@
+// <copyright file="Converters.cs" company="PlaceholderCompany">
+// Copyright (c) PlaceholderCompany. All rights reserved.
+// </copyright>
+
+namespace CodexBar.App;
+
 using System.Globalization;
 using System.Windows;
 using System.Windows.Data;
-
-namespace CodexBar.App;
 
 /// <summary>
 /// Converts null/empty string to Collapsed, non-null to Visible.

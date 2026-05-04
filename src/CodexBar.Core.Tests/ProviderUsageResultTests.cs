@@ -1,6 +1,10 @@
-using CodexBar.Core.Models;
+// <copyright file="ProviderUsageResultTests.cs" company="PlaceholderCompany">
+// Copyright (c) PlaceholderCompany. All rights reserved.
+// </copyright>
 
 namespace CodexBar.Core.Tests;
+
+using CodexBar.Core.Models;
 
 public class ProviderUsageResultTests
 {

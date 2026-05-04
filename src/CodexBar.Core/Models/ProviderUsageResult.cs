@@ -1,3 +1,7 @@
+// <copyright file="ProviderUsageResult.cs" company="PlaceholderCompany">
+// Copyright (c) PlaceholderCompany. All rights reserved.
+// </copyright>
+
 namespace CodexBar.Core.Models;
 
 /// <summary>
@@ -6,25 +10,26 @@ namespace CodexBar.Core.Models;
 public sealed record ProviderUsageResult
 {
     public required ProviderId Provider { get; init; }
+
     public required bool Success { get; init; }
 
-    /// <summary>Session/short-window usage (e.g., quota window for Gemini).</summary>
+    /// <summary>Gets session/short-window usage (e.g., quota window for Gemini).</summary>
     public UsageSnapshot? SessionUsage { get; init; }
 
-    /// <summary>Weekly/long-window usage.</summary>
+    /// <summary>Gets weekly/long-window usage.</summary>
     public UsageSnapshot? WeeklyUsage { get; init; }
 
-    /// <summary>Credit balance if the provider uses credits.</summary>
+    /// <summary>Gets credit balance if the provider uses credits.</summary>
     public decimal? CreditsRemaining { get; init; }
 
-    /// <summary>Error message if the fetch failed.</summary>
+    /// <summary>Gets error message if the fetch failed.</summary>
     public string? ErrorMessage { get; init; }
 
-    /// <summary>When this result was fetched.</summary>
+    /// <summary>Gets when this result was fetched.</summary>
     public DateTimeOffset FetchedAt { get; init; } = DateTimeOffset.UtcNow;
 
     /// <summary>
-    /// Per-subject usage items. Multi-account providers (e.g., Copilot) return
+    /// Gets per-subject usage items. Multi-account providers (e.g., Copilot) return
     /// one item per account. Single-account providers return one item or leave null
     /// (in which case <see cref="SessionUsage"/>/<see cref="WeeklyUsage"/> are used).
     /// </summary>
@@ -35,13 +40,13 @@ public sealed record ProviderUsageResult
         {
             Provider = provider,
             Success = false,
-            ErrorMessage = error
+            ErrorMessage = error,
         };
 
     public static ProviderUsageResult EmptySuccess(ProviderId provider) =>
         new()
         {
             Provider = provider,
-            Success = true
+            Success = true,
         };
 }
