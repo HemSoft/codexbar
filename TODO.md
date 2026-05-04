@@ -2,13 +2,13 @@
 
 | Status | Priority | Task | Notes |
 |--------|----------|------|-------|
-| 🚧 | Critical | [Backfill test coverage to 80%](#backfill-test-coverage) | Currently 13% line / 12% branch. Need tests for all providers, services, config |
-| 📋 | High | [Add CRAP score tooling](#add-crap-score-tooling) | ReportGenerator + coverlet.runsettings for complexity × coverage analysis |
-| 📋 | High | [Add Stryker.NET mutation testing](#add-mutation-testing) | Target ≥ 80% mutation score |
-| 📋 | Medium | [Create scorecard skill](#create-scorecard-skill) | Model after hs-buddy and relias-assistant scorecard skills |
-| 📋 | Medium | [Add husky + lint-staged pre-commit hooks](#add-husky-hooks) | Auto-run dotnet format and dotnet test on commit |
-| 📋 | Low | [Add markdownlint-cli](#add-markdownlint) | Lint README.md and other docs |
-| 📋 | Low | [Expand .gitignore patterns](#expand-gitignore) | Add .agents/, coverage/, TestResults/ exclusions |
+| 🚧 | Critical | [#9 Backfill test coverage to 80%](#backfill-test-coverage) | Currently 13% line / 12% branch. Need tests for all providers, services, config |
+| 📋 | High | [#7 Add CRAP score tooling](#add-crap-score-tooling) | ReportGenerator + coverlet.runsettings for complexity × coverage analysis |
+| 📋 | High | [#6 Add Stryker.NET mutation testing](#add-mutation-testing) | Target ≥ 80% mutation score |
+| 📋 | Medium | [#11 Create scorecard skill](#create-scorecard-skill) | Model after hs-buddy and relias-assistant scorecard skills |
+| 📋 | Medium | [#5 Add husky + lint-staged pre-commit hooks](#add-husky-hooks) | Auto-run dotnet format and dotnet test on commit |
+| 📋 | Low | [#10 Add markdownlint-cli](#add-markdownlint) | Lint README.md and other docs |
+| 📋 | Low | [#8 Expand .gitignore patterns](#expand-gitignore) | Add .agents/, coverage/, TestResults/ exclusions |
 | ✅ | High | Fix 233 code formatting violations | Resolved with `dotnet format` (2026-05-04) |
 | ✅ | High | Add .editorconfig | Created with .NET C# conventions (2026-05-04) |
 | ✅ | High | Add static analysis (Roslyn + StyleCop) | Added to Core, App, and Tests projects (2026-05-04) |
