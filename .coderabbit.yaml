@@ -1,0 +1,7 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+# Auto-review PRs regardless of target (base) branch. Default branch is always included;
+# ".*" extends matching to all branches. See https://docs.coderabbit.ai/configuration/auto-review
+reviews:
+  auto_review:
+    base_branches:
+      - ".*"
