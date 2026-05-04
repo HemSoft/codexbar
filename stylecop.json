@@ -17,9 +17,6 @@
     },
     "namingRules": {
       "allowCommonHungarianPrefixes": true
-    },
-    "layoutRules": {
-      "newlineAtEndOfFile": true
     }
   }
 }
