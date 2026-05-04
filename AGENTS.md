@@ -24,7 +24,7 @@ All changes must pass these gates before merge:
 
 ## Project Structure
 
-```
+```text
 src/
   CodexBar.Core/        # Provider abstractions, models, services
   CodexBar.App/         # WPF system tray app

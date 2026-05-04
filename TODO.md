@@ -32,6 +32,7 @@
 **Problem:** Coverage is at ~13% line / 12% branch. Only 55 Core tests exist; the entire WPF App layer was untested until the new App.Tests project was created.
 
 **What to test:**
+
 - `ClaudeProvider` — full HTTP mocking for auth, quota, and error paths
 - `CopilotProvider` — multi-account discovery, token resolution, API responses
 - `OpenRouterProvider` — credits, usage parsing
@@ -50,6 +51,7 @@
 **Problem:** No automated CRAP (Change Risk Anti-Patterns) score analysis exists.
 
 **Solution:**
+
 1. Add `coverlet.runsettings` with thresholds
 2. Install `dotnet-reportgenerator-globaltool`
 3. Configure CI to generate JSON + HTML reports
