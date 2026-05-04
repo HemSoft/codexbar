@@ -1,13 +1,11 @@
-// <copyright file="OpenRouterProviderTests.cs" company="PlaceholderCompany">
-// Copyright (c) PlaceholderCompany. All rights reserved.
-// </copyright>
+// Copyright (c) HemSoft Developments. All rights reserved.
+
+namespace CodexBar.Core.Tests;
 
 using CodexBar.Core.Configuration;
 using CodexBar.Core.Models;
 using CodexBar.Core.Providers.OpenRouter;
 using Microsoft.Extensions.Logging.Abstractions;
-
-namespace CodexBar.Core.Tests;
 
 public class OpenRouterProviderTests
 {

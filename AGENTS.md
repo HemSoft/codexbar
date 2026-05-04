@@ -18,7 +18,7 @@ All changes must pass these gates before merge:
 - **File-scoped namespaces**
 - **Implicit usings** enabled
 - **Nullable reference types** enabled
-- `using` directives **outside** namespace declaration
+- `using` directives **inside** the file-scoped namespace (immediately after `namespace …;`)
 - Async methods suffixed with `Async`
 - Private fields prefixed with `_`
 

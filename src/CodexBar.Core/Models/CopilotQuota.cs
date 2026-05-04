@@ -1,10 +1,8 @@
-// <copyright file="CopilotQuota.cs" company="PlaceholderCompany">
-// Copyright (c) PlaceholderCompany. All rights reserved.
-// </copyright>
-
-using System.Text.Json.Serialization;
+// Copyright (c) HemSoft Developments. All rights reserved.
 
 namespace CodexBar.Core.Models;
+
+using System.Text.Json.Serialization;
 
 /// <summary>
 /// Typed DTO for the /copilot_internal/user API response.

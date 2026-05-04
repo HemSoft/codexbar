@@ -1,11 +1,9 @@
-// <copyright file="StartupManager.cs" company="PlaceholderCompany">
-// Copyright (c) PlaceholderCompany. All rights reserved.
-// </copyright>
+// Copyright (c) HemSoft Developments. All rights reserved.
+
+namespace CodexBar.Core.Configuration;
 
 using System.Diagnostics;
 using Microsoft.Win32;
-
-namespace CodexBar.Core.Configuration;
 
 /// <summary>
 /// Manages the "Start with Windows" registry entry under HKCU\...\Run.

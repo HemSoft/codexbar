@@ -1,6 +1,6 @@
-// <copyright file="FileSecurityHelper.cs" company="PlaceholderCompany">
-// Copyright (c) PlaceholderCompany. All rights reserved.
-// </copyright>
+// Copyright (c) HemSoft Developments. All rights reserved.
+
+namespace CodexBar.Core.Configuration;
 
 using System.Runtime.InteropServices;
 
@@ -8,8 +8,6 @@ using System.Runtime.InteropServices;
 using System.Security.AccessControl;
 using System.Security.Principal;
 #endif
-
-namespace CodexBar.Core.Configuration;
 
 /// <summary>
 /// Shared utility for writing files with owner-only permissions.

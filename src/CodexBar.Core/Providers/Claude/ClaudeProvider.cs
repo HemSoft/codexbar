@@ -1,6 +1,6 @@
-// <copyright file="ClaudeProvider.cs" company="PlaceholderCompany">
-// Copyright (c) PlaceholderCompany. All rights reserved.
-// </copyright>
+// Copyright (c) HemSoft Developments. All rights reserved.
+
+namespace CodexBar.Core.Providers.Claude;
 
 using System.Net.Http;
 using System.Net.Http.Headers;
@@ -9,8 +9,6 @@ using System.Text.Json;
 using CodexBar.Core.Configuration;
 using CodexBar.Core.Models;
 using Microsoft.Extensions.Logging;
-
-namespace CodexBar.Core.Providers.Claude;
 
 /// <summary>
 /// Fetches Claude Code Pro subscription usage by making a lightweight API call

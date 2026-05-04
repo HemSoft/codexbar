@@ -1,10 +1,8 @@
-// <copyright file="AppSettings.cs" company="PlaceholderCompany">
-// Copyright (c) PlaceholderCompany. All rights reserved.
-// </copyright>
-
-using System.Text.Json.Serialization;
+// Copyright (c) HemSoft Developments. All rights reserved.
 
 namespace CodexBar.Core.Configuration;
+
+using System.Text.Json.Serialization;
 
 /// <summary>
 /// Persisted application settings stored at ~/.codexbar/settings.json.

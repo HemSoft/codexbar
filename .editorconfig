@@ -17,8 +17,9 @@ indent_size = 2
 [*.md]
 trim_trailing_whitespace = false
 
-# C# style rules
-csharp_using_directive_placement = outside_namespace:silent
+[*.cs]
+dotnet_diagnostic.SA1200.severity = error
+csharp_using_directive_placement = inside_namespace:warning
 dotnet_sort_system_directives_first = true
 csharp_new_line_before_open_brace = all
 csharp_new_line_before_else = true

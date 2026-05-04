@@ -1,10 +1,8 @@
-// <copyright file="IUsageProvider.cs" company="PlaceholderCompany">
-// Copyright (c) PlaceholderCompany. All rights reserved.
-// </copyright>
-
-using CodexBar.Core.Models;
+// Copyright (c) HemSoft Developments. All rights reserved.
 
 namespace CodexBar.Core.Providers;
+
+using CodexBar.Core.Models;
 
 /// <summary>
 /// Contract for all AI provider usage fetchers.

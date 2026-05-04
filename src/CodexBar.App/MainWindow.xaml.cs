@@ -1,6 +1,6 @@
-// <copyright file="MainWindow.xaml.cs" company="PlaceholderCompany">
-// Copyright (c) PlaceholderCompany. All rights reserved.
-// </copyright>
+// Copyright (c) HemSoft Developments. All rights reserved.
+
+namespace CodexBar.App;
 
 using System.Windows;
 using System.Windows.Input;
@@ -8,8 +8,6 @@ using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Threading;
 using CodexBar.Core.Configuration;
-
-namespace CodexBar.App;
 
 public partial class MainWindow : Window
 {

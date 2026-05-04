@@ -12,16 +12,11 @@
       "documentPrivateFields": false
     },
     "orderingRules": {
-      "usingDirectivesPlacement": "outsideNamespace",
+      "usingDirectivesPlacement": "insideNamespace",
       "systemUsingDirectivesFirst": true
     },
     "namingRules": {
       "allowCommonHungarianPrefixes": true
-    },
-    "rules": {
-      "SA1309": {
-        "severity": "none"
-      }
     },
     "layoutRules": {
       "newlineAtEndOfFile": true

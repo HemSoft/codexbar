@@ -1,6 +1,6 @@
-// <copyright file="CopilotProvider.cs" company="PlaceholderCompany">
-// Copyright (c) PlaceholderCompany. All rights reserved.
-// </copyright>
+// Copyright (c) HemSoft Developments. All rights reserved.
+
+namespace CodexBar.Core.Providers.Copilot;
 
 using System.Collections.Concurrent;
 using System.ComponentModel;
@@ -10,8 +10,6 @@ using System.Text.Json;
 using CodexBar.Core.Configuration;
 using CodexBar.Core.Models;
 using Microsoft.Extensions.Logging;
-
-namespace CodexBar.Core.Providers.Copilot;
 
 /// <summary>
 /// Fetches GitHub Copilot usage for one or more accounts via the Copilot internal API.
