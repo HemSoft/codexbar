@@ -144,8 +144,8 @@
                                            Visibility="{Binding IsPairedCredits, Converter={StaticResource BoolToVis}}" />
 
                                 <!-- Single-card credits display (no companion) -->
-                                <StackPanel Visibility="{Binding IsCreditsDisplay, Converter={StaticResource BoolToVis}}"
-                                            Margin="0,6,0,0">
+                                <StackPanel Visibility="{Binding ShowSingleCreditsDisplay, Converter={StaticResource BoolToVis}}"
+                                             Margin="0,6,0,0">
                                     <TextBlock Text="{Binding StatusText}"
                                                FontSize="26" FontWeight="SemiBold"
                                                Foreground="{StaticResource TextPrimaryBrush}" />

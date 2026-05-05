@@ -550,11 +550,15 @@ public sealed class ProviderCardViewModel : INotifyPropertyChanged
             this.isCreditsDisplay = value;
             this.PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(this.IsCreditsDisplay)));
             this.PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(this.ShowProgressBar)));
+            this.PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(this.ShowSingleCreditsDisplay)));
         }
     }
 
     /// <summary>Gets a value indicating whether true when the card should show a progress bar (not a credits display, not a multi-bar card).</summary>
     public bool ShowProgressBar => !this.HasBars && !this.IsCreditsDisplay;
+
+    /// <summary>Gets a value indicating whether the single-card credits block should render.</summary>
+    public bool ShowSingleCreditsDisplay => this.IsCreditsDisplay && !this.IsPairedCredits;
 
     private bool isCompactCard;
 
@@ -595,7 +599,17 @@ public sealed class ProviderCardViewModel : INotifyPropertyChanged
     public bool IsPairedCredits
     {
         get => this.isPairedCredits;
-        set => this.SetField(ref this.isPairedCredits, value);
+        set
+        {
+            if (this.isPairedCredits == value)
+            {
+                return;
+            }
+
+            this.isPairedCredits = value;
+            this.PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(this.IsPairedCredits)));
+            this.PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(this.ShowSingleCreditsDisplay)));
+        }
     }
 
     private bool isHiddenCompanion;
