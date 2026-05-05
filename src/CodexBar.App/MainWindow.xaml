@@ -78,13 +78,15 @@
             <ItemsControl ItemsSource="{Binding Providers}">
                     <ItemsControl.ItemTemplate>
                     <DataTemplate>
+                        <!-- Hidden companion cards are collapsed (shown inside their primary card) -->
                         <Border Background="{StaticResource SurfaceBrush}"
                                 CornerRadius="8"
                                 Padding="14,12"
-                                Margin="0,0,0,8">
+                                Margin="0,0,0,8"
+                                Visibility="{Binding IsHiddenCompanion, Converter={StaticResource InverseBoolToVis}}">
                             <StackPanel>
-                                <!-- Header row: name + primary percent -->
-                                <Grid>
+                                <!-- Header row: name + primary percent (hidden for paired credits cards) -->
+                                <Grid Visibility="{Binding IsPairedCredits, Converter={StaticResource InverseBoolToVis}}">
                                     <Grid.ColumnDefinitions>
                                         <ColumnDefinition Width="*" />
                                         <ColumnDefinition Width="Auto" />
@@ -106,15 +108,44 @@
                                     </TextBlock>
                                 </Grid>
 
-                                <!-- Legacy single-bar (hidden for multi-bar and credits cards) -->
+                                <!-- Legacy single-bar (hidden for multi-bar, credits, and paired cards) -->
                                 <ProgressBar Value="{Binding UsedPercent, Mode=OneWay}"
                                              Style="{StaticResource UsageBar}"
                                              Visibility="{Binding ShowProgressBar, Converter={StaticResource BoolToVis}}"
                                              Margin="0,6,0,4" />
 
-                                <!-- Credits display: large bold amount + "credits remaining" label -->
-                                <StackPanel Visibility="{Binding IsCreditsDisplay, Converter={StaticResource BoolToVis}}"
-                                            Margin="0,6,0,0">
+                                <!-- Paired credits display: two balances side by side -->
+                                <Grid Visibility="{Binding IsPairedCredits, Converter={StaticResource BoolToVis}}"
+                                      Margin="0,6,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*" />
+                                        <ColumnDefinition Width="16" />
+                                        <ColumnDefinition Width="*" />
+                                    </Grid.ColumnDefinitions>
+
+                                    <!-- Primary credits -->
+                                    <StackPanel Grid.Column="0">
+                                        <TextBlock Text="{Binding DisplayName}" FontSize="14" FontWeight="Medium" Foreground="{StaticResource TextPrimaryBrush}" Opacity="0.7" />
+                                        <TextBlock Text="{Binding StatusText}" FontSize="22" FontWeight="SemiBold" Foreground="{StaticResource TextPrimaryBrush}" Margin="0,2,0,0" />
+                                    </StackPanel>
+
+                                    <!-- Companion credits -->
+                                    <StackPanel Grid.Column="2">
+                                        <TextBlock Text="{Binding CompanionCard.DisplayName}" FontSize="14" FontWeight="Medium" Foreground="{StaticResource TextPrimaryBrush}" Opacity="0.7" />
+                                        <TextBlock Text="{Binding CompanionCard.StatusText}" FontSize="22" FontWeight="SemiBold" Foreground="{StaticResource TextPrimaryBrush}" Margin="0,2,0,0" />
+                                    </StackPanel>
+                                </Grid>
+
+                                <!-- Shared "credits remaining" label for paired display -->
+                                <TextBlock Text="credits remaining"
+                                           FontSize="11"
+                                           Foreground="{StaticResource TextSecondaryBrush}"
+                                           Margin="0,2,0,0"
+                                           Visibility="{Binding IsPairedCredits, Converter={StaticResource BoolToVis}}" />
+
+                                <!-- Single-card credits display (no companion) -->
+                                <StackPanel Visibility="{Binding ShowSingleCreditsDisplay, Converter={StaticResource BoolToVis}}"
+                                             Margin="0,6,0,0">
                                     <TextBlock Text="{Binding StatusText}"
                                                FontSize="26" FontWeight="SemiBold"
                                                Foreground="{StaticResource TextPrimaryBrush}" />
@@ -123,13 +154,6 @@
                                                Foreground="{StaticResource TextSecondaryBrush}"
                                                Margin="0,2,0,0" />
                                 </StackPanel>
-
-                                <!-- Status text (non-credits cards) -->
-                                <TextBlock Text="{Binding StatusText}"
-                                           FontSize="13"
-                                           Foreground="{StaticResource TextSecondaryBrush}"
-                                           TextTrimming="CharacterEllipsis"
-                                           Visibility="{Binding IsCreditsDisplay, Converter={StaticResource InverseBoolToVis}}" />
 
                                 <!-- Multi-bar display (visible when HasBars is true) -->
                                 <ItemsControl ItemsSource="{Binding Bars}"
