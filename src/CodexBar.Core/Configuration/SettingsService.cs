@@ -45,7 +45,8 @@ public sealed class SettingsService : ISettingsService
     }
 
     /// <summary>
-    /// Internal constructor for testing with a custom settings directory.
+    /// Initializes a new instance of the <see cref="SettingsService"/> class
+    /// for testing with a custom settings directory.
     /// </summary>
     internal SettingsService(ILogger<SettingsService> logger, string settingsDir)
     {

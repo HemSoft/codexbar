@@ -15,8 +15,8 @@ public static class StartupManager
     private const string AppName = "CodexBar";
 
     /// <summary>
-    /// Internal hook for tests to supply a custom registry store, avoiding real-registry mutation.
-    /// When null (the default), the real Windows Registry is used.
+    /// Gets or sets an internal hook for tests to supply a custom registry store,
+    /// avoiding real-registry mutation. When null (the default), the real Windows Registry is used.
     /// </summary>
     internal static IStartupStore? TestStore { get; set; }
 
