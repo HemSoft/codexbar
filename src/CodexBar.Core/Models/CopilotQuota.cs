@@ -2,9 +2,9 @@
 // Copyright (c) PlaceholderCompany. All rights reserved.
 // </copyright>
 
-namespace CodexBar.Core.Models;
-
 using System.Text.Json.Serialization;
+
+namespace CodexBar.Core.Models;
 
 /// <summary>
 /// Typed DTO for the /copilot_internal/user API response.

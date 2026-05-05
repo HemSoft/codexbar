@@ -27,18 +27,18 @@ $totalGates = 5
 # 1. Build
 Write-Host "`n=== Build ===" -ForegroundColor Cyan
 $buildOutput = dotnet build --verbosity minimal 2>&1
-$buildPass = $LASTEXITCODE -eq 0 -and ($buildOutput | Select-String '\d+ Warning\(s\)' | ForEach-Object { $_.Matches.Value -match '(\d+) Warning' > $null; [int]$matches[1] -eq 0 } | Where-Object { $_ } | Measure-Object).Count -gt 0
-if (-not $buildPass) {
+$buildExitCode = $LASTEXITCODE
+$buildPass = $buildExitCode -eq 0
+if ($buildPass) {
+    # Build succeeded — check for warnings
     $warnMatch = $buildOutput | Select-String '(\d+) Warning\(s\)' | Select-Object -Last 1
     if ($warnMatch) {
         $warnMatch.Matches.Value -match '(\d+) Warning' > $null
         $warnCount = [int]$matches[1]
         $buildPass = $warnCount -eq 0
-    } else {
-        $buildPass = $true
     }
 }
-Write-Gate -Name 'Build' -Pass $buildPass -Detail $(if ($buildPass) { '0 warnings' } else { 'Warnings found' })
+Write-Gate -Name 'Build' -Pass $buildPass -Detail $(if ($buildPass) { '0 warnings' } else { 'Warnings found or build failed' })
 if ($buildPass) { $passCount++ }
 
 # 2. Format
@@ -53,7 +53,7 @@ Write-Host "`n=== Tests + Coverage ===" -ForegroundColor Cyan
 dotnet test "$repoRoot\CodexBar.slnx" --collect:"XPlat Code Coverage" --verbosity minimal | Out-Null
 $testPass = $?
 # Try to extract coverage from most recent cobertura file
-$coverageFile = Get-ChildItem -Path src/CodexBar.Core.Tests/TestResults -Recurse -Filter "*.xml" -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+$coverageFile = Get-ChildItem -Path src/CodexBar.Core.Tests/TestResults -Recurse -Filter "coverage.cobertura.xml" -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
 $coverageDetail = 'Unknown'
 if ($coverageFile) {
     [xml]$cov = Get-Content $coverageFile.FullName
@@ -67,26 +67,17 @@ if ($testPass) { $passCount++ }
 # 4. Security Audit
 Write-Host "`n=== Security Audit ===" -ForegroundColor Cyan
 $secOutput = dotnet list package --vulnerable --include-transitive 2>&1
-$secPass = ($secOutput | Select-String 'has no vulnerable packages').Count -gt 0
+$hasVulnerablePackages = ($secOutput | Select-String 'has the following vulnerable packages').Count -gt 0
+$secPass = -not $hasVulnerablePackages
 Write-Gate -Name 'Security' -Pass $secPass -Detail $(if ($secPass) { '0 vulnerabilities' } else { 'Vulnerabilities found' })
 if ($secPass) { $passCount++ }
 
 # 5. Markdown Lint
 Write-Host "`n=== Markdown Lint ===" -ForegroundColor Cyan
-$mdFiles = Get-ChildItem -Path . -Filter "*.md" -Recurse | Where-Object { $_.FullName -notmatch 'node_modules|\.git' }
-$mdPass = $true
-$mdErrors = 0
-foreach ($f in $mdFiles) {
-    # Very basic check: no trailing whitespace on lines
-    $lines = Get-Content $f.FullName
-    for ($i = 0; $i -lt $lines.Count; $i++) {
-        if ($lines[$i] -match ' +$') {
-            $mdPass = $false
-            $mdErrors++
-        }
-    }
-}
-Write-Gate -Name 'Markdown' -Pass $mdPass -Detail $(if ($mdPass) { 'Clean' } else { "$mdErrors trailing whitespace lines" })
+$mdLintResult = npx markdownlint-cli2 "**/*.md" "#node_modules" 2>&1
+$mdPass = $LASTEXITCODE -eq 0
+$mdDetail = if ($mdPass) { 'Clean' } else { 'Violations found' }
+Write-Gate -Name 'Markdown' -Pass $mdPass -Detail $mdDetail
 if ($mdPass) { $passCount++ }
 
 # Summary

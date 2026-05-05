@@ -2,13 +2,13 @@
 // Copyright (c) PlaceholderCompany. All rights reserved.
 // </copyright>
 
-namespace CodexBar.Core.Providers.OpenRouter;
-
 using System.Net.Http.Headers;
 using System.Text.Json;
 using CodexBar.Core.Configuration;
 using CodexBar.Core.Models;
 using Microsoft.Extensions.Logging;
+
+namespace CodexBar.Core.Providers.OpenRouter;
 
 /// <summary>
 /// Fetches OpenRouter credit usage via the OpenRouter API.
@@ -17,9 +17,9 @@ using Microsoft.Extensions.Logging;
 /// </summary>
 public sealed class OpenRouterProvider(ILogger<OpenRouterProvider> logger, IHttpClientFactory httpClientFactory, ISettingsService settings) : IUsageProvider
 {
-    private readonly ILogger<OpenRouterProvider> logger = logger;
-    private readonly IHttpClientFactory httpClientFactory = httpClientFactory;
-    private readonly ISettingsService settings = settings;
+    private readonly ILogger<OpenRouterProvider> _logger = logger;
+    private readonly IHttpClientFactory _httpClientFactory = httpClientFactory;
+    private readonly ISettingsService _settings = settings;
 
     private const string BaseUrl = "https://openrouter.ai/api/v1";
 
@@ -37,7 +37,7 @@ public sealed class OpenRouterProvider(ILogger<OpenRouterProvider> logger, IHttp
 
     public Task<bool> IsAvailableAsync(CancellationToken ct = default)
     {
-        if (!this.settings.IsProviderEnabled(ProviderId.OpenRouter))
+        if (!this._settings.IsProviderEnabled(ProviderId.OpenRouter))
         {
             return Task.FromResult(false);
         }
@@ -60,7 +60,7 @@ public sealed class OpenRouterProvider(ILogger<OpenRouterProvider> logger, IHttp
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", key);
             request.Headers.Add("X-Title", "CodexBar");
 
-            using var httpClient = this.httpClientFactory.CreateClient();
+            using var httpClient = this._httpClientFactory.CreateClient();
             using var response = await httpClient.SendAsync(request, ct);
             response.EnsureSuccessStatusCode();
 
@@ -83,7 +83,7 @@ public sealed class OpenRouterProvider(ILogger<OpenRouterProvider> logger, IHttp
             var balance = totalCredits - totalUsage;
             var usedPercent = totalCredits > 0 ? totalUsage / totalCredits : 0;
 
-            this.logger.LogDebug("OpenRouter: ${Balance:F2} remaining ({UsedPct:P0} used)", balance, usedPercent);
+            this._logger.LogDebug("OpenRouter: ${Balance:F2} remaining ({UsedPct:P0} used)", balance, usedPercent);
 
             return new ProviderUsageResult
             {
@@ -107,12 +107,12 @@ public sealed class OpenRouterProvider(ILogger<OpenRouterProvider> logger, IHttp
         }
         catch (Exception ex)
         {
-            this.logger.LogWarning(ex, "OpenRouter fetch failed");
+            this._logger.LogWarning(ex, "OpenRouter fetch failed");
             return ProviderUsageResult.Failure(ProviderId.OpenRouter, ex.Message);
         }
     }
 
     private string? ResolveApiKey() =>
-        this.settings.GetApiKey(ProviderId.OpenRouter)
-        ?? Environment.GetEnvironmentVariable("OPENROUTER_API_KEY");
+        Environment.GetEnvironmentVariable("OPENROUTER_API_KEY")
+        ?? this._settings.GetApiKey(ProviderId.OpenRouter);
 }

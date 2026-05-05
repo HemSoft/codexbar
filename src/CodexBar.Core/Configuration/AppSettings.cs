@@ -2,9 +2,9 @@
 // Copyright (c) PlaceholderCompany. All rights reserved.
 // </copyright>
 
-namespace CodexBar.Core.Configuration;
-
 using System.Text.Json.Serialization;
+
+namespace CodexBar.Core.Configuration;
 
 /// <summary>
 /// Persisted application settings stored at ~/.codexbar/settings.json.

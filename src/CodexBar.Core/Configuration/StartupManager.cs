@@ -2,10 +2,10 @@
 // Copyright (c) PlaceholderCompany. All rights reserved.
 // </copyright>
 
-namespace CodexBar.Core.Configuration;
-
 using System.Diagnostics;
 using Microsoft.Win32;
+
+namespace CodexBar.Core.Configuration;
 
 /// <summary>
 /// Manages the "Start with Windows" registry entry under HKCU\...\Run.

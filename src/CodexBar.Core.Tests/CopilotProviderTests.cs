@@ -2,10 +2,10 @@
 // Copyright (c) PlaceholderCompany. All rights reserved.
 // </copyright>
 
-namespace CodexBar.Core.Tests;
-
 using CodexBar.Core.Providers.Copilot;
 using Xunit;
+
+namespace CodexBar.Core.Tests;
 
 public class CopilotProviderTests
 {

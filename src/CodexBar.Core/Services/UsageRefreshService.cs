@@ -2,12 +2,12 @@
 // Copyright (c) PlaceholderCompany. All rights reserved.
 // </copyright>
 
-namespace CodexBar.Core.Services;
-
 using System.Collections.ObjectModel;
 using CodexBar.Core.Models;
 using CodexBar.Core.Providers;
 using Microsoft.Extensions.Logging;
+
+namespace CodexBar.Core.Services;
 
 /// <summary>
 /// Coordinates periodic usage fetches across all enabled providers.
@@ -16,12 +16,12 @@ public sealed class UsageRefreshService(
     IEnumerable<IUsageProvider> providers,
     ILogger<UsageRefreshService> logger) : IDisposable
 {
-    private readonly IReadOnlyList<IUsageProvider> providers = providers.ToList();
-    private readonly ILogger<UsageRefreshService> logger = logger;
-    private readonly object resultsLock = new();
-    private readonly Dictionary<ProviderId, ProviderUsageResult> latestResults = [];
-    private CancellationTokenSource? cts;
-    private Task? refreshLoop;
+    private readonly IReadOnlyList<IUsageProvider> _providers = providers.ToList();
+    private readonly ILogger<UsageRefreshService> _logger = logger;
+    private readonly object _resultsLock = new();
+    private readonly Dictionary<ProviderId, ProviderUsageResult> _latestResults = [];
+    private CancellationTokenSource? _cts;
+    private Task? _refreshLoop;
 
     public event Action<ProviderId, ProviderUsageResult>? UsageUpdated;
 
@@ -31,53 +31,53 @@ public sealed class UsageRefreshService(
     {
         get
         {
-            lock (this.resultsLock)
+            lock (this._resultsLock)
             {
                 return new ReadOnlyDictionary<ProviderId, ProviderUsageResult>(
-                    new Dictionary<ProviderId, ProviderUsageResult>(this.latestResults));
+                    new Dictionary<ProviderId, ProviderUsageResult>(this._latestResults));
             }
         }
     }
 
     public void Start()
     {
-        if (this.cts is not null)
+        if (this._cts is not null)
         {
             return;
         }
 
-        this.cts = new CancellationTokenSource();
-        this.refreshLoop = this.RefreshLoopAsync(this.cts.Token);
-        this.logger.LogInformation("Usage refresh service started with {Interval} interval", this.RefreshInterval);
+        this._cts = new CancellationTokenSource();
+        this._refreshLoop = this.RefreshLoopAsync(this._cts.Token);
+        this._logger.LogInformation("Usage refresh service started with {Interval} interval", this.RefreshInterval);
     }
 
     public async Task StopAsync()
     {
-        if (this.cts is null)
+        if (this._cts is null)
         {
             return;
         }
 
-        await this.cts.CancelAsync();
-        if (this.refreshLoop is not null)
+        await this._cts.CancelAsync();
+        if (this._refreshLoop is not null)
         {
             try
             {
-                await this.refreshLoop;
+                await this._refreshLoop;
             }
             catch (OperationCanceledException)
             {
             }
         }
 
-        this.cts.Dispose();
-        this.cts = null;
-        this.logger.LogInformation("Usage refresh service stopped");
+        this._cts.Dispose();
+        this._cts = null;
+        this._logger.LogInformation("Usage refresh service stopped");
     }
 
     public async Task RefreshAllAsync(CancellationToken ct = default)
     {
-        var tasks = this.providers.Select(p => this.FetchSafeAsync(p, ct));
+        var tasks = this._providers.Select(p => this.FetchSafeAsync(p, ct));
         await Task.WhenAll(tasks);
     }
 
@@ -107,30 +107,47 @@ public sealed class UsageRefreshService(
             var available = await provider.IsAvailableAsync(ct);
             if (!available)
             {
-                this.logger.LogDebug("{Provider} is not available, skipping", provider.Metadata.DisplayName);
-                lock (this.resultsLock)
+                this._logger.LogDebug("{Provider} is not available, skipping", provider.Metadata.DisplayName);
+
+                ProviderUsageResult? removed = null;
+                lock (this._resultsLock)
                 {
-                    this.latestResults.Remove(provider.Metadata.Id);
+                    if (this._latestResults.Remove(provider.Metadata.Id, out var old))
+                    {
+                        removed = old;
+                    }
+                }
+
+                if (removed is not null)
+                {
+                    // State changed from available → unavailable; notify UI so it clears stale data
+                    var unavailableResult = ProviderUsageResult.Failure(provider.Metadata.Id, "Provider unavailable");
+                    lock (this._resultsLock)
+                    {
+                        this._latestResults[provider.Metadata.Id] = unavailableResult;
+                    }
+
+                    this.RaiseUsageUpdated(provider.Metadata.Id, unavailableResult);
                 }
 
                 return;
             }
 
             var result = await provider.FetchUsageAsync(ct);
-            lock (this.resultsLock)
+            lock (this._resultsLock)
             {
-                this.latestResults[provider.Metadata.Id] = result;
+                this._latestResults[provider.Metadata.Id] = result;
             }
 
             this.RaiseUsageUpdated(provider.Metadata.Id, result);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            this.logger.LogWarning(ex, "Failed to fetch usage for {Provider}", provider.Metadata.DisplayName);
+            this._logger.LogWarning(ex, "Failed to fetch usage for {Provider}", provider.Metadata.DisplayName);
             var failure = ProviderUsageResult.Failure(provider.Metadata.Id, ex.Message);
-            lock (this.resultsLock)
+            lock (this._resultsLock)
             {
-                this.latestResults[provider.Metadata.Id] = failure;
+                this._latestResults[provider.Metadata.Id] = failure;
             }
 
             this.RaiseUsageUpdated(provider.Metadata.Id, failure);
@@ -145,13 +162,13 @@ public sealed class UsageRefreshService(
         }
         catch (Exception ex)
         {
-            this.logger.LogWarning(ex, "UsageUpdated subscriber threw for {Provider}", id);
+            this._logger.LogWarning(ex, "UsageUpdated subscriber threw for {Provider}", id);
         }
     }
 
     public void Dispose()
     {
-        this.cts?.Cancel();
-        this.cts?.Dispose();
+        this._cts?.Cancel();
+        this._cts?.Dispose();
     }
 }

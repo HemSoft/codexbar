@@ -2,13 +2,13 @@
 // Copyright (c) PlaceholderCompany. All rights reserved.
 // </copyright>
 
-namespace CodexBar.Core.Providers.OpenCodeGo;
-
 using System.Net;
 using System.Text.RegularExpressions;
 using CodexBar.Core.Configuration;
 using CodexBar.Core.Models;
 using Microsoft.Extensions.Logging;
+
+namespace CodexBar.Core.Providers.OpenCodeGo;
 
 /// <summary>
 /// Fetches OpenCode Go usage by scraping the SolidJS SSR dashboard.
@@ -21,16 +21,16 @@ public sealed partial class OpenCodeGoProvider(
     IHttpClientFactory httpClientFactory,
     ISettingsService settings) : IUsageProvider
 {
-    private readonly ILogger<OpenCodeGoProvider> logger = logger;
-    private readonly IHttpClientFactory httpClientFactory = httpClientFactory;
-    private readonly ISettingsService settings = settings;
+    private readonly ILogger<OpenCodeGoProvider> _logger = logger;
+    private readonly IHttpClientFactory _httpClientFactory = httpClientFactory;
+    private readonly ISettingsService _settings = settings;
 
     private const string DashboardPrefix = "https://opencode.ai/workspace/";
     private const string DashboardSuffix = "/go";
     private static readonly TimeSpan CacheTtl = TimeSpan.FromSeconds(90);
 
-    private DateTimeOffset lastFetch = DateTimeOffset.MinValue;
-    private ParsedUsage? cached;
+    private DateTimeOffset _lastFetch = DateTimeOffset.MinValue;
+    private ParsedUsage? _cached;
 
     public ProviderMetadata Metadata { get; } = new()
     {
@@ -45,7 +45,7 @@ public sealed partial class OpenCodeGoProvider(
     };
 
     public Task<bool> IsAvailableAsync(CancellationToken ct = default) =>
-        Task.FromResult(this.settings.IsProviderEnabled(ProviderId.OpenCodeGo));
+        Task.FromResult(this._settings.IsProviderEnabled(ProviderId.OpenCodeGo));
 
     public async Task<ProviderUsageResult> FetchUsageAsync(CancellationToken ct = default)
     {
@@ -59,10 +59,10 @@ public sealed partial class OpenCodeGoProvider(
         }
 
         // Serve cached result if still fresh
-        if (this.cached is not null && DateTimeOffset.UtcNow - this.lastFetch < CacheTtl)
+        if (this._cached is not null && DateTimeOffset.UtcNow - this._lastFetch < CacheTtl)
         {
-            this.logger.LogDebug("OpenCodeGo: cached result ({Age:F0}s old)", (DateTimeOffset.UtcNow - this.lastFetch).TotalSeconds);
-            return BuildResult(this.cached);
+            this._logger.LogDebug("OpenCodeGo: cached result ({Age:F0}s old)", (DateTimeOffset.UtcNow - this._lastFetch).TotalSeconds);
+            return BuildResult(this._cached);
         }
 
         try
@@ -76,7 +76,7 @@ public sealed partial class OpenCodeGoProvider(
             request.Headers.Add("Accept", "text/html");
             request.Headers.Add("Cookie", $"auth={authCookie}");
 
-            using var httpClient = this.httpClientFactory.CreateClient();
+            using var httpClient = this._httpClientFactory.CreateClient();
             using var response = await httpClient.SendAsync(request, ct);
 
             if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
@@ -104,9 +104,9 @@ public sealed partial class OpenCodeGoProvider(
                     "The dashboard markup may have changed.");
             }
 
-            this.cached = usage;
-            this.lastFetch = DateTimeOffset.UtcNow;
-            this.logger.LogDebug(
+            this._cached = usage;
+            this._lastFetch = DateTimeOffset.UtcNow;
+            this._logger.LogDebug(
                 "OpenCodeGo: rolling={R:P0} weekly={W:P0} monthly={M:P0}",
                 usage.Rolling?.UsedPercent, usage.Weekly?.UsedPercent, usage.Monthly?.UsedPercent);
 
@@ -118,7 +118,7 @@ public sealed partial class OpenCodeGoProvider(
         }
         catch (Exception ex)
         {
-            this.logger.LogWarning(ex, "OpenCodeGo fetch failed");
+            this._logger.LogWarning(ex, "OpenCodeGo fetch failed");
             return ProviderUsageResult.Failure(ProviderId.OpenCodeGo, ex.Message);
         }
     }
@@ -281,14 +281,14 @@ public sealed partial class OpenCodeGoProvider(
     {
         var workspaceId =
             Environment.GetEnvironmentVariable("OPENCODE_GO_WORKSPACE_ID")
-            ?? this.settings.GetOpenCodeGoWorkspaceId();
+            ?? this._settings.GetOpenCodeGoWorkspaceId();
 
         // The auth cookie is stored in the generic apiKey field for this provider.
         // It is a browser session cookie (not a traditional API key) obtained from
         // the OpenCode Go dashboard after signing in.
         var authCookie =
             Environment.GetEnvironmentVariable("OPENCODE_GO_AUTH_COOKIE")
-            ?? this.settings.GetApiKey(ProviderId.OpenCodeGo);
+            ?? this._settings.GetApiKey(ProviderId.OpenCodeGo);
 
         return (workspaceId, authCookie);
     }

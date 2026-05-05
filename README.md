@@ -44,7 +44,7 @@ dotnet run --project src\CodexBar.App
 
 ## Architecture
 
-```
+```text
 CodexBar.sln
 ├── src/CodexBar.Core/          # Provider abstractions, models, fetch logic
 │   ├── Models/                 # UsageSnapshot, ProviderStatus, etc.

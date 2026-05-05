@@ -2,9 +2,9 @@
 // Copyright (c) PlaceholderCompany. All rights reserved.
 // </copyright>
 
-namespace CodexBar.Core.Configuration;
-
 using CodexBar.Core.Models;
+
+namespace CodexBar.Core.Configuration;
 
 /// <summary>
 /// Contract for reading CodexBar settings and provider credentials.

@@ -2,9 +2,10 @@
 // Copyright (c) PlaceholderCompany. All rights reserved.
 // </copyright>
 
+using System.Runtime.InteropServices;
+
 namespace CodexBar.Core.Configuration;
 
-using System.Runtime.InteropServices;
 #if WINDOWS
 using System.Security.AccessControl;
 using System.Security.Principal;
@@ -35,13 +36,13 @@ public sealed class SettingsService(ILogger<SettingsService> logger) : ISettings
         DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
     };
 
-    private readonly ILogger<SettingsService> logger = logger;
-    private readonly object @lock = new();
-    private AppSettings? cached;
+    private readonly ILogger<SettingsService> _logger = logger;
+    private readonly object _lock = new();
+    private AppSettings? _cached;
 
     public AppSettings Load()
     {
-        lock (this.@lock)
+        lock (this._lock)
         {
             return DeepCopy(this.EnsureCached());
         }
@@ -49,7 +50,7 @@ public sealed class SettingsService(ILogger<SettingsService> logger) : ISettings
 
     public void Save(AppSettings settings)
     {
-        lock (this.@lock)
+        lock (this._lock)
         {
             this.MergeFromDisk(settings);
             this.SaveInternal(settings);
@@ -57,7 +58,7 @@ public sealed class SettingsService(ILogger<SettingsService> logger) : ISettings
     }
 
     /// <summary>
-    /// Merges provider entries and workspace IDs that exist on disk but are absent from
+    /// Merges provider entries and credential fields that exist on disk but are absent from
     /// the in-memory settings. Prevents an in-flight Save from clobbering credentials that
     /// were added to the file while the app was running.
     /// </summary>
@@ -78,22 +79,28 @@ public sealed class SettingsService(ILogger<SettingsService> logger) : ISettings
             }
 
             settings.Providers ??= [];
-            foreach (var (key, value) in disk.Providers ?? [])
+            foreach (var (key, diskProvider) in disk.Providers ?? [])
             {
-                if (!settings.Providers.ContainsKey(key))
+                if (!settings.Providers.TryGetValue(key, out var memProvider) || memProvider is null)
                 {
-                    settings.Providers[key] = value ?? new ProviderSettings();
+                    // Entire provider entry missing from memory — bring it over
+                    settings.Providers[key] = diskProvider ?? new ProviderSettings();
+                }
+                else if (diskProvider?.ApiKey is not null && string.IsNullOrWhiteSpace(memProvider.ApiKey))
+                {
+                    // Provider exists in memory but its ApiKey is empty — preserve disk credential
+                    memProvider.ApiKey = diskProvider.ApiKey;
                 }
             }
 
-            if (settings.OpenCodeGoWorkspaceId is null && disk.OpenCodeGoWorkspaceId is not null)
+            if (string.IsNullOrWhiteSpace(settings.OpenCodeGoWorkspaceId) && !string.IsNullOrWhiteSpace(disk.OpenCodeGoWorkspaceId))
             {
                 settings.OpenCodeGoWorkspaceId = disk.OpenCodeGoWorkspaceId;
             }
         }
         catch (Exception ex)
         {
-            this.logger.LogDebug(ex, "MergeFromDisk skipped — could not read {Path}", SettingsPath);
+            this._logger.LogDebug(ex, "MergeFromDisk skipped — could not read {Path}", SettingsPath);
         }
     }
 
@@ -149,19 +156,19 @@ public sealed class SettingsService(ILogger<SettingsService> logger) : ISettings
                 throw;
             }
 
-            this.cached = sanitized;
-            this.logger.LogDebug("Settings saved to {Path}", SettingsPath);
+            this._cached = sanitized;
+            this._logger.LogDebug("Settings saved to {Path}", SettingsPath);
         }
         catch (Exception ex)
         {
-            this.logger.LogError(ex, "Failed to save settings to {Path}", SettingsPath);
+            this._logger.LogError(ex, "Failed to save settings to {Path}", SettingsPath);
             throw;
         }
     }
 
     public string? GetApiKey(ProviderId providerId)
     {
-        lock (this.@lock)
+        lock (this._lock)
         {
             var settings = this.EnsureCached();
             return settings.Providers.TryGetValue(providerId.ToString(), out var ps) ? ps?.ApiKey : null;
@@ -170,7 +177,7 @@ public sealed class SettingsService(ILogger<SettingsService> logger) : ISettings
 
     public bool IsProviderEnabled(ProviderId providerId)
     {
-        lock (this.@lock)
+        lock (this._lock)
         {
             var settings = this.EnsureCached();
             return !settings.Providers.TryGetValue(providerId.ToString(), out var ps) || ps is null || ps.Enabled;
@@ -183,7 +190,7 @@ public sealed class SettingsService(ILogger<SettingsService> logger) : ISettings
     /// <returns></returns>
     public string? GetOpenCodeGoWorkspaceId()
     {
-        lock (this.@lock)
+        lock (this._lock)
         {
             return this.EnsureCached().OpenCodeGoWorkspaceId;
         }
@@ -195,7 +202,7 @@ public sealed class SettingsService(ILogger<SettingsService> logger) : ISettings
     /// <returns></returns>
     public IReadOnlyList<string> GetCopilotAccounts()
     {
-        lock (this.@lock)
+        lock (this._lock)
         {
             var settings = this.EnsureCached();
             return (settings.CopilotAccounts ?? []).ToList();
@@ -208,33 +215,33 @@ public sealed class SettingsService(ILogger<SettingsService> logger) : ISettings
     /// </summary>
     private AppSettings EnsureCached()
     {
-        if (this.cached is not null)
+        if (this._cached is not null)
         {
-            return this.cached;
+            return this._cached;
         }
 
         if (!File.Exists(SettingsPath))
         {
-            this.logger.LogInformation("No settings file found at {Path}, using defaults", SettingsPath);
-            this.cached = CreateDefaults();
+            this._logger.LogInformation("No settings file found at {Path}, using defaults", SettingsPath);
+            this._cached = CreateDefaults();
             try
             {
-                this.SaveInternal(this.cached);
+                this.SaveInternal(this._cached);
             }
             catch (Exception ex)
             {
-                this.logger.LogWarning(ex, "Could not persist default settings to {Path}; continuing with in-memory defaults", SettingsPath);
+                this._logger.LogWarning(ex, "Could not persist default settings to {Path}; continuing with in-memory defaults", SettingsPath);
             }
 
-            return this.cached;
+            return this._cached;
         }
 
         try
         {
             var json = File.ReadAllText(SettingsPath);
-            this.cached = JsonSerializer.Deserialize<AppSettings>(json, JsonOptions) ?? CreateDefaults();
-            this.cached.Providers ??= [];
-            NormalizeProviders(this.cached.Providers);
+            this._cached = JsonSerializer.Deserialize<AppSettings>(json, JsonOptions) ?? CreateDefaults();
+            this._cached.Providers ??= [];
+            NormalizeProviders(this._cached.Providers);
 
             try
             {
@@ -243,18 +250,18 @@ public sealed class SettingsService(ILogger<SettingsService> logger) : ISettings
             }
             catch (Exception ex)
             {
-                this.logger.LogWarning(ex, "Failed to restrict settings file permissions for {Path}", SettingsPath);
+                this._logger.LogWarning(ex, "Failed to restrict settings file permissions for {Path}", SettingsPath);
             }
 
-            this.logger.LogDebug("Settings loaded from {Path}", SettingsPath);
+            this._logger.LogDebug("Settings loaded from {Path}", SettingsPath);
         }
         catch (Exception ex)
         {
-            this.logger.LogWarning(ex, "Failed to load settings from {Path}, using defaults", SettingsPath);
-            this.cached = CreateDefaults();
+            this._logger.LogWarning(ex, "Failed to load settings from {Path}, using defaults", SettingsPath);
+            this._cached = CreateDefaults();
         }
 
-        return this.cached;
+        return this._cached;
     }
 
     private static AppSettings CreateDefaults() => new()
@@ -336,7 +343,7 @@ public sealed class SettingsService(ILogger<SettingsService> logger) : ISettings
         }
         catch (Exception ex)
         {
-            this.logger.LogDebug(ex, "Could not restrict file permissions on {Path}", filePath);
+            this._logger.LogDebug(ex, "Could not restrict file permissions on {Path}", filePath);
         }
     }
 
@@ -379,7 +386,7 @@ public sealed class SettingsService(ILogger<SettingsService> logger) : ISettings
         }
         catch (Exception ex)
         {
-            this.logger.LogDebug(ex, "Could not restrict directory permissions on {Path}", dirPath);
+            this._logger.LogDebug(ex, "Could not restrict directory permissions on {Path}", dirPath);
         }
     }
 }

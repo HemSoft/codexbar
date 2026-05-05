@@ -2,8 +2,6 @@
 // Copyright (c) PlaceholderCompany. All rights reserved.
 // </copyright>
 
-namespace CodexBar.Core.Providers.Copilot;
-
 using System.Collections.Concurrent;
 using System.ComponentModel;
 using System.Diagnostics;
@@ -12,6 +10,8 @@ using System.Text.Json;
 using CodexBar.Core.Configuration;
 using CodexBar.Core.Models;
 using Microsoft.Extensions.Logging;
+
+namespace CodexBar.Core.Providers.Copilot;
 
 /// <summary>
 /// Fetches GitHub Copilot usage for one or more accounts via the Copilot internal API.
@@ -46,16 +46,16 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
         return string.IsNullOrWhiteSpace(configuredValue) ? fallbackValue : configuredValue.Trim();
     }
 
-    private readonly ILogger<CopilotProvider> logger = logger;
-    private readonly IHttpClientFactory httpClientFactory = httpClientFactory;
-    private readonly ISettingsService settings = settings;
+    private readonly ILogger<CopilotProvider> _logger = logger;
+    private readonly IHttpClientFactory _httpClientFactory = httpClientFactory;
+    private readonly ISettingsService _settings = settings;
 
     // Cached account list — refreshed on startup or auth failure
-    private readonly SemaphoreSlim accountsLock = new(1, 1);
-    private List<string>? cachedAccounts;
-    private DateTime emptyDiscoveryCachedUntil;
-    private string? lastDiscoveryError;
-    private readonly ConcurrentDictionary<string, string> tokenCache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly SemaphoreSlim _accountsLock = new(1, 1);
+    private List<string>? _cachedAccounts;
+    private DateTime _emptyDiscoveryCachedUntil;
+    private string? _lastDiscoveryError;
+    private readonly ConcurrentDictionary<string, string> _tokenCache = new(StringComparer.OrdinalIgnoreCase);
 
     public ProviderMetadata Metadata { get; } = new()
     {
@@ -71,7 +71,7 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
 
     public Task<bool> IsAvailableAsync(CancellationToken ct = default)
     {
-        var isEnabled = this.settings.IsProviderEnabled(ProviderId.Copilot);
+        var isEnabled = this._settings.IsProviderEnabled(ProviderId.Copilot);
         return Task.FromResult(isEnabled);
     }
 
@@ -88,7 +88,7 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
         {
             return ProviderUsageResult.Failure(
                 ProviderId.Copilot,
-                this.lastDiscoveryError
+                this._lastDiscoveryError
                 ?? "No Copilot accounts found. Add copilotAccounts to ~/.codexbar/settings.json or run 'gh auth login'.");
         }
 
@@ -134,39 +134,39 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
     /// </summary>
     private async Task<List<string>> GetAccountsToFetchAsync(CancellationToken ct)
     {
-        var configured = this.settings.GetCopilotAccounts();
+        var configured = this._settings.GetCopilotAccounts();
         if (configured.Count > 0)
         {
             return configured.ToList();
         }
 
         // Auto-discover from gh CLI (async-safe via SemaphoreSlim)
-        await this.accountsLock.WaitAsync(ct);
+        await this._accountsLock.WaitAsync(ct);
         try
         {
-            if (this.cachedAccounts is null or { Count: 0 })
+            if (this._cachedAccounts is null or { Count: 0 })
             {
                 // Respect negative-result cache to avoid hammering gh when it's not installed/configured
-                if (DateTime.UtcNow < this.emptyDiscoveryCachedUntil)
+                if (DateTime.UtcNow < this._emptyDiscoveryCachedUntil)
                 {
                     return [];
                 }
 
-                this.cachedAccounts = await this.DiscoverGhAccountsAsync(ct);
+                this._cachedAccounts = await this.DiscoverGhAccountsAsync(ct);
             }
 
             // Cache empty results for 5 minutes to avoid repeated process spawning on persistent failures
-            if (this.cachedAccounts is { Count: 0 })
+            if (this._cachedAccounts is { Count: 0 })
             {
-                this.emptyDiscoveryCachedUntil = DateTime.UtcNow.AddMinutes(5);
-                this.cachedAccounts = null;
+                this._emptyDiscoveryCachedUntil = DateTime.UtcNow.AddMinutes(5);
+                this._cachedAccounts = null;
             }
 
-            return this.cachedAccounts ?? [];
+            return this._cachedAccounts ?? [];
         }
         finally
         {
-            this.accountsLock.Release();
+            this._accountsLock.Release();
         }
     }
 
@@ -177,7 +177,7 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
     /// </summary>
     private async Task<List<string>> DiscoverGhAccountsAsync(CancellationToken ct)
     {
-        this.lastDiscoveryError = null;
+        this._lastDiscoveryError = null;
         var accounts = new List<string>();
 
         try
@@ -186,19 +186,19 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
             var (exitCode, stderr, _) = await WaitForGhProcessAsync(process, TimeSpan.FromSeconds(10), ct);
             if (exitCode is null)
             {
-                this.lastDiscoveryError = "GitHub CLI (gh) timed out. Ensure 'gh' is responsive.";
+                this._lastDiscoveryError = "GitHub CLI (gh) timed out. Ensure 'gh' is responsive.";
                 return accounts;
             }
 
             if (exitCode != 0)
             {
-                this.logger.LogWarning("gh auth status exited with code {ExitCode}: {Stderr}", exitCode, stderr.Trim());
-                this.lastDiscoveryError = $"GitHub CLI (gh) auth failed (exit code {exitCode}). Run 'gh auth login'.";
+                this._logger.LogWarning("gh auth status exited with code {ExitCode}: {Stderr}", exitCode, stderr.Trim());
+                this._lastDiscoveryError = $"GitHub CLI (gh) auth failed (exit code {exitCode}). Run 'gh auth login'.";
                 return accounts;
             }
 
             accounts = ExtractUsernamesFromGhStatus(stderr);
-            this.logger.LogDebug("Discovered {Count} gh CLI accounts: {Accounts}", accounts.Count, string.Join(", ", accounts));
+            this._logger.LogDebug("Discovered {Count} gh CLI accounts: {Accounts}", accounts.Count, string.Join(", ", accounts));
         }
         catch (OperationCanceledException)
         {
@@ -206,13 +206,13 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
         }
         catch (Win32Exception ex)
         {
-            this.logger.LogWarning(ex, "GitHub CLI (gh) not found on PATH");
-            this.lastDiscoveryError = "GitHub CLI (gh) not found. Install from https://cli.github.com and run 'gh auth login'.";
+            this._logger.LogWarning(ex, "GitHub CLI (gh) not found on PATH");
+            this._lastDiscoveryError = "GitHub CLI (gh) not found. Install from https://cli.github.com and run 'gh auth login'.";
         }
         catch (Exception ex)
         {
-            this.logger.LogWarning(ex, "Failed to discover gh CLI accounts");
-            this.lastDiscoveryError = $"Failed to discover accounts: {ex.Message}";
+            this._logger.LogWarning(ex, "Failed to discover gh CLI accounts");
+            this._lastDiscoveryError = $"Failed to discover accounts: {ex.Message}";
         }
 
         return accounts;
@@ -352,7 +352,7 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
             request.Headers.UserAgent.ParseAdd(UserAgentProduct);
             request.Headers.Add("X-Github-Api-Version", GitHubApiVersion);
 
-            using var httpClient = this.httpClientFactory.CreateClient();
+            using var httpClient = this._httpClientFactory.CreateClient();
             using var response = await httpClient.SendAsync(request, ct);
             response.EnsureSuccessStatusCode();
 
@@ -369,7 +369,7 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
                 };
             }
 
-            this.logger.LogDebug(
+            this._logger.LogDebug(
                 "Copilot {User} ({Plan}): premium remaining={Remaining}/{Entitlement}",
                 username, data.CopilotPlan ?? "unknown",
                 data.QuotaSnapshots?.PremiumInteractions?.Remaining ?? 0,
@@ -402,7 +402,7 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
         }
         catch (Exception ex)
         {
-            this.logger.LogWarning(ex, "Copilot fetch failed for {User}", username);
+            this._logger.LogWarning(ex, "Copilot fetch failed for {User}", username);
             return new CopilotAccountResult
             {
                 Username = username,
@@ -419,7 +419,7 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
     /// </summary>
     private async Task<string?> ResolveTokenForUserAsync(string username, CancellationToken ct)
     {
-        if (this.tokenCache.TryGetValue(username, out var cached))
+        if (this._tokenCache.TryGetValue(username, out var cached))
         {
             return cached;
         }
@@ -484,7 +484,7 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
                 }
 
                 // Timeout only
-                this.logger.LogWarning("gh auth token --user {User} timed out", username);
+                this._logger.LogWarning("gh auth token --user {User} timed out", username);
                 return null;
             }
 
@@ -498,7 +498,7 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
                     : stderrOutput.Trim().Length > 200
                         ? stderrOutput.Trim()[..200] + "…"
                         : stderrOutput.Trim();
-                this.logger.LogDebug(
+                this._logger.LogDebug(
                     "gh auth token --user {User} exited {Code}: {Stderr}",
                     username, process.ExitCode, sanitizedStderr);
                 return null;
@@ -507,8 +507,8 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
             var token = (await stdoutTask).Trim();
             if (!string.IsNullOrWhiteSpace(token))
             {
-                this.tokenCache[username] = token;
-                this.logger.LogDebug("Resolved token for {User} ({Length} chars)", username, token.Length);
+                this._tokenCache[username] = token;
+                this._logger.LogDebug("Resolved token for {User} ({Length} chars)", username, token.Length);
                 return token;
             }
         }
@@ -518,7 +518,7 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
         }
         catch (Exception ex)
         {
-            this.logger.LogDebug(ex, "Failed to get token for {User}", username);
+            this._logger.LogDebug(ex, "Failed to get token for {User}", username);
         }
 
         return null;
@@ -526,16 +526,16 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
 
     private async Task InvalidateTokenForUserAsync(string username, CancellationToken ct = default)
     {
-        this.tokenCache.TryRemove(username, out _);
-        await this.accountsLock.WaitAsync(ct);
+        this._tokenCache.TryRemove(username, out _);
+        await this._accountsLock.WaitAsync(ct);
         try
         {
-            this.cachedAccounts = null;
-            this.emptyDiscoveryCachedUntil = default;
+            this._cachedAccounts = null;
+            this._emptyDiscoveryCachedUntil = default;
         }
         finally
         {
-            this.accountsLock.Release();
+            this._accountsLock.Release();
         }
     }
 

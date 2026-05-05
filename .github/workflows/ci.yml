@@ -18,6 +18,18 @@ jobs:
         with:
           dotnet-version: '9.0.x'
 
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install markdownlint-cli
+        run: npm ci
+
+      - name: Markdown Lint
+        run: npm run lint:md
+
       - name: Restore
         run: dotnet restore
 

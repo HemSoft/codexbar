@@ -2,13 +2,13 @@
 // Copyright (c) PlaceholderCompany. All rights reserved.
 // </copyright>
 
-namespace CodexBar.App.ViewModels;
-
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using CodexBar.Core.Models;
 using CodexBar.Core.Services;
+
+namespace CodexBar.App.ViewModels;
 
 public sealed class MainViewModel : IDisposable
 {
@@ -89,6 +89,7 @@ public sealed class MainViewModel : IDisposable
                                                                                        }
 
                                                                                        card.IsError = false;
+                                                                                       card.IsCreditsDisplay = false;
                                                                                        card.StatusText = "No data";
                                                                                        card.UsedPercent = 0;
                                                                                        card.ResetText = null;
