@@ -611,20 +611,20 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
 
     internal static (double UsedPercent, string UsageLabel, bool IsUnlimited) ComputeUsageMetrics(CopilotQuotaSnapshot quota, string quotaLabel)
     {
+        if (quota.Entitlement > 0)
+        {
+            var used = Math.Max(0, quota.Entitlement - quota.Remaining);
+            var usedPercent = (double)used / quota.Entitlement;
+            var label = BuildUsageLabel(used, quota.Entitlement, quotaLabel, ComputeOverageRequests(quota), quota.OveragePermitted);
+            return (usedPercent, label, false);
+        }
+
         if (quota.Unlimited)
         {
             return (0, "Unlimited", true);
         }
 
-        if (quota.Entitlement <= 0)
-        {
-            return (0, "No quota", false);
-        }
-
-        var used = Math.Max(0, quota.Entitlement - quota.Remaining);
-        var usedPercent = (double)used / quota.Entitlement;
-        var label = BuildUsageLabel(used, quota.Entitlement, quotaLabel, ComputeOverageRequests(quota), quota.OveragePermitted);
-        return (usedPercent, label, false);
+        return (0, "No quota", false);
     }
 
     private static string BuildUsageLabel(int used, int entitlement, string quotaLabel, int overageRequests, bool overagePermitted)
