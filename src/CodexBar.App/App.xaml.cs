@@ -22,11 +22,11 @@ namespace CodexBar.App;
 
 public partial class App : Application
 {
-    private H.NotifyIcon.TaskbarIcon? trayIcon;
-    private ServiceProvider? services;
-    private UsageRefreshService? refreshService;
-    private MainViewModel? viewModel;
-    private MainWindow? mainWindow;
+    private H.NotifyIcon.TaskbarIcon? _trayIcon;
+    private ServiceProvider? _services;
+    private UsageRefreshService? _refreshService;
+    private MainViewModel? _viewModel;
+    private MainWindow? _mainWindow;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -37,14 +37,14 @@ public partial class App : Application
 
         var services = new ServiceCollection();
         ConfigureServices(services);
-        this.services = services.BuildServiceProvider();
+        this._services = services.BuildServiceProvider();
 
-        this.refreshService = this.services.GetRequiredService<UsageRefreshService>();
-        this.viewModel = this.services.GetRequiredService<MainViewModel>();
+        this._refreshService = this._services.GetRequiredService<UsageRefreshService>();
+        this._viewModel = this._services.GetRequiredService<MainViewModel>();
 
         this.InitializeTrayIcon();
 
-        this.refreshService.Start();
+        this._refreshService.Start();
     }
 
     private static void OnDispatcherUnhandledException(object sender, DispatcherUnhandledExceptionEventArgs e)
@@ -76,14 +76,14 @@ public partial class App : Application
 
     private void InitializeTrayIcon()
     {
-        this.trayIcon = new H.NotifyIcon.TaskbarIcon
+        this._trayIcon = new H.NotifyIcon.TaskbarIcon
         {
             ToolTipText = "CodexBar — AI Usage Monitor",
             Icon = CreateDefaultIcon(),
             ContextMenu = this.CreateContextMenu(),
         };
-        this.trayIcon.TrayMouseMove += (_, _) => this.ShowPopup();
-        this.trayIcon.ForceCreate();
+        this._trayIcon.TrayMouseMove += (_, _) => this.ShowPopup();
+        this._trayIcon.ForceCreate();
     }
 
     private System.Windows.Controls.ContextMenu CreateContextMenu()
@@ -93,9 +93,9 @@ public partial class App : Application
         var refreshItem = new System.Windows.Controls.MenuItem { Header = "Refresh Now" };
         refreshItem.Click += async (_, _) =>
         {
-            if (this.refreshService is not null)
+            if (this._refreshService is not null)
             {
-                await this.refreshService.RefreshAllAsync();
+                await this._refreshService.RefreshAllAsync();
             }
         };
         menu.Items.Add(refreshItem);
@@ -125,7 +125,7 @@ public partial class App : Application
         var exitItem = new System.Windows.Controls.MenuItem { Header = "Exit" };
         exitItem.Click += (_, _) =>
         {
-            this.mainWindow?.SaveWindowState();
+            this._mainWindow?.SaveWindowState();
             this.Shutdown();
         };
         menu.Items.Add(exitItem);
@@ -137,21 +137,21 @@ public partial class App : Application
     {
         try
         {
-            if (this.mainWindow is { IsVisible: true })
+            if (this._mainWindow is { IsVisible: true })
             {
                 return;
             }
 
-            var settingsService = this.services!.GetRequiredService<SettingsService>();
-            if (this.mainWindow is null)
+            var settingsService = this._services!.GetRequiredService<SettingsService>();
+            if (this._mainWindow is null)
             {
-                this.mainWindow = new MainWindow(settingsService) { DataContext = this.viewModel };
-                this.mainWindow.Closed += (_, _) => this.mainWindow = null;
+                this._mainWindow = new MainWindow(settingsService) { DataContext = this._viewModel };
+                this._mainWindow.Closed += (_, _) => this._mainWindow = null;
             }
 
-            this.mainWindow.Show();
-            this.mainWindow.RestoreState();
-            this.mainWindow.Activate();
+            this._mainWindow.Show();
+            this._mainWindow.RestoreState();
+            this._mainWindow.Activate();
         }
         catch (Exception ex)
         {
@@ -190,12 +190,12 @@ public partial class App : Application
 
     protected override void OnExit(ExitEventArgs e)
     {
-        this.mainWindow?.SaveWindowState();
+        this._mainWindow?.SaveWindowState();
 
         // Only dispose non-DI resources manually. _viewModel and _refreshService
         // are DI singletons — ServiceProvider.Dispose() handles their lifetime.
-        this.trayIcon?.Dispose();
-        this.services?.Dispose();
+        this._trayIcon?.Dispose();
+        this._services?.Dispose();
         base.OnExit(e);
     }
 }

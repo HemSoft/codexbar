@@ -53,7 +53,7 @@ Write-Host "`n=== Tests + Coverage ===" -ForegroundColor Cyan
 dotnet test "$repoRoot\CodexBar.slnx" --collect:"XPlat Code Coverage" --verbosity minimal | Out-Null
 $testPass = $?
 # Try to extract coverage from most recent cobertura file
-$coverageFile = Get-ChildItem -Path src/CodexBar.Core.Tests/TestResults -Recurse -Filter "*.xml" -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+$coverageFile = Get-ChildItem -Path src/CodexBar.Core.Tests/TestResults -Recurse -Filter "coverage.cobertura.xml" -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
 $coverageDetail = 'Unknown'
 if ($coverageFile) {
     [xml]$cov = Get-Content $coverageFile.FullName
@@ -67,7 +67,8 @@ if ($testPass) { $passCount++ }
 # 4. Security Audit
 Write-Host "`n=== Security Audit ===" -ForegroundColor Cyan
 $secOutput = dotnet list package --vulnerable --include-transitive 2>&1
-$secPass = ($secOutput | Select-String 'has no vulnerable packages').Count -gt 0
+$hasVulnerablePackages = ($secOutput | Select-String 'has the following vulnerable packages').Count -gt 0
+$secPass = -not $hasVulnerablePackages
 Write-Gate -Name 'Security' -Pass $secPass -Detail $(if ($secPass) { '0 vulnerabilities' } else { 'Vulnerabilities found' })
 if ($secPass) { $passCount++ }
 
