@@ -27,6 +27,7 @@ public sealed partial class OpenCodeZenProvider(
     private const string DashboardSuffix = "/billing";
     private static readonly TimeSpan CacheTtl = TimeSpan.FromSeconds(90);
 
+    private readonly SemaphoreSlim fetchLock = new(1, 1);
     private DateTimeOffset lastFetch = DateTimeOffset.MinValue;
     private decimal? cached;
 
@@ -52,7 +53,8 @@ public sealed partial class OpenCodeZenProvider(
 
         var (workspaceId, authCookie) = this.ResolveCredentials();
         this.logger.LogInformation("OpenCode Zen: available check - workspaceId={Wid}, hasCookie={HasCookie}", workspaceId ?? "(null)", !string.IsNullOrWhiteSpace(authCookie));
-        return Task.FromResult(!string.IsNullOrWhiteSpace(workspaceId));
+        return Task.FromResult(
+            !string.IsNullOrWhiteSpace(workspaceId) && !string.IsNullOrWhiteSpace(authCookie));
     }
 
     public async Task<ProviderUsageResult> FetchUsageAsync(CancellationToken ct = default)
@@ -72,15 +74,16 @@ public sealed partial class OpenCodeZenProvider(
                 "Configure OPENCODE_GO_AUTH_COOKIE (env var or providers.OpenCodeGo.apiKey in settings.json).");
         }
 
-        // Serve cached result if still fresh
-        if (this.cached is not null && DateTimeOffset.UtcNow - this.lastFetch < CacheTtl)
-        {
-            this.logger.LogDebug("OpenCode Zen: cached result (${Balance:F2})", this.cached);
-            return BuildResult(this.cached.Value);
-        }
-
+        await this.fetchLock.WaitAsync(ct);
         try
         {
+            // Serve cached result if still fresh
+            if (this.cached is not null && DateTimeOffset.UtcNow - this.lastFetch < CacheTtl)
+            {
+                this.logger.LogDebug("OpenCode Zen: cached result (${Balance:F2})", this.cached);
+                return BuildResult(this.cached.Value);
+            }
+
             var url = $"{DashboardPrefix}{Uri.EscapeDataString(workspaceId)}{DashboardSuffix}";
 
             using var request = new HttpRequestMessage(HttpMethod.Get, url);
@@ -124,6 +127,10 @@ public sealed partial class OpenCodeZenProvider(
 
             return BuildResult(balance.Value);
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
         catch (TaskCanceledException)
         {
             return ProviderUsageResult.Failure(ProviderId.OpenCodeZen, "Dashboard request timed out.");
@@ -132,6 +139,10 @@ public sealed partial class OpenCodeZenProvider(
         {
             this.logger.LogWarning(ex, "OpenCode Zen fetch failed");
             return ProviderUsageResult.Failure(ProviderId.OpenCodeZen, ex.Message);
+        }
+        finally
+        {
+            this.fetchLock.Release();
         }
     }
 

@@ -1,3 +1,5 @@
+// Copyright (c) HemSoft Developments. All rights reserved.
+
 namespace CodexBar.App.Tests;
 
 using CodexBar.App.ViewModels;
@@ -26,5 +28,17 @@ public sealed class ProviderCardViewModelTests
         };
 
         Assert.True(card.ShowSingleCreditsDisplay);
+    }
+
+    [Fact]
+    public void ShowProgressBar_WhenCardIsPaired_ReturnsFalse()
+    {
+        var card = new ProviderCardViewModel
+        {
+            IsCreditsDisplay = false,
+            IsPairedCredits = true,
+        };
+
+        Assert.False(card.ShowProgressBar);
     }
 }

@@ -555,8 +555,8 @@ public sealed class ProviderCardViewModel : INotifyPropertyChanged
         }
     }
 
-    /// <summary>Gets a value indicating whether true when the card should show a progress bar (not a credits display, not a multi-bar card).</summary>
-    public bool ShowProgressBar => !this.HasBars && !this.IsCreditsDisplay;
+    /// <summary>Gets a value indicating whether true when the card should show a progress bar (not a credits display, not a multi-bar card, not a paired credits card).</summary>
+    public bool ShowProgressBar => !this.HasBars && !this.IsCreditsDisplay && !this.IsPairedCredits;
 
     /// <summary>Gets a value indicating whether the single-card credits block should render.</summary>
     public bool ShowSingleCreditsDisplay => this.IsCreditsDisplay && !this.IsPairedCredits;
@@ -610,6 +610,7 @@ public sealed class ProviderCardViewModel : INotifyPropertyChanged
             this.isPairedCredits = value;
             this.PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(this.IsPairedCredits)));
             this.PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(this.ShowSingleCreditsDisplay)));
+            this.PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(this.ShowProgressBar)));
         }
     }
 

@@ -62,6 +62,18 @@ public class OpenCodeZenProviderTests
     }
 
     [Fact]
+    public async Task IsAvailableAsync_WorkspaceWithoutCookie_ReturnsFalse()
+    {
+        var provider = new OpenCodeZenProvider(
+            NullLogger<OpenCodeZenProvider>.Instance,
+            new DummyHttpClientFactory(),
+            new DummySettingsService(workspaceId: "wrk_test", authCookie: null));
+
+        var result = await provider.IsAvailableAsync();
+        Assert.False(result);
+    }
+
+    [Fact]
     public async Task FetchUsageAsync_NoWorkspaceId_ReturnsFailure()
     {
         var provider = new OpenCodeZenProvider(

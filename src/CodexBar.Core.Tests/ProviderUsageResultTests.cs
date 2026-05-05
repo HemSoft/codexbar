@@ -21,6 +21,7 @@ public class ProviderUsageResultTests
     [InlineData(ProviderId.Copilot)]
     [InlineData(ProviderId.Claude)]
     [InlineData(ProviderId.OpenCodeGo)]
+    [InlineData(ProviderId.OpenCodeZen)]
     [InlineData(ProviderId.OpenRouter)]
     public void Failure_AcceptsAllProviders(ProviderId id)
     {
