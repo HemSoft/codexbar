@@ -4,7 +4,7 @@
     "documentationRules": {
       "companyName": "HemSoft Developments",
       "copyrightText": "Copyright (c) {companyName}. All rights reserved.",
-      "xmlHeader": true,
+      "xmlHeader": false,
       "documentInterfaces": true,
       "documentExposedElements": true,
       "documentInternalElements": false,
