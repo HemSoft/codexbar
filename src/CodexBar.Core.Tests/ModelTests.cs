@@ -1,6 +1,4 @@
-// <copyright file="ModelTests.cs" company="PlaceholderCompany">
-// Copyright (c) PlaceholderCompany. All rights reserved.
-// </copyright>
+// Copyright (c) HemSoft Developments. All rights reserved.
 
 namespace CodexBar.Core.Tests;
 
@@ -64,14 +62,16 @@ public class ModelTests
     [Fact]
     public void UsageSnapshot_Defaults_AreSet()
     {
+        var before = DateTimeOffset.UtcNow;
         var snapshot = new UsageSnapshot();
+        var after = DateTimeOffset.UtcNow;
 
         Assert.Equal(0.0, snapshot.UsedPercent);
         Assert.Null(snapshot.UsageLabel);
         Assert.Null(snapshot.ResetsAt);
         Assert.Null(snapshot.ResetDescription);
         Assert.False(snapshot.IsUnlimited);
-        Assert.True(snapshot.CapturedAt <= DateTimeOffset.UtcNow);
+        Assert.InRange(snapshot.CapturedAt, before, after);
     }
 
     [Fact]

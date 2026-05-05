@@ -15,6 +15,12 @@ public static class StartupManager
     private const string AppName = "CodexBar";
 
     /// <summary>
+    /// Internal hook for tests to supply a custom registry store, avoiding real-registry mutation.
+    /// When null (the default), the real Windows Registry is used.
+    /// </summary>
+    internal static IStartupStore? TestStore { get; set; }
+
+    /// <summary>
     /// Returns true if the CodexBar autostart entry exists in the registry.
     /// </summary>
     /// <returns></returns>
@@ -23,6 +29,11 @@ public static class StartupManager
         if (!OperatingSystem.IsWindows())
         {
             return false;
+        }
+
+        if (TestStore is not null)
+        {
+            return TestStore.GetValue(AppName) is not null;
         }
 
         try
@@ -49,6 +60,20 @@ public static class StartupManager
             return;
         }
 
+        if (TestStore is not null)
+        {
+            if (enabled)
+            {
+                TestStore.SetValue(AppName, "\"test-exe\"");
+            }
+            else
+            {
+                TestStore.DeleteValue(AppName);
+            }
+
+            return;
+        }
+
         using var key = Registry.CurrentUser.OpenSubKey(RunKeyPath, writable: true)
             ?? throw new InvalidOperationException("Cannot open HKCU Run key");
 
@@ -72,4 +97,16 @@ public static class StartupManager
             key.DeleteValue(AppName, throwOnMissingValue: false);
         }
     }
+}
+
+/// <summary>
+/// Abstraction for registry operations, used internally for hermetic testing.
+/// </summary>
+internal interface IStartupStore
+{
+    object? GetValue(string name);
+
+    void SetValue(string name, string value);
+
+    void DeleteValue(string name);
 }

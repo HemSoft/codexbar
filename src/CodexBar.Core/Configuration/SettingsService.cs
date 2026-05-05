@@ -21,12 +21,10 @@ using Microsoft.Extensions.Logging;
 /// protected by OS-level user permissions (~/.codexbar/).
 /// </para>
 /// </summary>
-public sealed class SettingsService(ILogger<SettingsService> logger) : ISettingsService
+public sealed class SettingsService : ISettingsService
 {
-    private static readonly string SettingsDir =
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codexbar");
-
-    private static readonly string SettingsPath = Path.Combine(SettingsDir, "settings.json");
+    private readonly string _settingsDir;
+    private readonly string _settingsPath;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -35,9 +33,26 @@ public sealed class SettingsService(ILogger<SettingsService> logger) : ISettings
         DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
     };
 
-    private readonly ILogger<SettingsService> _logger = logger;
+    private readonly ILogger<SettingsService> _logger;
     private readonly object _lock = new();
     private AppSettings? _cached;
+
+    public SettingsService(ILogger<SettingsService> logger)
+    {
+        this._logger = logger;
+        this._settingsDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codexbar");
+        this._settingsPath = Path.Combine(this._settingsDir, "settings.json");
+    }
+
+    /// <summary>
+    /// Internal constructor for testing with a custom settings directory.
+    /// </summary>
+    internal SettingsService(ILogger<SettingsService> logger, string settingsDir)
+    {
+        this._logger = logger;
+        this._settingsDir = settingsDir;
+        this._settingsPath = Path.Combine(this._settingsDir, "settings.json");
+    }
 
     public AppSettings Load()
     {
@@ -63,14 +78,14 @@ public sealed class SettingsService(ILogger<SettingsService> logger) : ISettings
     /// </summary>
     private void MergeFromDisk(AppSettings settings)
     {
-        if (!File.Exists(SettingsPath))
+        if (!File.Exists(this._settingsPath))
         {
             return;
         }
 
         try
         {
-            var diskJson = File.ReadAllText(SettingsPath);
+            var diskJson = File.ReadAllText(this._settingsPath);
             var disk = JsonSerializer.Deserialize<AppSettings>(diskJson, JsonOptions);
             if (disk is null)
             {
@@ -99,7 +114,7 @@ public sealed class SettingsService(ILogger<SettingsService> logger) : ISettings
         }
         catch (Exception ex)
         {
-            this._logger.LogDebug(ex, "MergeFromDisk skipped — could not read {Path}", SettingsPath);
+            this._logger.LogDebug(ex, "MergeFromDisk skipped — could not read {Path}", this._settingsPath);
         }
     }
 
@@ -129,18 +144,18 @@ public sealed class SettingsService(ILogger<SettingsService> logger) : ISettings
                     }),
             };
 
-            Directory.CreateDirectory(SettingsDir);
-            this.RestrictDirectoryPermissions(SettingsDir);
+            Directory.CreateDirectory(this._settingsDir);
+            this.RestrictDirectoryPermissions(this._settingsDir);
             var json = JsonSerializer.Serialize(sanitized, JsonOptions);
 
             // Write to a temp file and atomically move into place.
             // Permissions are set at creation time (see FileSecurityHelper.WriteRestrictedFile)
             // so no window exists where the file is world-readable.
-            var tempPath = SettingsPath + ".tmp";
+            var tempPath = this._settingsPath + ".tmp";
             FileSecurityHelper.WriteRestrictedFile(tempPath, json);
             try
             {
-                File.Move(tempPath, SettingsPath, overwrite: true);
+                File.Move(tempPath, this._settingsPath, overwrite: true);
             }
             catch
             {
@@ -156,11 +171,11 @@ public sealed class SettingsService(ILogger<SettingsService> logger) : ISettings
             }
 
             this._cached = sanitized;
-            this._logger.LogDebug("Settings saved to {Path}", SettingsPath);
+            this._logger.LogDebug("Settings saved to {Path}", this._settingsPath);
         }
         catch (Exception ex)
         {
-            this._logger.LogError(ex, "Failed to save settings to {Path}", SettingsPath);
+            this._logger.LogError(ex, "Failed to save settings to {Path}", this._settingsPath);
             throw;
         }
     }
@@ -219,9 +234,9 @@ public sealed class SettingsService(ILogger<SettingsService> logger) : ISettings
             return this._cached;
         }
 
-        if (!File.Exists(SettingsPath))
+        if (!File.Exists(this._settingsPath))
         {
-            this._logger.LogInformation("No settings file found at {Path}, using defaults", SettingsPath);
+            this._logger.LogInformation("No settings file found at {Path}, using defaults", this._settingsPath);
             this._cached = CreateDefaults();
             try
             {
@@ -229,7 +244,7 @@ public sealed class SettingsService(ILogger<SettingsService> logger) : ISettings
             }
             catch (Exception ex)
             {
-                this._logger.LogWarning(ex, "Could not persist default settings to {Path}; continuing with in-memory defaults", SettingsPath);
+                this._logger.LogWarning(ex, "Could not persist default settings to {Path}; continuing with in-memory defaults", this._settingsPath);
             }
 
             return this._cached;
@@ -237,26 +252,26 @@ public sealed class SettingsService(ILogger<SettingsService> logger) : ISettings
 
         try
         {
-            var json = File.ReadAllText(SettingsPath);
+            var json = File.ReadAllText(this._settingsPath);
             this._cached = JsonSerializer.Deserialize<AppSettings>(json, JsonOptions) ?? CreateDefaults();
             this._cached.Providers ??= [];
             NormalizeProviders(this._cached.Providers);
 
             try
             {
-                this.RestrictDirectoryPermissions(SettingsDir);
-                this.RestrictFilePermissions(SettingsPath);
+                this.RestrictDirectoryPermissions(this._settingsDir);
+                this.RestrictFilePermissions(this._settingsPath);
             }
             catch (Exception ex)
             {
-                this._logger.LogWarning(ex, "Failed to restrict settings file permissions for {Path}", SettingsPath);
+                this._logger.LogWarning(ex, "Failed to restrict settings file permissions for {Path}", this._settingsPath);
             }
 
-            this._logger.LogDebug("Settings loaded from {Path}", SettingsPath);
+            this._logger.LogDebug("Settings loaded from {Path}", this._settingsPath);
         }
         catch (Exception ex)
         {
-            this._logger.LogWarning(ex, "Failed to load settings from {Path}, using defaults", SettingsPath);
+            this._logger.LogWarning(ex, "Failed to load settings from {Path}, using defaults", this._settingsPath);
             this._cached = CreateDefaults();
         }
 

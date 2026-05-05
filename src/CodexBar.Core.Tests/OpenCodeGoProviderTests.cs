@@ -13,18 +13,26 @@ using NSubstitute;
 
 public class OpenCodeGoProviderTests
 {
-    private static OpenCodeGoProvider CreateProvider(
+    private static OpenCodeGoProvider CreateProviderWithHandler(
+        out MockHttpMessageHandler handler,
         ISettingsService? settings = null,
         HttpResponseMessage? response = null)
     {
         settings ??= CreateSettingsService(enabled: true, workspaceId: "ws-123", apiKey: "auth-cookie-value");
-        var handler = new MockHttpMessageHandler(response ?? new HttpResponseMessage(HttpStatusCode.OK));
+        handler = new MockHttpMessageHandler(response ?? new HttpResponseMessage(HttpStatusCode.OK));
         var httpClientFactory = new MockHttpClientFactory(handler);
 
         return new OpenCodeGoProvider(
             NullLogger<OpenCodeGoProvider>.Instance,
             httpClientFactory,
             settings);
+    }
+
+    private static OpenCodeGoProvider CreateProvider(
+        ISettingsService? settings = null,
+        HttpResponseMessage? response = null)
+    {
+        return CreateProviderWithHandler(out _, settings, response);
     }
 
     private static ISettingsService CreateSettingsService(
@@ -177,7 +185,7 @@ public class OpenCodeGoProviderTests
         {
             Content = new StringContent(html, System.Text.Encoding.UTF8, "text/html"),
         };
-        var provider = CreateProvider(response: response);
+        var provider = CreateProviderWithHandler(out var handler, response: response);
 
         // First call should hit HTTP
         var result1 = await provider.FetchUsageAsync();
@@ -186,6 +194,9 @@ public class OpenCodeGoProviderTests
         // Second call should use cache (same result)
         var result2 = await provider.FetchUsageAsync();
         Assert.True(result2.Success);
+
+        // Verify only 1 HTTP request was made (second call used cache)
+        Assert.Equal(1, handler!.SendCount);
     }
 
     private static string CreateDashboardHtml(
@@ -221,21 +232,23 @@ public class OpenCodeGoProviderTests
     private sealed class MockHttpMessageHandler : HttpMessageHandler
     {
         private readonly HttpResponseMessage response;
+        private int sendCount;
 
         public MockHttpMessageHandler(HttpResponseMessage response) => this.response = response;
+
+        public int SendCount => this.sendCount;
 
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request, CancellationToken cancellationToken)
         {
-            // Check for auth cookie header
-            if (request.Headers.TryGetValues("Cookie", out var cookies))
+            // Fail-closed: deny requests with missing or invalid auth cookie
+            if (!request.Headers.TryGetValues("Cookie", out var cookies) ||
+                !cookies.Any(c => c.Contains("auth=")))
             {
-                var cookieList = cookies.ToList();
-                if (!cookieList.Any(c => c.Contains("auth=")))
-                {
-                    return Task.FromResult(new HttpResponseMessage(HttpStatusCode.Unauthorized));
-                }
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.Unauthorized));
             }
+
+            Interlocked.Increment(ref this.sendCount);
 
             return Task.FromResult(this.response);
         }
