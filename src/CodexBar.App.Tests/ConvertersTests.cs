@@ -2,6 +2,7 @@ namespace CodexBar.App.Tests;
 
 using System.Globalization;
 using System.Windows;
+using System.Windows.Media;
 
 public sealed class ConvertersTests
 {
@@ -57,5 +58,35 @@ public sealed class ConvertersTests
         var result = converter.Convert(false, typeof(Visibility), null, CultureInfo.InvariantCulture);
 
         Assert.Equal(Visibility.Visible, result);
+    }
+
+    [Fact]
+    public void ProgressToArcGeometryConverter_ZeroProgress_ReturnsEmptyGeometry()
+    {
+        var converter = ProgressToArcGeometryConverter.Instance;
+        var result = converter.Convert(0d, typeof(Geometry), "14", CultureInfo.InvariantCulture);
+
+        Assert.Same(Geometry.Empty, result);
+    }
+
+    [Fact]
+    public void ProgressToArcGeometryConverter_HalfProgress_ReturnsArcGeometry()
+    {
+        var converter = ProgressToArcGeometryConverter.Instance;
+        var result = converter.Convert(0.5d, typeof(Geometry), "14", CultureInfo.InvariantCulture);
+
+        var geometry = Assert.IsType<PathGeometry>(result);
+        Assert.Single(geometry.Figures);
+    }
+
+    [Fact]
+    public void RefreshProgressToBrushConverter_InterpolatesFromGreenToRed()
+    {
+        var converter = RefreshProgressToBrushConverter.Instance;
+        var startBrush = Assert.IsType<SolidColorBrush>(converter.Convert(0d, typeof(Brush), null, CultureInfo.InvariantCulture));
+        var endBrush = Assert.IsType<SolidColorBrush>(converter.Convert(1d, typeof(Brush), null, CultureInfo.InvariantCulture));
+
+        Assert.Equal(Color.FromRgb(0x22, 0xC5, 0x5E), startBrush.Color);
+        Assert.Equal(Color.FromRgb(0xEF, 0x44, 0x44), endBrush.Color);
     }
 }

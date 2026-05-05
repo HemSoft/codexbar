@@ -5,14 +5,42 @@ namespace CodexBar.App.ViewModels;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
+using System.Windows.Threading;
 using CodexBar.Core.Models;
 using CodexBar.Core.Services;
 
-public sealed class MainViewModel : IDisposable
+public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 {
     private readonly UsageRefreshService refreshService;
+    private readonly DispatcherTimer refreshIndicatorTimer;
+    private DateTimeOffset? nextRefreshAtUtc;
+    private bool isDisposed;
 
     public ObservableCollection<ProviderCardViewModel> Providers { get; } = [];
+
+    private bool showRefreshIndicator;
+
+    public bool ShowRefreshIndicator
+    {
+        get => this.showRefreshIndicator;
+        private set => this.SetField(ref this.showRefreshIndicator, value);
+    }
+
+    private double refreshIndicatorProgress;
+
+    public double RefreshIndicatorProgress
+    {
+        get => this.refreshIndicatorProgress;
+        private set => this.SetField(ref this.refreshIndicatorProgress, value);
+    }
+
+    private string refreshIndicatorToolTip = "Next auto refresh unavailable";
+
+    public string RefreshIndicatorToolTip
+    {
+        get => this.refreshIndicatorToolTip;
+        private set => this.SetField(ref this.refreshIndicatorToolTip, value);
+    }
 
     // Stable key → card view model for reconciliation
     private readonly Dictionary<string, ProviderCardViewModel> cardsByKey = new(StringComparer.OrdinalIgnoreCase);
@@ -21,6 +49,12 @@ public sealed class MainViewModel : IDisposable
     {
         this.refreshService = refreshService;
         this.refreshService.UsageUpdated += this.OnUsageUpdated;
+        this.refreshService.NextRefreshChanged += this.OnNextRefreshChanged;
+        this.refreshIndicatorTimer = new DispatcherTimer(DispatcherPriority.Background)
+        {
+            Interval = TimeSpan.FromSeconds(1),
+        };
+        this.refreshIndicatorTimer.Tick += this.RefreshIndicatorTimer_Tick;
 
         // Initialize cards for non-Copilot/non-Claude/non-OpenCodeGo providers
         // (those three use dynamic cards via Items reconciliation)
@@ -45,6 +79,7 @@ public sealed class MainViewModel : IDisposable
         }
 
         this.PairCreditsCards();
+        this.ApplyRefreshIndicatorState(RefreshIndicatorState.Calculate(DateTimeOffset.UtcNow, this.refreshService.NextRefreshAtUtc, this.refreshService.RefreshInterval));
     }
 
     /// <summary>
@@ -66,85 +101,131 @@ public sealed class MainViewModel : IDisposable
     }
 
     private void OnUsageUpdated(ProviderId id, ProviderUsageResult result) => System.Windows.Application.Current?.Dispatcher.InvokeAsync(() =>
-                                                                                   {
-                                                                                       if (id == ProviderId.Copilot)
-                                                                                       {
-                                                                                           this.ReconcileCopilotCards(result);
-                                                                                           return;
-                                                                                       }
+    {
+        if (this.isDisposed)
+        {
+            return;
+        }
 
-                                                                                       if (id == ProviderId.Claude)
-                                                                                       {
-                                                                                           this.ReconcileItemCards(ProviderId.Claude, "claude:", result);
-                                                                                           return;
-                                                                                       }
+        if (id == ProviderId.Copilot)
+        {
+            this.ReconcileCopilotCards(result);
+            return;
+        }
 
-                                                                                       if (id == ProviderId.OpenCodeGo)
-                                                                                       {
-                                                                                           this.ReconcileItemCards(ProviderId.OpenCodeGo, "opencode-go:", result);
-                                                                                           return;
-                                                                                       }
+        if (id == ProviderId.Claude)
+        {
+            this.ReconcileItemCards(ProviderId.Claude, "claude:", result);
+            return;
+        }
 
-                                                                                       // Legacy single-card path for non-Copilot providers
-                                                                                       var key = id.ToString().ToLowerInvariant();
-                                                                                       if (!this.cardsByKey.TryGetValue(key, out var card))
-                                                                                       {
-                                                                                           return;
-                                                                                       }
+        if (id == ProviderId.OpenCodeGo)
+        {
+            this.ReconcileItemCards(ProviderId.OpenCodeGo, "opencode-go:", result);
+            return;
+        }
 
-                                                                                       if (!result.Success)
-                                                                                       {
-                                                                                           card.StatusText = result.ErrorMessage ?? "Error";
-                                                                                           card.UsedPercent = 0;
-                                                                                           card.ResetText = null;
-                                                                                           card.WeeklyText = null;
-                                                                                           card.WeeklyPercent = 0;
-                                                                                           card.IsHighUsage = false;
-                                                                                           card.ShowUsagePercent = true;
-                                                                                           card.IsError = true;
-                                                                                           card.Bars.Clear();
-                                                                                           card.HasBars = false;
-                                                                                           return;
-                                                                                       }
+        // Legacy single-card path for non-Copilot providers
+        var key = id.ToString().ToLowerInvariant();
+        if (!this.cardsByKey.TryGetValue(key, out var card))
+        {
+            return;
+        }
 
-                                                                                       card.IsError = false;
-                                                                                       card.StatusText = "No data";
-                                                                                       card.UsedPercent = 0;
-                                                                                       card.ResetText = null;
-                                                                                       card.WeeklyText = null;
-                                                                                       card.WeeklyPercent = 0;
-                                                                                       card.IsHighUsage = false;
-                                                                                       card.ShowUsagePercent = true;
-                                                                                       card.Bars.Clear();
-                                                                                       card.HasBars = false;
+        if (!result.Success)
+        {
+            card.StatusText = result.ErrorMessage ?? "Error";
+            card.UsedPercent = 0;
+            card.ResetText = null;
+            card.WeeklyText = null;
+            card.WeeklyPercent = 0;
+            card.IsHighUsage = false;
+            card.ShowUsagePercent = true;
+            card.IsError = true;
+            card.Bars.Clear();
+            card.HasBars = false;
+            return;
+        }
 
-                                                                                       if (result.SessionUsage is not null)
-                                                                                       {
-                                                                                           card.UsedPercent = result.SessionUsage.UsedPercent;
-                                                                                           card.StatusText = result.SessionUsage.UsageLabel ?? $"{result.SessionUsage.UsedPercent:P0} used";
-                                                                                           card.ResetText = result.SessionUsage.ResetDescription;
-                                                                                           card.IsHighUsage = result.SessionUsage.UsedPercent >= 0.8;
-                                                                                           card.ShowUsagePercent = !result.SessionUsage.IsUnlimited;
-                                                                                       }
-                                                                                       else if (result.CreditsRemaining is not null)
-                                                                                       {
-                                                                                           card.StatusText = $"${result.CreditsRemaining:F2}";
-                                                                                           card.UsedPercent = 0;
-                                                                                           card.IsHighUsage = false;
-                                                                                           card.ShowUsagePercent = false;
-                                                                                           card.IsCreditsDisplay = true;
-                                                                                       }
-                                                                                       else
-                                                                                       {
-                                                                                           card.StatusText = "No data";
-                                                                                       }
+        card.IsError = false;
+        card.StatusText = "No data";
+        card.UsedPercent = 0;
+        card.ResetText = null;
+        card.WeeklyText = null;
+        card.WeeklyPercent = 0;
+        card.IsHighUsage = false;
+        card.ShowUsagePercent = true;
+        card.Bars.Clear();
+        card.HasBars = false;
 
-                                                                                       if (result.WeeklyUsage is not null)
-                                                                                       {
-                                                                                           card.WeeklyText = result.WeeklyUsage.UsageLabel;
-                                                                                           card.WeeklyPercent = result.WeeklyUsage.UsedPercent;
-                                                                                       }
-                                                                                   });
+        if (result.SessionUsage is not null)
+        {
+            card.UsedPercent = result.SessionUsage.UsedPercent;
+            card.StatusText = result.SessionUsage.UsageLabel ?? $"{result.SessionUsage.UsedPercent:P0} used";
+            card.ResetText = result.SessionUsage.ResetDescription;
+            card.IsHighUsage = result.SessionUsage.UsedPercent >= 0.8;
+            card.ShowUsagePercent = !result.SessionUsage.IsUnlimited;
+        }
+        else if (result.CreditsRemaining is not null)
+        {
+            card.StatusText = $"${result.CreditsRemaining:F2}";
+            card.UsedPercent = 0;
+            card.IsHighUsage = false;
+            card.ShowUsagePercent = false;
+            card.IsCreditsDisplay = true;
+        }
+        else
+        {
+            card.StatusText = "No data";
+        }
+
+        if (result.WeeklyUsage is not null)
+        {
+            card.WeeklyText = result.WeeklyUsage.UsageLabel;
+            card.WeeklyPercent = result.WeeklyUsage.UsedPercent;
+        }
+    });
+
+    private void OnNextRefreshChanged(DateTimeOffset? nextRefreshAtUtc) => System.Windows.Application.Current?.Dispatcher.InvokeAsync(() =>
+    {
+        if (this.isDisposed)
+        {
+            return;
+        }
+
+        this.nextRefreshAtUtc = nextRefreshAtUtc;
+        this.UpdateRefreshIndicator();
+
+        if (nextRefreshAtUtc is null)
+        {
+            this.refreshIndicatorTimer.Stop();
+        }
+        else if (!this.refreshIndicatorTimer.IsEnabled)
+        {
+            this.refreshIndicatorTimer.Start();
+        }
+    });
+
+    private void RefreshIndicatorTimer_Tick(object? sender, EventArgs e)
+    {
+        if (this.isDisposed)
+        {
+            return;
+        }
+
+        this.UpdateRefreshIndicator();
+    }
+
+    private void UpdateRefreshIndicator() =>
+        this.ApplyRefreshIndicatorState(
+            RefreshIndicatorState.Calculate(DateTimeOffset.UtcNow, this.nextRefreshAtUtc, this.refreshService.RefreshInterval));
+
+    private void ApplyRefreshIndicatorState(RefreshIndicatorSnapshot state)
+    {
+        this.ShowRefreshIndicator = state.IsVisible;
+        this.RefreshIndicatorProgress = state.Progress;
+        this.RefreshIndicatorToolTip = state.ToolTipText;
+    }
 
     /// <summary>
     /// Reconciles Copilot cards: update existing, add new, remove stale.
@@ -387,7 +468,27 @@ public sealed class MainViewModel : IDisposable
         }
     }
 
-    public void Dispose() => this.refreshService.UsageUpdated -= this.OnUsageUpdated;
+    public void Dispose()
+    {
+        this.isDisposed = true;
+        this.refreshService.NextRefreshChanged -= this.OnNextRefreshChanged;
+        this.refreshService.UsageUpdated -= this.OnUsageUpdated;
+        this.refreshIndicatorTimer.Tick -= this.RefreshIndicatorTimer_Tick;
+        this.refreshIndicatorTimer.Stop();
+    }
+
+    public event PropertyChangedEventHandler? PropertyChanged;
+
+    private void SetField<T>(ref T field, T value, [CallerMemberName] string? name = null)
+    {
+        if (EqualityComparer<T>.Default.Equals(field, value))
+        {
+            return;
+        }
+
+        field = value;
+        this.PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+    }
 }
 
 public sealed class UsageBarViewModel : INotifyPropertyChanged

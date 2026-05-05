@@ -20,6 +20,8 @@
 
     <Window.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis" />
+        <local:ProgressToArcGeometryConverter x:Key="ProgressToArcGeometry" />
+        <local:RefreshProgressToBrushConverter x:Key="RefreshProgressToBrush" />
 
         <!-- Inverse bool converter: true → Collapsed, false → Visible -->
         <local:InverseBoolToVisibilityConverter x:Key="InverseBoolToVis" />
@@ -65,10 +67,35 @@
                     Background="Transparent"
                     Cursor="SizeAll"
                     Margin="0,0,0,12">
-                <TextBlock Text="🎚️ CodexBar"
-                           FontSize="20" FontWeight="SemiBold"
-                           Foreground="{StaticResource TextPrimaryBrush}"
-                           IsHitTestVisible="False" />
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+
+                    <TextBlock Grid.Column="0"
+                               Text="🎚️ CodexBar"
+                               FontSize="20" FontWeight="SemiBold"
+                               Foreground="{StaticResource TextPrimaryBrush}"
+                               IsHitTestVisible="False" />
+
+                    <Grid Grid.Column="1"
+                          Width="14"
+                          Height="14"
+                          Margin="12,3,0,0"
+                          VerticalAlignment="Top"
+                          Visibility="{Binding ShowRefreshIndicator, Converter={StaticResource BoolToVis}}"
+                          ToolTip="{Binding RefreshIndicatorToolTip}">
+                        <Ellipse Stroke="#3F3F5F"
+                                 StrokeThickness="1.5"
+                                 Opacity="0.65" />
+                        <Path Data="{Binding RefreshIndicatorProgress, Converter={StaticResource ProgressToArcGeometry}, ConverterParameter=14}"
+                              Stroke="{Binding RefreshIndicatorProgress, Converter={StaticResource RefreshProgressToBrush}}"
+                              StrokeThickness="1.5"
+                              StrokeStartLineCap="Round"
+                              StrokeEndLineCap="Round" />
+                    </Grid>
+                </Grid>
             </Border>
 
             <!-- Provider cards -->

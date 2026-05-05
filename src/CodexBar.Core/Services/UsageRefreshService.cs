@@ -17,13 +17,28 @@ public sealed class UsageRefreshService(
     private readonly IReadOnlyList<IUsageProvider> providers = providers.ToList();
     private readonly ILogger<UsageRefreshService> logger = logger;
     private readonly object resultsLock = new();
+    private readonly object nextRefreshLock = new();
     private readonly Dictionary<ProviderId, ProviderUsageResult> latestResults = [];
     private CancellationTokenSource? cts;
     private Task? refreshLoop;
+    private DateTimeOffset? nextRefreshAtUtc;
 
     public event Action<ProviderId, ProviderUsageResult>? UsageUpdated;
 
+    public event Action<DateTimeOffset?>? NextRefreshChanged;
+
     public TimeSpan RefreshInterval { get; set; } = TimeSpan.FromMinutes(2);
+
+    public DateTimeOffset? NextRefreshAtUtc
+    {
+        get
+        {
+            lock (this.nextRefreshLock)
+            {
+                return this.nextRefreshAtUtc;
+            }
+        }
+    }
 
     public IReadOnlyDictionary<ProviderId, ProviderUsageResult> LatestResults
     {
@@ -70,6 +85,7 @@ public sealed class UsageRefreshService(
 
         this.cts.Dispose();
         this.cts = null;
+        this.SetNextRefreshAtUtc(null);
         this.logger.LogInformation("Usage refresh service stopped");
     }
 
@@ -83,6 +99,7 @@ public sealed class UsageRefreshService(
     {
         // Initial fetch immediately
         await this.RefreshAllAsync(ct);
+        this.SetNextRefreshAtUtc(DateTimeOffset.UtcNow.Add(this.RefreshInterval));
 
         while (!ct.IsCancellationRequested)
         {
@@ -90,6 +107,7 @@ public sealed class UsageRefreshService(
             {
                 await Task.Delay(this.RefreshInterval, ct);
                 await this.RefreshAllAsync(ct);
+                this.SetNextRefreshAtUtc(DateTimeOffset.UtcNow.Add(this.RefreshInterval));
             }
             catch (OperationCanceledException)
             {
@@ -147,9 +165,27 @@ public sealed class UsageRefreshService(
         }
     }
 
+    private void SetNextRefreshAtUtc(DateTimeOffset? nextRefreshAtUtc)
+    {
+        lock (this.nextRefreshLock)
+        {
+            this.nextRefreshAtUtc = nextRefreshAtUtc;
+        }
+
+        try
+        {
+            this.NextRefreshChanged?.Invoke(nextRefreshAtUtc);
+        }
+        catch (Exception ex)
+        {
+            this.logger.LogWarning(ex, "NextRefreshChanged subscriber threw");
+        }
+    }
+
     public void Dispose()
     {
         this.cts?.Cancel();
         this.cts?.Dispose();
+        this.SetNextRefreshAtUtc(null);
     }
 }
