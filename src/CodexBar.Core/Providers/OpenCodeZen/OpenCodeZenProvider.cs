@@ -52,7 +52,10 @@ public sealed partial class OpenCodeZenProvider(
         }
 
         var (workspaceId, authCookie) = this.ResolveCredentials();
-        this.logger.LogInformation("OpenCode Zen: available check - workspaceId={Wid}, hasCookie={HasCookie}", workspaceId ?? "(null)", !string.IsNullOrWhiteSpace(authCookie));
+        this.logger.LogDebug(
+            "OpenCode Zen: available check - hasWorkspaceId={HasWorkspaceId}, hasCookie={HasCookie}",
+            !string.IsNullOrWhiteSpace(workspaceId),
+            !string.IsNullOrWhiteSpace(authCookie));
         return Task.FromResult(
             !string.IsNullOrWhiteSpace(workspaceId) && !string.IsNullOrWhiteSpace(authCookie));
     }
@@ -138,7 +141,9 @@ public sealed partial class OpenCodeZenProvider(
         catch (Exception ex)
         {
             this.logger.LogWarning(ex, "OpenCode Zen fetch failed");
-            return ProviderUsageResult.Failure(ProviderId.OpenCodeZen, ex.Message);
+            return ProviderUsageResult.Failure(
+                ProviderId.OpenCodeZen,
+                "OpenCode Zen request failed. Check credentials and try again.");
         }
         finally
         {
