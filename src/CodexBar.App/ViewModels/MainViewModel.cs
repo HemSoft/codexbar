@@ -38,9 +38,30 @@ public sealed class MainViewModel : IDisposable
                 DisplayName = id.ToString(),
                 StatusText = "Waiting…",
                 UsedPercent = 0,
+                IsCompactCard = id is ProviderId.OpenRouter or ProviderId.OpenCodeZen,
             };
             this.Providers.Add(card);
             this.cardsByKey[card.CardKey] = card;
+        }
+
+        this.PairCreditsCards();
+    }
+
+    /// <summary>
+    /// Pairs OpenRouter and OpenCode Zen cards so they display side-by-side
+    /// in a single card with two columns. OpenRouter is the primary display,
+    /// OpenCode Zen is the companion (hidden in the list, shown inside OpenRouter).
+    /// </summary>
+    private void PairCreditsCards()
+    {
+        var openRouterCard = this.Providers.FirstOrDefault(c => c.ProviderId == ProviderId.OpenRouter);
+        var zenCard = this.Providers.FirstOrDefault(c => c.ProviderId == ProviderId.OpenCodeZen);
+
+        if (openRouterCard is not null && zenCard is not null)
+        {
+            openRouterCard.CompanionCard = zenCard;
+            openRouterCard.IsPairedCredits = true;
+            zenCard.IsHiddenCompanion = true;
         }
     }
 
@@ -535,11 +556,59 @@ public sealed class ProviderCardViewModel : INotifyPropertyChanged
     /// <summary>Gets a value indicating whether true when the card should show a progress bar (not a credits display, not a multi-bar card).</summary>
     public bool ShowProgressBar => !this.HasBars && !this.IsCreditsDisplay;
 
+    private bool isCompactCard;
+
+    /// <summary>
+    /// Gets or sets a value indicating whether this card should render in compact/half-width mode
+    /// to sit side-by-side with another compact card (e.g., two credits cards in a row).
+    /// </summary>
+    public bool IsCompactCard
+    {
+        get => this.isCompactCard;
+        set => this.SetField(ref this.isCompactCard, value);
+    }
+
     /// <summary>
     /// Gets multi-bar usage display. When populated, the UI renders one bar per entry
     /// instead of the legacy single progress bar.
     /// </summary>
     public ObservableCollection<UsageBarViewModel> Bars { get; } = [];
+
+    private ProviderCardViewModel? companionCard;
+
+    /// <summary>
+    /// Gets or sets the companion card for paired credits display.
+    /// When set, this card shows both its own and the companion's credits side-by-side.
+    /// Used to pair OpenRouter + OpenCode Zen credits in a single card.
+    /// </summary>
+    public ProviderCardViewModel? CompanionCard
+    {
+        get => this.companionCard;
+        set => this.SetField(ref this.companionCard, value);
+    }
+
+    private bool isPairedCredits;
+
+    /// <summary>
+    /// Gets or sets a value indicating whether this card displays paired credits (own + companion).
+    /// </summary>
+    public bool IsPairedCredits
+    {
+        get => this.isPairedCredits;
+        set => this.SetField(ref this.isPairedCredits, value);
+    }
+
+    private bool isHiddenCompanion;
+
+    /// <summary>
+    /// Gets or sets a value indicating whether this card is hidden because it's displayed
+    /// inside its companion card's paired layout.
+    /// </summary>
+    public bool IsHiddenCompanion
+    {
+        get => this.isHiddenCompanion;
+        set => this.SetField(ref this.isHiddenCompanion, value);
+    }
 
     public event PropertyChangedEventHandler? PropertyChanged;
 

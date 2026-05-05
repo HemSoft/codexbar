@@ -13,6 +13,7 @@ using CodexBar.Core.Providers;
 using CodexBar.Core.Providers.Claude;
 using CodexBar.Core.Providers.Copilot;
 using CodexBar.Core.Providers.OpenCodeGo;
+using CodexBar.Core.Providers.OpenCodeZen;
 using CodexBar.Core.Providers.OpenRouter;
 using CodexBar.Core.Services;
 using Microsoft.Extensions.DependencyInjection;
@@ -67,6 +68,7 @@ public partial class App : Application
         services.AddSingleton<IUsageProvider, CopilotProvider>();
         services.AddSingleton<IUsageProvider, ClaudeProvider>();
         services.AddSingleton<IUsageProvider, OpenCodeGoProvider>();
+        services.AddSingleton<IUsageProvider, OpenCodeZenProvider>();
 
         services.AddSingleton<UsageRefreshService>();
         services.AddSingleton<MainViewModel>();
