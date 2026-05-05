@@ -1,10 +1,8 @@
-// <copyright file="ISettingsService.cs" company="PlaceholderCompany">
-// Copyright (c) PlaceholderCompany. All rights reserved.
-// </copyright>
-
-using CodexBar.Core.Models;
+// Copyright (c) HemSoft Developments. All rights reserved.
 
 namespace CodexBar.Core.Configuration;
+
+using CodexBar.Core.Models;
 
 /// <summary>
 /// Contract for reading CodexBar settings and provider credentials.

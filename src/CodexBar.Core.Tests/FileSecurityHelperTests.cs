@@ -1,11 +1,9 @@
-// <copyright file="FileSecurityHelperTests.cs" company="PlaceholderCompany">
-// Copyright (c) PlaceholderCompany. All rights reserved.
-// </copyright>
+// Copyright (c) HemSoft Developments. All rights reserved.
+
+namespace CodexBar.Core.Tests;
 
 using System.IO;
 using Xunit;
-
-namespace CodexBar.Core.Tests;
 
 public class FileSecurityHelperTests
 {

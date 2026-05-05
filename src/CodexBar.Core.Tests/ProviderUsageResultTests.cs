@@ -1,10 +1,8 @@
-// <copyright file="ProviderUsageResultTests.cs" company="PlaceholderCompany">
-// Copyright (c) PlaceholderCompany. All rights reserved.
-// </copyright>
-
-using CodexBar.Core.Models;
+// Copyright (c) HemSoft Developments. All rights reserved.
 
 namespace CodexBar.Core.Tests;
+
+using CodexBar.Core.Models;
 
 public class ProviderUsageResultTests
 {

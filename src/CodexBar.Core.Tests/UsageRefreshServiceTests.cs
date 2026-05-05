@@ -1,6 +1,6 @@
-// <copyright file="UsageRefreshServiceTests.cs" company="PlaceholderCompany">
-// Copyright (c) PlaceholderCompany. All rights reserved.
-// </copyright>
+// Copyright (c) HemSoft Developments. All rights reserved.
+
+namespace CodexBar.Core.Tests;
 
 using System;
 using System.Threading;
@@ -10,8 +10,6 @@ using CodexBar.Core.Providers;
 using CodexBar.Core.Services;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
-
-namespace CodexBar.Core.Tests;
 
 public class UsageRefreshServiceTests
 {

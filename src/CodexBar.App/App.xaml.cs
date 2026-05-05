@@ -1,6 +1,6 @@
-// <copyright file="App.xaml.cs" company="PlaceholderCompany">
-// Copyright (c) PlaceholderCompany. All rights reserved.
-// </copyright>
+// Copyright (c) HemSoft Developments. All rights reserved.
+
+namespace CodexBar.App;
 
 using System.Diagnostics;
 using System.Drawing;
@@ -17,8 +17,6 @@ using CodexBar.Core.Providers.OpenRouter;
 using CodexBar.Core.Services;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
-
-namespace CodexBar.App;
 
 public partial class App : Application
 {

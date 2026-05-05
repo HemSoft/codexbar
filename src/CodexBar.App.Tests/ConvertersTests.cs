@@ -1,7 +1,7 @@
+namespace CodexBar.App.Tests;
+
 using System.Globalization;
 using System.Windows;
-
-namespace CodexBar.App.Tests;
 
 public sealed class ConvertersTests
 {

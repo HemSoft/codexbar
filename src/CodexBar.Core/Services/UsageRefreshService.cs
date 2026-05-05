@@ -1,13 +1,11 @@
-// <copyright file="UsageRefreshService.cs" company="PlaceholderCompany">
-// Copyright (c) PlaceholderCompany. All rights reserved.
-// </copyright>
+// Copyright (c) HemSoft Developments. All rights reserved.
+
+namespace CodexBar.Core.Services;
 
 using System.Collections.ObjectModel;
 using CodexBar.Core.Models;
 using CodexBar.Core.Providers;
 using Microsoft.Extensions.Logging;
-
-namespace CodexBar.Core.Services;
 
 /// <summary>
 /// Coordinates periodic usage fetches across all enabled providers.

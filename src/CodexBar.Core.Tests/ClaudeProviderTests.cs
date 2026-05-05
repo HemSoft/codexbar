@@ -1,11 +1,9 @@
-// <copyright file="ClaudeProviderTests.cs" company="PlaceholderCompany">
-// Copyright (c) PlaceholderCompany. All rights reserved.
-// </copyright>
+// Copyright (c) HemSoft Developments. All rights reserved.
+
+namespace CodexBar.Core.Tests;
 
 using CodexBar.Core.Providers.Claude;
 using Xunit;
-
-namespace CodexBar.Core.Tests;
 
 public class ClaudeProviderTests
 {

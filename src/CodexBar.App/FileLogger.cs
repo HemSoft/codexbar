@@ -1,12 +1,10 @@
-// <copyright file="FileLogger.cs" company="PlaceholderCompany">
-// Copyright (c) PlaceholderCompany. All rights reserved.
-// </copyright>
+// Copyright (c) HemSoft Developments. All rights reserved.
+
+namespace CodexBar.App;
 
 using System.IO;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
-
-namespace CodexBar.App;
 
 public sealed class FileLoggerProvider : ILoggerProvider
 {
