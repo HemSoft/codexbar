@@ -141,6 +141,13 @@
                                              Visibility="{Binding ShowProgressBar, Converter={StaticResource BoolToVis}}"
                                              Margin="0,6,0,4" />
 
+                                <!-- Status text -->
+                                <TextBlock Text="{Binding StatusText}"
+                                           FontSize="13"
+                                           Foreground="{StaticResource TextSecondaryBrush}"
+                                           TextTrimming="CharacterEllipsis"
+                                           Visibility="{Binding ShowStatusTextLine, Converter={StaticResource BoolToVis}}" />
+
                                 <!-- Paired credits display: two balances side by side -->
                                 <Grid Visibility="{Binding IsPairedCredits, Converter={StaticResource BoolToVis}}"
                                       Margin="0,6,0,0">

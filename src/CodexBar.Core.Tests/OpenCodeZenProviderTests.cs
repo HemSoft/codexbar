@@ -2,11 +2,11 @@
 
 namespace CodexBar.Core.Tests;
 
+using System.Net;
 using CodexBar.Core.Configuration;
 using CodexBar.Core.Models;
 using CodexBar.Core.Providers.OpenCodeZen;
 using Microsoft.Extensions.Logging.Abstractions;
-using System.Net;
 
 public class OpenCodeZenProviderTests
 {
@@ -230,12 +230,19 @@ public class OpenCodeZenProviderTests
         }
 
         public AppSettings Load() => new();
-        public void Save(AppSettings settings) { }
+
+        public void Save(AppSettings settings)
+        {
+        }
+
         public string? GetApiKey(ProviderId providerId) =>
             providerId == ProviderId.OpenCodeGo ? this.authCookie :
             providerId == ProviderId.OpenCodeZen ? this.authCookie : null;
+
         public bool IsProviderEnabled(ProviderId providerId) => this.enabled;
+
         public string? GetOpenCodeGoWorkspaceId() => this.workspaceId;
+
         public IReadOnlyList<string> GetCopilotAccounts() => [];
     }
 }

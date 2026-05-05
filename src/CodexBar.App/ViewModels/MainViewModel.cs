@@ -633,6 +633,7 @@ public sealed class ProviderCardViewModel : INotifyPropertyChanged
             this.hasBars = value;
             this.PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(this.HasBars)));
             this.PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(this.ShowProgressBar)));
+            this.PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(this.ShowStatusTextLine)));
         }
     }
 
@@ -652,6 +653,7 @@ public sealed class ProviderCardViewModel : INotifyPropertyChanged
             this.PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(this.IsCreditsDisplay)));
             this.PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(this.ShowProgressBar)));
             this.PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(this.ShowSingleCreditsDisplay)));
+            this.PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(this.ShowStatusTextLine)));
         }
     }
 
@@ -660,6 +662,9 @@ public sealed class ProviderCardViewModel : INotifyPropertyChanged
 
     /// <summary>Gets a value indicating whether the single-card credits block should render.</summary>
     public bool ShowSingleCreditsDisplay => this.IsCreditsDisplay && !this.IsPairedCredits;
+
+    /// <summary>Gets a value indicating whether the compact status text line should render for usage cards.</summary>
+    public bool ShowStatusTextLine => !this.HasBars && !this.IsCreditsDisplay && !this.IsPairedCredits;
 
     private bool isCompactCard;
 
@@ -710,6 +715,7 @@ public sealed class ProviderCardViewModel : INotifyPropertyChanged
             this.isPairedCredits = value;
             this.PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(this.IsPairedCredits)));
             this.PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(this.ShowSingleCreditsDisplay)));
+            this.PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(this.ShowStatusTextLine)));
         }
     }
 
