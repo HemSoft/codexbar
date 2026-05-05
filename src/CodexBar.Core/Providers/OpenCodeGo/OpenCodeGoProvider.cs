@@ -2,13 +2,13 @@
 // Copyright (c) PlaceholderCompany. All rights reserved.
 // </copyright>
 
-namespace CodexBar.Core.Providers.OpenCodeGo;
-
 using System.Net;
 using System.Text.RegularExpressions;
 using CodexBar.Core.Configuration;
 using CodexBar.Core.Models;
 using Microsoft.Extensions.Logging;
+
+namespace CodexBar.Core.Providers.OpenCodeGo;
 
 /// <summary>
 /// Fetches OpenCode Go usage by scraping the SolidJS SSR dashboard.

@@ -2,9 +2,10 @@
 // Copyright (c) PlaceholderCompany. All rights reserved.
 // </copyright>
 
+using System.Runtime.InteropServices;
+
 namespace CodexBar.Core.Configuration;
 
-using System.Runtime.InteropServices;
 #if WINDOWS
 using System.Security.AccessControl;
 using System.Security.Principal;
@@ -57,7 +58,7 @@ public sealed class SettingsService(ILogger<SettingsService> logger) : ISettings
     }
 
     /// <summary>
-    /// Merges provider entries and workspace IDs that exist on disk but are absent from
+    /// Merges provider entries and credential fields that exist on disk but are absent from
     /// the in-memory settings. Prevents an in-flight Save from clobbering credentials that
     /// were added to the file while the app was running.
     /// </summary>
@@ -78,15 +79,21 @@ public sealed class SettingsService(ILogger<SettingsService> logger) : ISettings
             }
 
             settings.Providers ??= [];
-            foreach (var (key, value) in disk.Providers ?? [])
+            foreach (var (key, diskProvider) in disk.Providers ?? [])
             {
-                if (!settings.Providers.ContainsKey(key))
+                if (!settings.Providers.TryGetValue(key, out var memProvider) || memProvider is null)
                 {
-                    settings.Providers[key] = value ?? new ProviderSettings();
+                    // Entire provider entry missing from memory — bring it over
+                    settings.Providers[key] = diskProvider ?? new ProviderSettings();
+                }
+                else if (diskProvider?.ApiKey is not null && string.IsNullOrWhiteSpace(memProvider.ApiKey))
+                {
+                    // Provider exists in memory but its ApiKey is empty — preserve disk credential
+                    memProvider.ApiKey = diskProvider.ApiKey;
                 }
             }
 
-            if (settings.OpenCodeGoWorkspaceId is null && disk.OpenCodeGoWorkspaceId is not null)
+            if (string.IsNullOrWhiteSpace(settings.OpenCodeGoWorkspaceId) && !string.IsNullOrWhiteSpace(disk.OpenCodeGoWorkspaceId))
             {
                 settings.OpenCodeGoWorkspaceId = disk.OpenCodeGoWorkspaceId;
             }

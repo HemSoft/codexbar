@@ -2,13 +2,13 @@
 // Copyright (c) PlaceholderCompany. All rights reserved.
 // </copyright>
 
-namespace CodexBar.Core.Providers.OpenRouter;
-
 using System.Net.Http.Headers;
 using System.Text.Json;
 using CodexBar.Core.Configuration;
 using CodexBar.Core.Models;
 using Microsoft.Extensions.Logging;
+
+namespace CodexBar.Core.Providers.OpenRouter;
 
 /// <summary>
 /// Fetches OpenRouter credit usage via the OpenRouter API.
@@ -113,6 +113,6 @@ public sealed class OpenRouterProvider(ILogger<OpenRouterProvider> logger, IHttp
     }
 
     private string? ResolveApiKey() =>
-        this.settings.GetApiKey(ProviderId.OpenRouter)
-        ?? Environment.GetEnvironmentVariable("OPENROUTER_API_KEY");
+        Environment.GetEnvironmentVariable("OPENROUTER_API_KEY")
+        ?? this.settings.GetApiKey(ProviderId.OpenRouter);
 }

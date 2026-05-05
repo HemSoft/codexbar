@@ -2,12 +2,12 @@
 // Copyright (c) PlaceholderCompany. All rights reserved.
 // </copyright>
 
-namespace CodexBar.Core.Tests;
-
 using CodexBar.Core.Configuration;
 using CodexBar.Core.Models;
 using CodexBar.Core.Providers.OpenRouter;
 using Microsoft.Extensions.Logging.Abstractions;
+
+namespace CodexBar.Core.Tests;
 
 public class OpenRouterProviderTests
 {

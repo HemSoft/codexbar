@@ -2,12 +2,12 @@
 // Copyright (c) PlaceholderCompany. All rights reserved.
 // </copyright>
 
-namespace CodexBar.Core.Services;
-
 using System.Collections.ObjectModel;
 using CodexBar.Core.Models;
 using CodexBar.Core.Providers;
 using Microsoft.Extensions.Logging;
+
+namespace CodexBar.Core.Services;
 
 /// <summary>
 /// Coordinates periodic usage fetches across all enabled providers.
@@ -108,9 +108,26 @@ public sealed class UsageRefreshService(
             if (!available)
             {
                 this.logger.LogDebug("{Provider} is not available, skipping", provider.Metadata.DisplayName);
+
+                ProviderUsageResult? removed = null;
                 lock (this.resultsLock)
                 {
-                    this.latestResults.Remove(provider.Metadata.Id);
+                    if (this.latestResults.Remove(provider.Metadata.Id, out var old))
+                    {
+                        removed = old;
+                    }
+                }
+
+                if (removed is not null)
+                {
+                    // State changed from available → unavailable; notify UI so it clears stale data
+                    var unavailableResult = ProviderUsageResult.Failure(provider.Metadata.Id, "Provider unavailable");
+                    lock (this.resultsLock)
+                    {
+                        this.latestResults[provider.Metadata.Id] = unavailableResult;
+                    }
+
+                    this.RaiseUsageUpdated(provider.Metadata.Id, unavailableResult);
                 }
 
                 return;

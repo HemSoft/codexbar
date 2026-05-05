@@ -2,8 +2,6 @@
 // Copyright (c) PlaceholderCompany. All rights reserved.
 // </copyright>
 
-namespace CodexBar.Core.Tests;
-
 using System;
 using System.Threading;
 using System.Threading.Tasks;
@@ -12,6 +10,8 @@ using CodexBar.Core.Providers;
 using CodexBar.Core.Services;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
+
+namespace CodexBar.Core.Tests;
 
 public class UsageRefreshServiceTests
 {

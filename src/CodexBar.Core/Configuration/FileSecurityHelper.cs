@@ -2,14 +2,14 @@
 // Copyright (c) PlaceholderCompany. All rights reserved.
 // </copyright>
 
+using System.Runtime.InteropServices;
+
 #if WINDOWS
 using System.Security.AccessControl;
 using System.Security.Principal;
 #endif
 
 namespace CodexBar.Core.Configuration;
-
-using System.Runtime.InteropServices;
 
 /// <summary>
 /// Shared utility for writing files with owner-only permissions.

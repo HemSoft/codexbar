@@ -4,7 +4,7 @@
     "documentationRules": {
       "companyName": "HemSoft Developments",
       "copyrightText": "Copyright (c) {companyName}. All rights reserved.",
-      "xmlHeader": false,
+      "xmlHeader": true,
       "documentInterfaces": true,
       "documentExposedElements": true,
       "documentInternalElements": false,
@@ -17,6 +17,11 @@
     },
     "namingRules": {
       "allowCommonHungarianPrefixes": true
+    },
+    "rules": {
+      "SA1309": {
+        "severity": "none"
+      }
     },
     "layoutRules": {
       "newlineAtEndOfFile": true

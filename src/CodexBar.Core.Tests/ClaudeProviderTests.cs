@@ -2,10 +2,10 @@
 // Copyright (c) PlaceholderCompany. All rights reserved.
 // </copyright>
 
-namespace CodexBar.Core.Tests;
-
 using CodexBar.Core.Providers.Claude;
 using Xunit;
+
+namespace CodexBar.Core.Tests;
 
 public class ClaudeProviderTests
 {
@@ -102,12 +102,10 @@ public class ClaudeProviderTests
     }
 
     [Fact]
-    public void BuildUsageBars_Null_ReturnsZeroBars()
+    public void BuildUsageBars_Null_ReturnsEmptyList()
     {
         var bars = ClaudeProvider.BuildUsageBars(null);
-        Assert.Equal(2, bars.Count);
-        Assert.Equal(0, bars[0].UsedPercent);
-        Assert.Null(bars[0].ResetDescription);
+        Assert.Empty(bars);
     }
 
     [Fact]

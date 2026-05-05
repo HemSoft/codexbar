@@ -2,8 +2,6 @@
 // Copyright (c) PlaceholderCompany. All rights reserved.
 // </copyright>
 
-namespace CodexBar.Core.Providers.Claude;
-
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
@@ -11,6 +9,8 @@ using System.Text.Json;
 using CodexBar.Core.Configuration;
 using CodexBar.Core.Models;
 using Microsoft.Extensions.Logging;
+
+namespace CodexBar.Core.Providers.Claude;
 
 /// <summary>
 /// Fetches Claude Code Pro subscription usage by making a lightweight API call
@@ -304,27 +304,32 @@ public sealed class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFa
     /// <returns></returns>
     internal static List<UsageBar> BuildUsageBars(UnifiedRateLimits? limits)
     {
+        if (limits is null)
+        {
+            return [];
+        }
+
         var bars = new List<UsageBar>(2)
         {
             new UsageBar
             {
                 Label = "5-hour limit",
-                UsedPercent = limits?.FiveHourUtilization ?? 0,
-                ResetDescription = limits is not null && limits.FiveHourReset > 0
+                UsedPercent = limits.FiveHourUtilization,
+                ResetDescription = limits.FiveHourReset > 0
                 ? FormatBarReset(limits.FiveHourReset)
                 : null,
-                ResetsAt = limits is not null && limits.FiveHourReset > 0
+                ResetsAt = limits.FiveHourReset > 0
                 ? DateTimeOffset.FromUnixTimeSeconds(limits.FiveHourReset)
                 : null,
             },
             new UsageBar
             {
                 Label = "Weekly · all models",
-                UsedPercent = limits?.SevenDayUtilization ?? 0,
-                ResetDescription = limits is not null && limits.SevenDayReset > 0
+                UsedPercent = limits.SevenDayUtilization,
+                ResetDescription = limits.SevenDayReset > 0
                 ? FormatBarReset(limits.SevenDayReset)
                 : null,
-                ResetsAt = limits is not null && limits.SevenDayReset > 0
+                ResetsAt = limits.SevenDayReset > 0
                 ? DateTimeOffset.FromUnixTimeSeconds(limits.SevenDayReset)
                 : null
             },
@@ -491,7 +496,7 @@ public sealed class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFa
 
             return result ?? this.cachedLimits;
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
             this.logger.LogDebug("Claude API probe timed out");
             return this.cachedLimits;

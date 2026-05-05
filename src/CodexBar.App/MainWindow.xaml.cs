@@ -2,14 +2,14 @@
 // Copyright (c) PlaceholderCompany. All rights reserved.
 // </copyright>
 
-namespace CodexBar.App;
-
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Threading;
 using CodexBar.Core.Configuration;
+
+namespace CodexBar.App;
 
 public partial class MainWindow : Window
 {

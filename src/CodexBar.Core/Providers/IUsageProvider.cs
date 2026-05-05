@@ -2,9 +2,9 @@
 // Copyright (c) PlaceholderCompany. All rights reserved.
 // </copyright>
 
-namespace CodexBar.Core.Providers;
-
 using CodexBar.Core.Models;
+
+namespace CodexBar.Core.Providers;
 
 /// <summary>
 /// Contract for all AI provider usage fetchers.

@@ -2,17 +2,18 @@
 // Copyright (c) PlaceholderCompany. All rights reserved.
 // </copyright>
 
-namespace CodexBar.App;
-
 using System.IO;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+
+namespace CodexBar.App;
 
 public sealed class FileLoggerProvider : ILoggerProvider
 {
     private readonly string logPath;
     private readonly StreamWriter writer;
     private readonly Lock @lock = new();
+    private bool disposed;
 
     public FileLoggerProvider(string logPath)
     {
@@ -29,14 +30,28 @@ public sealed class FileLoggerProvider : ILoggerProvider
 
     public void Dispose()
     {
-        this.writer.Flush();
-        this.writer.Dispose();
+        lock (this.@lock)
+        {
+            if (this.disposed)
+            {
+                return;
+            }
+
+            this.disposed = true;
+            this.writer.Flush();
+            this.writer.Dispose();
+        }
     }
 
     internal void Write(string message)
     {
         lock (this.@lock)
         {
+            if (this.disposed)
+            {
+                return;
+            }
+
             this.writer.WriteLine(message);
         }
     }
