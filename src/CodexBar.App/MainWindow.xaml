@@ -114,6 +114,13 @@
                                              Visibility="{Binding ShowProgressBar, Converter={StaticResource BoolToVis}}"
                                              Margin="0,6,0,4" />
 
+                                <!-- Status text for legacy single-bar usage cards -->
+                                <TextBlock Text="{Binding StatusText}"
+                                           FontSize="13"
+                                           Foreground="{StaticResource TextSecondaryBrush}"
+                                           TextTrimming="CharacterEllipsis"
+                                           Visibility="{Binding ShowStatusTextLine, Converter={StaticResource BoolToVis}}" />
+
                                 <!-- Paired credits display: two balances side by side -->
                                 <Grid Visibility="{Binding IsPairedCredits, Converter={StaticResource BoolToVis}}"
                                       Margin="0,6,0,0">
@@ -136,23 +143,12 @@
                                     </StackPanel>
                                 </Grid>
 
-                                <!-- Shared "credits remaining" label for paired display -->
-                                <TextBlock Text="credits remaining"
-                                           FontSize="11"
-                                           Foreground="{StaticResource TextSecondaryBrush}"
-                                           Margin="0,2,0,0"
-                                           Visibility="{Binding IsPairedCredits, Converter={StaticResource BoolToVis}}" />
-
                                 <!-- Single-card credits display (no companion) -->
                                 <StackPanel Visibility="{Binding ShowSingleCreditsDisplay, Converter={StaticResource BoolToVis}}"
                                              Margin="0,6,0,0">
                                     <TextBlock Text="{Binding StatusText}"
                                                FontSize="26" FontWeight="SemiBold"
                                                Foreground="{StaticResource TextPrimaryBrush}" />
-                                    <TextBlock Text="credits remaining"
-                                               FontSize="12"
-                                               Foreground="{StaticResource TextSecondaryBrush}"
-                                               Margin="0,2,0,0" />
                                 </StackPanel>
 
                                 <!-- Multi-bar display (visible when HasBars is true) -->
