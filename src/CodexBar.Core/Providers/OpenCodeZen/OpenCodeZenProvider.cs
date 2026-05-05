@@ -30,6 +30,7 @@ public sealed partial class OpenCodeZenProvider(
     private readonly SemaphoreSlim fetchLock = new(1, 1);
     private DateTimeOffset lastFetch = DateTimeOffset.MinValue;
     private decimal? cached;
+    private string? cachedWorkspaceId;
 
     public ProviderMetadata Metadata { get; } = new()
     {
@@ -67,21 +68,23 @@ public sealed partial class OpenCodeZenProvider(
         {
             return ProviderUsageResult.Failure(
                 ProviderId.OpenCodeZen,
-                "Configure OPENCODE_GO_WORKSPACE_ID (env var or openCodeGoWorkspaceId in settings.json).");
+                "Configure OPENCODE_ZEN_WORKSPACE_ID or OPENCODE_GO_WORKSPACE_ID (env var) or openCodeGoWorkspaceId in settings.json.");
         }
 
         if (string.IsNullOrWhiteSpace(authCookie))
         {
             return ProviderUsageResult.Failure(
                 ProviderId.OpenCodeZen,
-                "Configure OPENCODE_GO_AUTH_COOKIE (env var or providers.OpenCodeGo.apiKey in settings.json).");
+                "Configure OPENCODE_ZEN_AUTH_COOKIE or OPENCODE_GO_AUTH_COOKIE (env var) or providers.OpenCodeGo.apiKey in settings.json.");
         }
 
         await this.fetchLock.WaitAsync(ct);
         try
         {
-            // Serve cached result if still fresh
-            if (this.cached is not null && DateTimeOffset.UtcNow - this.lastFetch < CacheTtl)
+            // Serve cached result if still fresh and workspace hasn't changed
+            if (this.cached is not null &&
+                string.Equals(this.cachedWorkspaceId, workspaceId, StringComparison.Ordinal) &&
+                DateTimeOffset.UtcNow - this.lastFetch < CacheTtl)
             {
                 this.logger.LogDebug("OpenCode Zen: cached result (${Balance:F2})", this.cached);
                 return BuildResult(this.cached.Value);
@@ -125,6 +128,7 @@ public sealed partial class OpenCodeZenProvider(
             }
 
             this.cached = balance;
+            this.cachedWorkspaceId = workspaceId;
             this.lastFetch = DateTimeOffset.UtcNow;
             this.logger.LogDebug("OpenCode Zen: ${Balance:F2} remaining", balance);
 
