@@ -43,4 +43,11 @@ jobs:
         run: dotnet test --no-build --verbosity minimal
 
       - name: Security Audit
-        run: dotnet list package --vulnerable --include-transitive
+        shell: pwsh
+        run: |
+          $output = dotnet list package --vulnerable --include-transitive
+          Write-Output $output
+          if ($output -match "has the following vulnerable packages") {
+            Write-Error "Vulnerable packages detected!"
+            exit 1
+          }

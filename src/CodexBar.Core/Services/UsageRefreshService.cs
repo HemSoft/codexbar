@@ -106,7 +106,6 @@ public sealed class UsageRefreshService(
             if (!available)
             {
                 this._logger.LogDebug("{Provider} is not available, skipping", provider.Metadata.DisplayName);
-
                 ProviderUsageResult? removed = null;
                 lock (this._resultsLock)
                 {
@@ -166,7 +165,22 @@ public sealed class UsageRefreshService(
 
     public void Dispose()
     {
-        this._cts?.Cancel();
-        this._cts?.Dispose();
+        if (this._cts is not null)
+        {
+            this._cts.Cancel();
+            if (this._refreshLoop is not null)
+            {
+                try
+                {
+                    this._refreshLoop.Wait();
+                }
+                catch (OperationCanceledException)
+                {
+                }
+            }
+
+            this._cts.Dispose();
+            this._cts = null;
+        }
     }
 }
