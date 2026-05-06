@@ -66,7 +66,7 @@ public sealed class OpenRouterProvider(ILogger<OpenRouterProvider> logger, IHttp
             using var response = await httpClient.SendAsync(request, timeoutCts.Token);
             response.EnsureSuccessStatusCode();
 
-            var json = await response.Content.ReadAsStringAsync(ct);
+            var json = await response.Content.ReadAsStringAsync(timeoutCts.Token);
             using var doc = JsonDocument.Parse(json);
             var root = doc.RootElement;
 
@@ -106,6 +106,12 @@ public sealed class OpenRouterProvider(ILogger<OpenRouterProvider> logger, IHttp
             return ProviderUsageResult.Failure(
                 ProviderId.OpenRouter,
                 "Rate limited by OpenRouter. Try again later.");
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            return ProviderUsageResult.Failure(
+                ProviderId.OpenRouter,
+                "OpenRouter request timed out. Try again later.");
         }
         catch (Exception ex)
         {

@@ -26,6 +26,7 @@ Built with C# / WPF / .NET 9 — native Windows, no Electron overhead.
 
 - Windows 10 or later
 - [.NET 9 Runtime](https://dotnet.microsoft.com/download/dotnet/9.0)
+- Node.js 20 or later (required for `npm install` / pre-commit hook setup)
 
 ### Build from source
 
