@@ -172,10 +172,14 @@ public sealed class UsageRefreshService(
             {
                 try
                 {
-                    this._refreshLoop.Wait();
+                    this._refreshLoop.GetAwaiter().GetResult();
                 }
                 catch (OperationCanceledException)
                 {
+                }
+                catch (AggregateException)
+                {
+                    // Swallow any remaining exceptions during disposal
                 }
             }
 

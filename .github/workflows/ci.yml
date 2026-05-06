@@ -45,9 +45,22 @@ jobs:
       - name: Security Audit
         shell: pwsh
         run: |
-          $output = dotnet list package --vulnerable --include-transitive
-          Write-Output $output
-          if ($output -match "has the following vulnerable packages") {
+          $json = dotnet list package --vulnerable --include-transitive --format json
+          $report = $json | ConvertFrom-Json
+          $hasVulnerabilities = $false
+
+          foreach ($project in @($report.projects)) {
+            foreach ($framework in @($project.frameworks)) {
+              $packages = @($framework.topLevelPackages) + @($framework.transitivePackages)
+              foreach ($package in @($packages)) {
+                if (@($package.vulnerabilities).Count -gt 0) {
+                  $hasVulnerabilities = $true
+                }
+              }
+            }
+          }
+
+          if ($hasVulnerabilities) {
             Write-Error "Vulnerable packages detected!"
             exit 1
           }
