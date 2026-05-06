@@ -3,6 +3,7 @@
 namespace CodexBar.Core.Services;
 
 using System.Collections.ObjectModel;
+using System.Threading;
 using CodexBar.Core.Models;
 using CodexBar.Core.Providers;
 using Microsoft.Extensions.Logging;
@@ -51,25 +52,26 @@ public sealed class UsageRefreshService(
 
     public async Task StopAsync()
     {
-        if (this._cts is null)
+        var cts = Interlocked.Exchange(ref this._cts, null);
+        var refreshLoop = Interlocked.Exchange(ref this._refreshLoop, null);
+        if (cts is null)
         {
             return;
         }
 
-        await this._cts.CancelAsync();
-        if (this._refreshLoop is not null)
+        await cts.CancelAsync();
+        if (refreshLoop is not null)
         {
             try
             {
-                await this._refreshLoop;
+                await refreshLoop;
             }
             catch (OperationCanceledException)
             {
             }
         }
 
-        this._cts.Dispose();
-        this._cts = null;
+        cts.Dispose();
         this._logger.LogInformation("Usage refresh service stopped");
     }
 
@@ -165,11 +167,27 @@ public sealed class UsageRefreshService(
 
     public void Dispose()
     {
-        if (this._cts is not null)
+        var cts = Interlocked.Exchange(ref this._cts, null);
+        var refreshLoop = Interlocked.Exchange(ref this._refreshLoop, null);
+        if (cts is not null)
         {
-            this._cts.Cancel();
-            this._cts.Dispose();
-            this._cts = null;
+            cts.Cancel();
+            if (refreshLoop is not null)
+            {
+                try
+                {
+                    refreshLoop.GetAwaiter().GetResult();
+                }
+                catch (OperationCanceledException)
+                {
+                }
+                catch (AggregateException)
+                {
+                    // Swallow any remaining exceptions during disposal
+                }
+            }
+
+            cts.Dispose();
         }
     }
 
