@@ -40,6 +40,8 @@ public partial class MainWindow : Window
     private double zoomLevel = 1.0;
     private double lastWidth;
     private double lastHeight;
+    private double? savedLeft;
+    private double? savedTop;
     private bool hasUserPosition;
     private bool isDragging;
     private DateTime dragEndedAtUtc = DateTime.MinValue;
@@ -70,8 +72,10 @@ public partial class MainWindow : Window
 
         if (appSettings.WindowLeft is not null && appSettings.WindowTop is not null)
         {
-            this.Left = appSettings.WindowLeft.Value;
-            this.Top = appSettings.WindowTop.Value;
+            this.savedLeft = appSettings.WindowLeft.Value;
+            this.savedTop = appSettings.WindowTop.Value;
+            this.Left = this.savedLeft.Value;
+            this.Top = this.savedTop.Value;
             this.hasUserPosition = true;
         }
 
@@ -120,8 +124,11 @@ public partial class MainWindow : Window
         this.ZoomTransform.ScaleX = this.zoomLevel;
         this.ZoomTransform.ScaleY = this.zoomLevel;
 
-        if (this.hasUserPosition)
+        if (this.savedLeft is not null && this.savedTop is not null)
         {
+            this.Left = this.savedLeft.Value;
+            this.Top = this.savedTop.Value;
+            this.hasUserPosition = true;
             this.EnsureOnScreen();
         }
         else
@@ -326,17 +333,11 @@ public partial class MainWindow : Window
             settings.ZoomLevel = this.zoomLevel;
             settings.WindowWidth = this.lastWidth;
             settings.WindowHeight = this.lastHeight;
-
-            if (this.hasUserPosition)
-            {
-                settings.WindowLeft = this.Left;
-                settings.WindowTop = this.Top;
-            }
-            else
-            {
-                settings.WindowLeft = null;
-                settings.WindowTop = null;
-            }
+            settings.WindowLeft = this.Left;
+            settings.WindowTop = this.Top;
+            this.savedLeft = this.Left;
+            this.savedTop = this.Top;
+            this.hasUserPosition = true;
 
             this.settings.Save(settings);
         }

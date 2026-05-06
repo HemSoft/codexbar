@@ -2,5 +2,4 @@
 
 using System.Runtime.CompilerServices;
 
-[assembly: InternalsVisibleTo("CodexBar.Core.Tests")]
 [assembly: InternalsVisibleTo("CodexBar.App.Tests")]
