@@ -1,12 +1,18 @@
-# Runs all ralph-*.ps1 scripts in the current directory sequentially in autopilot mode.
+# ralph-run-all.ps1 — Sequential autopilot orchestrator.
+# Version: 1.3.0
 # Between each script, pulls latest main so the next run branches from fresh code.
 # Stops on the first failure.
 param(
     [switch]$Pick,
-    [ValidateSet('sonnet', 'opus46', 'opus47', 'gpt')]
     [string]$Model,
+    [string]$Provider,
+    [string]$ReviewProduct,
+    [string]$ReviewMode,
+    [string[]]$Agents,
     [string]$WorkUntil,
     [switch]$NoAudio,
+    [switch]$SkipReview,
+    [switch]$Once,
     [switch]$Help
 )
 
@@ -20,22 +26,30 @@ if ($Help) {
     Write-Host ""
     Write-Host "PARAMETERS" -ForegroundColor Yellow
     Write-Host "  -Pick                  Choose which scripts to run (default: run all)"
-    Write-Host "  -Model <alias>         Model to pass through: sonnet, opus46, opus47, gpt"
+    Write-Host "  -Model <name>          Model to pass through (validated by ralph.ps1)"
+    Write-Host "  -Provider <name>       CLI provider: copilot, opencode (validated by ralph.ps1)"
+    Write-Host "  -ReviewProduct <name>  Automated PR review product to pass through"
+    Write-Host "  -ReviewMode <name>     Review request mode to pass through when supported"
+    Write-Host "  -Agents <specs>        Agent specs: role or role@model (validated by ralph.ps1)"
+    Write-Host "                         Dev agents control the work loop; review agents run PR reviews"
     Write-Host "  -WorkUntil <HH:mm>     Stop after this local time (passed to each script)"
     Write-Host "  -NoAudio               Suppress audio feedback"
+    Write-Host "  -SkipReview            Skip automated PR review requests"
+    Write-Host "  -Once                  Run only one work iteration (passed to each script)"
     Write-Host "  -Help                  Show this help message"
     Write-Host ""
     Write-Host "EXAMPLES" -ForegroundColor Yellow
     Write-Host "  ralph-run-all"
     Write-Host "  ralph-run-all -Pick"
     Write-Host "  ralph-run-all -Model sonnet -WorkUntil 08:00"
+    Write-Host "  ralph-run-all -Agents pr-review-quality,pr-review-security"
     Write-Host "  ralph-run-all -NoAudio"
     Write-Host ""
     exit 0
 }
 
 # --- Verify git state ---
-$repoRoot = (git rev-parse --show-toplevel 2>&1).Trim() -replace '/', '\'
+$repoRoot = ([string](git rev-parse --show-toplevel 2>&1)).Trim() -replace '/', '\'
 if ($LASTEXITCODE -ne 0) {
     Write-Host "Not inside a git repository." -ForegroundColor Red
     exit 1
@@ -43,7 +57,7 @@ if ($LASTEXITCODE -ne 0) {
 $currentBranch = (git rev-parse --abbrev-ref HEAD 2>&1).Trim()
 
 # --- Discover scripts from this repo's scripts/ directory ---
-$scriptsDir = Join-Path $repoRoot "scripts"
+$scriptsDir = $PSScriptRoot
 $myName = Split-Path -Leaf $MyInvocation.MyCommand.Path
 
 $allScripts = Get-ChildItem -Path $scriptsDir -Filter "ralph-*.ps1" -ErrorAction SilentlyContinue |
@@ -130,8 +144,14 @@ for ($i = 0; $i -lt $scripts.Count; $i++) {
     # Build args — always pass -Autopilot
     $scriptArgs = @{ Autopilot = $true }
     if ($NoAudio) { $scriptArgs['NoAudio'] = $true }
+    if ($SkipReview) { $scriptArgs['SkipReview'] = $true }
     if ($Model) { $scriptArgs['Model'] = $Model }
+    if ($Provider) { $scriptArgs['Provider'] = $Provider }
+    if ($ReviewProduct) { $scriptArgs['ReviewProduct'] = $ReviewProduct }
+    if ($ReviewMode) { $scriptArgs['ReviewMode'] = $ReviewMode }
+    if ($Agents) { $scriptArgs['Agents'] = $Agents }
     if ($WorkUntil) { $scriptArgs['WorkUntil'] = $WorkUntil }
+    if ($Once) { $scriptArgs['Once'] = $true }
 
     # Invoke the script
     & $script.FullName @scriptArgs
