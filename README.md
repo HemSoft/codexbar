@@ -32,6 +32,7 @@ Built with C# / WPF / .NET 9 — native Windows, no Electron overhead.
 ```powershell
 git clone https://github.com/HemSoft/codexbar.git
 cd codexbar
+npm install          # Also configures the pre-commit hook
 dotnet build
 dotnet run --project src\CodexBar.App
 ```

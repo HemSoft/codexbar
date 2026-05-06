@@ -1,6 +1,7 @@
 {
   "scripts": {
-    "lint:md": "markdownlint \"**/*.md\" --ignore node_modules"
+    "lint:md": "markdownlint \"**/*.md\" --ignore node_modules",
+    "postinstall": "git config core.hooksPath .githooks 2>nul || exit 0"
   },
   "devDependencies": {
     "markdownlint-cli": "^0.48.0"
