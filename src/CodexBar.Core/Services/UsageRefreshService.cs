@@ -18,13 +18,28 @@ public sealed class UsageRefreshService(
     private readonly IReadOnlyList<IUsageProvider> _providers = providers.ToList();
     private readonly ILogger<UsageRefreshService> _logger = logger;
     private readonly object _resultsLock = new();
+    private readonly object _nextRefreshLock = new();
     private readonly Dictionary<ProviderId, ProviderUsageResult> _latestResults = [];
     private CancellationTokenSource? _cts;
     private Task? _refreshLoop;
+    private DateTimeOffset? _nextRefreshAtUtc;
 
     public event Action<ProviderId, ProviderUsageResult>? UsageUpdated;
 
+    public event Action<DateTimeOffset?>? NextRefreshChanged;
+
     public TimeSpan RefreshInterval { get; set; } = TimeSpan.FromMinutes(2);
+
+    public DateTimeOffset? NextRefreshAtUtc
+    {
+        get
+        {
+            lock (this._nextRefreshLock)
+            {
+                return this._nextRefreshAtUtc;
+            }
+        }
+    }
 
     public IReadOnlyDictionary<ProviderId, ProviderUsageResult> LatestResults
     {
@@ -72,6 +87,7 @@ public sealed class UsageRefreshService(
         }
 
         cts.Dispose();
+        this.SetNextRefreshAtUtc(null);
         this._logger.LogInformation("Usage refresh service stopped");
     }
 
@@ -85,6 +101,7 @@ public sealed class UsageRefreshService(
     {
         // Initial fetch immediately
         await this.RefreshAllAsync(ct);
+        this.SetNextRefreshAtUtc(DateTimeOffset.UtcNow.Add(this.RefreshInterval));
 
         while (!ct.IsCancellationRequested)
         {
@@ -92,6 +109,7 @@ public sealed class UsageRefreshService(
             {
                 await Task.Delay(this.RefreshInterval, ct);
                 await this.RefreshAllAsync(ct);
+                this.SetNextRefreshAtUtc(DateTimeOffset.UtcNow.Add(this.RefreshInterval));
             }
             catch (OperationCanceledException)
             {
@@ -165,6 +183,23 @@ public sealed class UsageRefreshService(
         }
     }
 
+    private void SetNextRefreshAtUtc(DateTimeOffset? nextRefreshAtUtc)
+    {
+        lock (this._nextRefreshLock)
+        {
+            this._nextRefreshAtUtc = nextRefreshAtUtc;
+        }
+
+        try
+        {
+            this.NextRefreshChanged?.Invoke(nextRefreshAtUtc);
+        }
+        catch (Exception ex)
+        {
+            this._logger.LogWarning(ex, "NextRefreshChanged subscriber threw");
+        }
+    }
+
     public void Dispose()
     {
         var cts = Interlocked.Exchange(ref this._cts, null);
@@ -189,6 +224,8 @@ public sealed class UsageRefreshService(
 
             cts.Dispose();
         }
+
+        this.SetNextRefreshAtUtc(null);
     }
 
     public async ValueTask DisposeAsync()

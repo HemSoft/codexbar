@@ -2,13 +2,13 @@
 
 | Status | Priority | Task | Notes |
 |--------|----------|------|-------|
-| 📋 | High | [Investigate popup restart position regression](#investigate-popup-restart-position-regression) | Latest persistence change had no user-visible effect; popup still reopens in the wrong spot after restart |
 | 🚧 | High | [#9 Backfill test coverage to 80%](#backfill-test-coverage) | Currently 13% line / 12% branch. Need tests for all providers, services, config |
 | 📋 | High | [#7 Add CRAP score tooling](#add-crap-score-tooling) | ReportGenerator + coverlet.runsettings for complexity × coverage analysis |
 | 📋 | High | [#6 Add Stryker.NET mutation testing](#add-mutation-testing) | Target ≥ 80% mutation score |
 | 📋 | Medium | [#11 Create scorecard skill](#create-scorecard-skill) | Model after hs-buddy and relias-assistant scorecard skills |
 | 📋 | Medium | [#5 Add husky + lint-staged pre-commit hooks](#add-husky-hooks) | Auto-run dotnet format and dotnet test on commit |
 | 📋 | Low | [#8 Expand .gitignore patterns](#expand-gitignore) | Add .agents/, coverage/, TestResults/ exclusions |
+| ✅ | High | Fix popup restart position regression | RestoreState before Show(); SaveWindowState uses savedLeft/savedTop; defer EnsureOnScreen to Loaded (2026-05-05) |
 | ✅ | Low | [#10 Add markdownlint-cli](#add-markdownlint) | markdownlint-cli added, CI step enforces, all docs pass (2026-05-04) |
 | ✅ | High | Fix 233 code formatting violations | Resolved with `dotnet format` (2026-05-04) |
 | ✅ | High | Add .editorconfig | Created with .NET C# conventions (2026-05-04) |
@@ -22,19 +22,11 @@
 
 ## Progress
 
-**Completed: 9 / 17** (53%)
+**Completed: 10 / 17** (59%)
 
 ---
 
 ## Remaining Items
-
-### Investigate popup restart position regression
-
-**Problem:** The popup still does not reopen at its prior location after quitting and restarting the app. The latest persistence fix changed code and tests but did not change the user-visible behavior.
-
-**Next step:** Reproduce from a clean launch, trace the actual show/hide/startup positioning path in `App.xaml.cs` and `MainWindow.xaml.cs`, and verify whether saved coordinates are being overwritten after restore.
-
----
 
 ### Backfill test coverage
 

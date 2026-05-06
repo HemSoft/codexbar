@@ -92,6 +92,34 @@ public sealed class MainWindowPositionTests : IDisposable
         });
     }
 
+    [Fact]
+    public void SaveWindowState_PersistsSavedCoordinates_WhenPositionRestoredFromSettings()
+    {
+        // Regression test: After Hide(), WPF may reset Left/Top.
+        // SaveWindowState should use the in-memory savedLeft/savedTop values
+        // (which were set from settings at startup) instead of WPF Left/Top.
+        this.wpfApplicationFixture.Run(() =>
+        {
+            var settingsService = this.CreateSettingsService();
+            var settings = settingsService.Load();
+            settings.WindowLeft = 500;
+            settings.WindowTop = 300;
+            settings.WindowWidth = 340;
+            settings.WindowHeight = 420;
+            settingsService.Save(settings);
+
+            var window = new MainWindow(settingsService);
+
+            // Constructor loads savedLeft=500, savedTop=300 from settings,
+            // and sets hasUserPosition=true.
+            window.SaveWindowState();
+
+            var saved = settingsService.Load();
+            Assert.Equal(500, saved.WindowLeft);
+            Assert.Equal(300, saved.WindowTop);
+        });
+    }
+
     private SettingsService CreateSettingsService() =>
         new(NullLogger<SettingsService>.Instance, this.tempDir);
 }

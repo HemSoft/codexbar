@@ -109,4 +109,22 @@ public class CopilotProviderTests
         Assert.Equal("105 / 100 Premium interactions ($0.20 overage)", label);
         Assert.False(isUnlimited);
     }
+
+    [Fact]
+    public void ComputeUsageMetrics_UnlimitedQuotaWithEntitlement_ReturnsNumericUsage()
+    {
+        var quota = new CodexBar.Core.Models.CopilotQuotaSnapshot
+        {
+            Unlimited = true,
+            Entitlement = 100,
+            Remaining = -5,
+            OverageCount = 5,
+            OveragePermitted = true,
+        };
+        var (pct, label, isUnlimited) = CopilotProvider.ComputeUsageMetrics(quota, "premium");
+
+        Assert.Equal(1.05, pct);
+        Assert.Equal("105 / 100 Premium interactions ($0.20 overage)", label);
+        Assert.False(isUnlimited);
+    }
 }

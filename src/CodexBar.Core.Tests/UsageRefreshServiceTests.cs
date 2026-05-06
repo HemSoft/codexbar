@@ -85,6 +85,43 @@ public class UsageRefreshServiceTests
         Assert.Equal(ProviderId.OpenCodeGo, firedId);
     }
 
+    [Fact]
+    public async Task Start_SchedulesNextAutomaticRefresh()
+    {
+        var provider = new DummyProvider(available: true, result: ProviderUsageResult.EmptySuccess(ProviderId.OpenRouter));
+        var service = new UsageRefreshService([provider], NullLogger<UsageRefreshService>.Instance)
+        {
+            RefreshInterval = TimeSpan.FromMilliseconds(50),
+        };
+        var tcs = new TaskCompletionSource<DateTimeOffset?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        service.NextRefreshChanged += nextRefreshAtUtc =>
+        {
+            if (nextRefreshAtUtc is not null)
+            {
+                tcs.TrySetResult(nextRefreshAtUtc);
+            }
+        };
+
+        service.Start();
+        var nextRefreshAtUtc = await tcs.Task.WaitAsync(TimeSpan.FromSeconds(1));
+
+        Assert.True(nextRefreshAtUtc.HasValue);
+        Assert.True(nextRefreshAtUtc.Value > DateTimeOffset.UtcNow);
+
+        await service.StopAsync();
+    }
+
+    [Fact]
+    public async Task RefreshAllAsync_DoesNotSetNextAutomaticRefreshWhenNotRunning()
+    {
+        var provider = new DummyProvider(available: true, result: ProviderUsageResult.EmptySuccess(ProviderId.OpenRouter));
+        var service = new UsageRefreshService([provider], NullLogger<UsageRefreshService>.Instance);
+
+        await service.RefreshAllAsync();
+
+        Assert.Null(service.NextRefreshAtUtc);
+    }
+
     private sealed class DummyProvider(bool available, ProviderUsageResult result) : IUsageProvider
     {
         private readonly bool available = available;

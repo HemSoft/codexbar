@@ -65,11 +65,7 @@ public partial class MainWindow : Window
             this.Width = appSettings.WindowWidth.Value;
         }
 
-        if (appSettings.WindowHeight is > 0)
-        {
-            this.Height = appSettings.WindowHeight.Value;
-        }
-
+        // Do NOT set Height from settings — SizeToContent="Height" controls it.
         if (appSettings.WindowLeft is not null && appSettings.WindowTop is not null)
         {
             this.savedLeft = appSettings.WindowLeft.Value;
@@ -79,20 +75,9 @@ public partial class MainWindow : Window
             this.hasUserPosition = true;
         }
 
-        this.lastWidth = this.Width;
-        this.lastHeight = this.Height;
+        this.lastWidth = appSettings.WindowWidth ?? this.Width;
+        this.lastHeight = appSettings.WindowHeight ?? this.ActualHeight;
 
-        this.Loaded += (_, _) =>
-        {
-            if (this.hasUserPosition)
-            {
-                this.EnsureOnScreen();
-            }
-            else
-            {
-                this.PositionNearTray();
-            }
-        };
         this.SizeChanged += this.OnSizeChanged;
         this.PreviewMouseWheel += this.OnPreviewMouseWheel;
     }
@@ -115,26 +100,42 @@ public partial class MainWindow : Window
     }
 
     /// <summary>
-    /// Called by App.ShowPopup() after Show() to restore size, zoom, and position.
+    /// Called by App.ShowPopup() before Show() to set position.
+    /// Position is applied before Show() to prevent flicker.
+    /// EnsureOnScreen is deferred to Loaded so ActualWidth/ActualHeight are final.
     /// </summary>
     public void RestoreState()
     {
         this.Width = this.lastWidth;
-        this.Height = this.lastHeight;
         this.ZoomTransform.ScaleX = this.zoomLevel;
         this.ZoomTransform.ScaleY = this.zoomLevel;
 
+        // Height is NOT set — SizeToContent="Height" controls it.
         if (this.savedLeft is not null && this.savedTop is not null)
         {
             this.Left = this.savedLeft.Value;
             this.Top = this.savedTop.Value;
             this.hasUserPosition = true;
-            this.EnsureOnScreen();
+
+            // Defer EnsureOnScreen to Loaded when ActualWidth is known.
+            this.Loaded += this.OnLoadedEnsureOnScreen;
         }
         else
         {
-            this.PositionNearTray();
+            this.Loaded += this.OnLoadedPositionNearTray;
         }
+    }
+
+    private void OnLoadedEnsureOnScreen(object? sender, EventArgs e)
+    {
+        this.Loaded -= this.OnLoadedEnsureOnScreen;
+        this.EnsureOnScreen();
+    }
+
+    private void OnLoadedPositionNearTray(object? sender, EventArgs e)
+    {
+        this.Loaded -= this.OnLoadedPositionNearTray;
+        this.PositionNearTray();
     }
 
     protected override void OnActivated(EventArgs e)
@@ -329,17 +330,22 @@ public partial class MainWindow : Window
     {
         try
         {
-            var settings = this.settings.Load();
-            settings.ZoomLevel = this.zoomLevel;
-            settings.WindowWidth = this.lastWidth;
-            settings.WindowHeight = this.lastHeight;
-            settings.WindowLeft = this.Left;
-            settings.WindowTop = this.Top;
-            this.savedLeft = this.Left;
-            this.savedTop = this.Top;
+            // Use in-memory savedLeft/savedTop instead of WPF Left/Top to avoid
+            // persisting stale values from hidden or uninitialized windows.
+            var effectiveLeft = this.hasUserPosition ? (this.savedLeft ?? this.Left) : this.Left;
+            var effectiveTop = this.hasUserPosition ? (this.savedTop ?? this.Top) : this.Top;
+
+            var appSettings = this.settings.Load();
+            appSettings.ZoomLevel = this.zoomLevel;
+            appSettings.WindowWidth = this.lastWidth;
+            appSettings.WindowHeight = this.lastHeight;
+            appSettings.WindowLeft = effectiveLeft;
+            appSettings.WindowTop = effectiveTop;
+            this.savedLeft = effectiveLeft;
+            this.savedTop = effectiveTop;
             this.hasUserPosition = true;
 
-            this.settings.Save(settings);
+            this.settings.Save(appSettings);
         }
         catch
         {

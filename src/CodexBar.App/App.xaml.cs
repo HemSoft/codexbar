@@ -149,8 +149,8 @@ public partial class App : Application
                 this._mainWindow.Closed += (_, _) => this._mainWindow = null;
             }
 
-            this._mainWindow.Show();
             this._mainWindow.RestoreState();
+            this._mainWindow.Show();
             this._mainWindow.Activate();
         }
         catch (Exception ex)
