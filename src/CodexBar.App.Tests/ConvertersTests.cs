@@ -2,6 +2,7 @@ namespace CodexBar.App.Tests;
 
 using System.Globalization;
 using System.Windows;
+using CodexBar.App;
 
 public sealed class ConvertersTests
 {

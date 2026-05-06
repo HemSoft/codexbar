@@ -21,6 +21,8 @@ public sealed class OpenRouterProvider(ILogger<OpenRouterProvider> logger, IHttp
 
     private const string BaseUrl = "https://openrouter.ai/api/v1";
 
+    private static readonly TimeSpan ApiTimeout = TimeSpan.FromSeconds(15);
+
     public ProviderMetadata Metadata { get; } = new()
     {
         Id = ProviderId.OpenRouter,
@@ -59,10 +61,12 @@ public sealed class OpenRouterProvider(ILogger<OpenRouterProvider> logger, IHttp
             request.Headers.Add("X-Title", "CodexBar");
 
             using var httpClient = this._httpClientFactory.CreateClient();
-            using var response = await httpClient.SendAsync(request, ct);
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeoutCts.CancelAfter(ApiTimeout);
+            using var response = await httpClient.SendAsync(request, timeoutCts.Token);
             response.EnsureSuccessStatusCode();
 
-            var json = await response.Content.ReadAsStringAsync(ct);
+            var json = await response.Content.ReadAsStringAsync(timeoutCts.Token);
             using var doc = JsonDocument.Parse(json);
             var root = doc.RootElement;
 
@@ -102,6 +106,12 @@ public sealed class OpenRouterProvider(ILogger<OpenRouterProvider> logger, IHttp
             return ProviderUsageResult.Failure(
                 ProviderId.OpenRouter,
                 "Rate limited by OpenRouter. Try again later.");
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            return ProviderUsageResult.Failure(
+                ProviderId.OpenRouter,
+                "OpenRouter request timed out. Try again later.");
         }
         catch (Exception ex)
         {

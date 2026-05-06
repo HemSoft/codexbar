@@ -1,0 +1,20 @@
+#!/bin/sh
+# CodexBar pre-commit hook
+# Runs quality gates before allowing commits
+
+set -e
+
+echo "🔍 Running pre-commit checks..."
+
+# Run format check
+echo "  → Checking code formatting..."
+dotnet format --verify-no-changes
+
+# Build first, then run tests
+echo "  → Building..."
+dotnet build --no-restore
+
+echo "  → Running tests..."
+dotnet test --no-build
+
+echo "✅ All pre-commit checks passed!"
