@@ -12,7 +12,7 @@ using Microsoft.Extensions.Logging;
 /// </summary>
 public sealed class UsageRefreshService(
     IEnumerable<IUsageProvider> providers,
-    ILogger<UsageRefreshService> logger) : IDisposable
+    ILogger<UsageRefreshService> logger) : IDisposable, IAsyncDisposable
 {
     private readonly IReadOnlyList<IUsageProvider> _providers = providers.ToList();
     private readonly ILogger<UsageRefreshService> _logger = logger;
@@ -168,23 +168,13 @@ public sealed class UsageRefreshService(
         if (this._cts is not null)
         {
             this._cts.Cancel();
-            if (this._refreshLoop is not null)
-            {
-                try
-                {
-                    this._refreshLoop.GetAwaiter().GetResult();
-                }
-                catch (OperationCanceledException)
-                {
-                }
-                catch (AggregateException)
-                {
-                    // Swallow any remaining exceptions during disposal
-                }
-            }
-
             this._cts.Dispose();
             this._cts = null;
         }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        await this.StopAsync();
     }
 }

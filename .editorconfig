@@ -25,7 +25,7 @@ dotnet_diagnostic.SA1309.severity = none
 dotnet_diagnostic.SA1633.severity = none
 
 # C# style rules
-csharp_using_directive_placement = outside_namespace:silent
+csharp_using_directive_placement = inside_namespace:silent
 dotnet_sort_system_directives_first = true
 csharp_new_line_before_open_brace = all
 csharp_new_line_before_else = true

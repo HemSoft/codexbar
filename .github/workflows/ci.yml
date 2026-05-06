@@ -50,10 +50,11 @@ jobs:
           $hasVulnerabilities = $false
 
           foreach ($project in @($report.projects)) {
+            if (-not $project.frameworks) { continue }
             foreach ($framework in @($project.frameworks)) {
               $packages = @($framework.topLevelPackages) + @($framework.transitivePackages)
               foreach ($package in @($packages)) {
-                if (@($package.vulnerabilities).Count -gt 0) {
+                if ($package -and @($package.vulnerabilities).Count -gt 0) {
                   $hasVulnerabilities = $true
                 }
               }

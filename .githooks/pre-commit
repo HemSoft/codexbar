@@ -10,7 +10,10 @@ echo "🔍 Running pre-commit checks..."
 echo "  → Checking code formatting..."
 dotnet format --verify-no-changes
 
-# Run tests (no-build assumes project is already built)
+# Build first, then run tests
+echo "  → Building..."
+dotnet build --no-restore
+
 echo "  → Running tests..."
 dotnet test --no-build
 
