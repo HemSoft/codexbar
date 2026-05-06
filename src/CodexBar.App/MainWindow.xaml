@@ -171,12 +171,7 @@
                                 </Grid>
 
 
-                                <!-- Shared "credits remaining" label for paired display -->
-                                <TextBlock Text="credits remaining"
-                                           FontSize="11"
-                                           Foreground="{StaticResource TextSecondaryBrush}"
-                                           Margin="0,2,0,0"
-                                           Visibility="{Binding IsPairedCredits, Converter={StaticResource BoolToVis}}" />
+
 
 
                                 <!-- Single-card credits display (no companion) -->
@@ -185,10 +180,6 @@
                                     <TextBlock Text="{Binding StatusText}"
                                                FontSize="26" FontWeight="SemiBold"
                                                Foreground="{StaticResource TextPrimaryBrush}" />
-                                    <TextBlock Text="credits remaining"
-                                               FontSize="12"
-                                               Foreground="{StaticResource TextSecondaryBrush}"
-                                               Margin="0,2,0,0" />
                                 </StackPanel>
 
                                 <!-- Multi-bar display (visible when HasBars is true) -->

@@ -2,6 +2,7 @@
 
 namespace CodexBar.App;
 
+using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Interop;
@@ -20,12 +21,28 @@ public partial class MainWindow : Window
     private const int WMEXITSIZEMOVE = 0x0232;
     private const int WMSETCURSOR = 0x0020;
     private const int HTCAPTION = 2;
+    private const uint MONITORDEFAULTTONEAREST = 2;
+    private const uint SWPNOSIZE = 0x0001;
+    private const uint SWPNOZORDER = 0x0004;
+    private const uint SWPNOACTIVATE = 0x0010;
 
-    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    [DllImport("user32.dll")]
     private static extern IntPtr LoadCursor(IntPtr hInstance, IntPtr lpCursorName);
 
-    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    [DllImport("user32.dll")]
     private static extern IntPtr SetCursor(IntPtr hCursor);
+
+    [DllImport("user32.dll")]
+    private static extern bool GetWindowRect(IntPtr hwnd, out RECT lpRect);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr MonitorFromWindow(IntPtr hwnd, uint dwFlags);
+
+    [DllImport("user32.dll", CharSet = CharSet.Auto)]
+    private static extern bool GetMonitorInfo(IntPtr hMonitor, ref MONITORINFO lpmi);
+
+    [DllImport("user32.dll")]
+    private static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int x, int y, int cx, int cy, uint uFlags);
 
     private static readonly IntPtr IDCSIZEALL = new IntPtr(32646);
 
@@ -39,10 +56,13 @@ public partial class MainWindow : Window
     private readonly DispatcherTimer hideTimer;
     private double zoomLevel = 1.0;
     private double lastWidth;
-    private double lastHeight;
-    private double? savedLeft;
-    private double? savedTop;
-    private bool hasUserPosition;
+
+    /// <summary>Saved physical pixel X coordinate (from GetWindowRect). Null = no saved position.</summary>
+    private int? physicalLeft;
+
+    /// <summary>Saved physical pixel Y coordinate (from GetWindowRect). Null = no saved position.</summary>
+    private int? physicalTop;
+
     private bool isDragging;
     private DateTime dragEndedAtUtc = DateTime.MinValue;
     private HwndSource? hwndSource;
@@ -65,18 +85,17 @@ public partial class MainWindow : Window
             this.Width = appSettings.WindowWidth.Value;
         }
 
-        // Do NOT set Height from settings — SizeToContent="Height" controls it.
+        this.lastWidth = appSettings.WindowWidth ?? this.Width;
+
+        // Store saved physical pixel position for later use in OnSourceInitialized.
+        // Also set WPF Left/Top as a best-effort initial hint (exact at 100% DPI).
         if (appSettings.WindowLeft is not null && appSettings.WindowTop is not null)
         {
-            this.savedLeft = appSettings.WindowLeft.Value;
-            this.savedTop = appSettings.WindowTop.Value;
-            this.Left = this.savedLeft.Value;
-            this.Top = this.savedTop.Value;
-            this.hasUserPosition = true;
+            this.physicalLeft = (int)appSettings.WindowLeft.Value;
+            this.physicalTop = (int)appSettings.WindowTop.Value;
+            this.Left = appSettings.WindowLeft.Value;
+            this.Top = appSettings.WindowTop.Value;
         }
-
-        this.lastWidth = appSettings.WindowWidth ?? this.Width;
-        this.lastHeight = appSettings.WindowHeight ?? this.ActualHeight;
 
         this.SizeChanged += this.OnSizeChanged;
         this.PreviewMouseWheel += this.OnPreviewMouseWheel;
@@ -87,22 +106,14 @@ public partial class MainWindow : Window
         if (this.IsLoaded && this.IsVisible)
         {
             this.lastWidth = this.ActualWidth;
-            this.lastHeight = this.ActualHeight;
-
-            // Only nudge if the window actually extends beyond the work area
-            var workArea = SystemParameters.WorkArea;
-            if (this.Left + this.ActualWidth > workArea.Right || this.Top + this.ActualHeight > workArea.Bottom
-                || this.Left < workArea.Left || this.Top < workArea.Top)
-            {
-                this.EnsureOnScreen();
-            }
+            this.EnsureOnScreen();
         }
     }
 
     /// <summary>
     /// Called by App.ShowPopup() before Show() to set position.
-    /// Position is applied before Show() to prevent flicker.
-    /// EnsureOnScreen is deferred to Loaded so ActualWidth/ActualHeight are final.
+    /// On re-show (HWND exists), applies position directly via SetWindowPos.
+    /// On first show, defers to OnSourceInitialized/Loaded.
     /// </summary>
     public void RestoreState()
     {
@@ -110,19 +121,33 @@ public partial class MainWindow : Window
         this.ZoomTransform.ScaleX = this.zoomLevel;
         this.ZoomTransform.ScaleY = this.zoomLevel;
 
-        // Height is NOT set — SizeToContent="Height" controls it.
-        if (this.savedLeft is not null && this.savedTop is not null)
+        var hwnd = new WindowInteropHelper(this).Handle;
+        if (this.physicalLeft is not null && this.physicalTop is not null)
         {
-            this.Left = this.savedLeft.Value;
-            this.Top = this.savedTop.Value;
-            this.hasUserPosition = true;
-
-            // Defer EnsureOnScreen to Loaded when ActualWidth is known.
-            this.Loaded += this.OnLoadedEnsureOnScreen;
+            if (hwnd != IntPtr.Zero)
+            {
+                // Re-show: HWND exists, position directly in physical pixels.
+                SetWindowPos(hwnd, IntPtr.Zero, this.physicalLeft.Value, this.physicalTop.Value, 0, 0, SWPNOSIZE | SWPNOZORDER | SWPNOACTIVATE);
+                this.EnsureOnScreen();
+            }
+            else
+            {
+                // First show: set approximate WPF Left/Top, correct in OnSourceInitialized.
+                this.Left = this.physicalLeft.Value;
+                this.Top = this.physicalTop.Value;
+                this.Loaded += this.OnLoadedEnsureOnScreen;
+            }
         }
         else
         {
-            this.Loaded += this.OnLoadedPositionNearTray;
+            if (hwnd != IntPtr.Zero)
+            {
+                this.PositionNearTray();
+            }
+            else
+            {
+                this.Loaded += this.OnLoadedPositionNearTray;
+            }
         }
     }
 
@@ -203,26 +228,70 @@ public partial class MainWindow : Window
 
     private void EnsureOnScreen()
     {
-        var workArea = SystemParameters.WorkArea;
-        if (this.Left + this.ActualWidth > workArea.Right)
+        var hwnd = new WindowInteropHelper(this).Handle;
+        if (hwnd == IntPtr.Zero)
         {
-            this.Left = Math.Max(workArea.Left, workArea.Right - this.ActualWidth);
+            return;
         }
 
-        if (this.Top + this.ActualHeight > workArea.Bottom)
+        if (!GetWindowRect(hwnd, out var windowRect))
         {
-            this.Top = Math.Max(workArea.Top, workArea.Bottom - this.ActualHeight);
+            return;
         }
 
-        if (this.Left < workArea.Left)
+        var hMonitor = MonitorFromWindow(hwnd, MONITORDEFAULTTONEAREST);
+        var info = new MONITORINFO { CbSize = Marshal.SizeOf<MONITORINFO>() };
+        if (!GetMonitorInfo(hMonitor, ref info))
         {
-            this.Left = workArea.Left;
+            return;
         }
 
-        if (this.Top < workArea.Top)
+        var clamped = ClampToWorkArea(windowRect, info.RcWork);
+        if (clamped.Left != windowRect.Left || clamped.Top != windowRect.Top)
         {
-            this.Top = workArea.Top;
+            SetWindowPos(hwnd, IntPtr.Zero, clamped.Left, clamped.Top, 0, 0, SWPNOSIZE | SWPNOZORDER | SWPNOACTIVATE);
         }
+
+        // Always update physical position from actual HWND state.
+        if (GetWindowRect(hwnd, out var finalRect))
+        {
+            this.physicalLeft = finalRect.Left;
+            this.physicalTop = finalRect.Top;
+        }
+    }
+
+    /// <summary>
+    /// Pure geometry helper: clamps a window rect to stay within a work area.
+    /// Both rects are in the same coordinate system (physical pixels).
+    /// </summary>
+    internal static RECT ClampToWorkArea(RECT windowRect, RECT workArea)
+    {
+        int windowWidth = windowRect.Right - windowRect.Left;
+        int windowHeight = windowRect.Bottom - windowRect.Top;
+        int newX = windowRect.Left;
+        int newY = windowRect.Top;
+
+        if (newX + windowWidth > workArea.Right)
+        {
+            newX = Math.Max(workArea.Left, workArea.Right - windowWidth);
+        }
+
+        if (newY + windowHeight > workArea.Bottom)
+        {
+            newY = Math.Max(workArea.Top, workArea.Bottom - windowHeight);
+        }
+
+        if (newX < workArea.Left)
+        {
+            newX = workArea.Left;
+        }
+
+        if (newY < workArea.Top)
+        {
+            newY = workArea.Top;
+        }
+
+        return new RECT { Left = newX, Top = newY, Right = newX + windowWidth, Bottom = newY + windowHeight };
     }
 
     protected override void OnSourceInitialized(EventArgs e)
@@ -230,6 +299,17 @@ public partial class MainWindow : Window
         base.OnSourceInitialized(e);
         this.hwndSource = PresentationSource.FromVisual(this) as HwndSource;
         this.hwndSource?.AddHook(this.WndProc);
+
+        // Correct window position using exact physical pixel coordinates.
+        // This fires before the first paint, so no flicker.
+        if (this.physicalLeft is not null && this.physicalTop is not null)
+        {
+            var hwnd = new WindowInteropHelper(this).Handle;
+            if (hwnd != IntPtr.Zero)
+            {
+                SetWindowPos(hwnd, IntPtr.Zero, this.physicalLeft.Value, this.physicalTop.Value, 0, 0, SWPNOSIZE | SWPNOZORDER | SWPNOACTIVATE);
+            }
+        }
     }
 
     private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
@@ -249,7 +329,6 @@ public partial class MainWindow : Window
                 break;
             case WMENTERSIZEMOVE:
                 this.isDragging = true;
-                this.hasUserPosition = true;
                 this.hideTimer.Stop();
                 break;
             case WMEXITSIZEMOVE:
@@ -325,25 +404,30 @@ public partial class MainWindow : Window
         this.Hide();
     }
 
-    /// <summary>Persists window geometry to disk. Safe to call multiple times.</summary>
+    /// <summary>Persists window geometry to disk using physical pixel coordinates from GetWindowRect.</summary>
     internal void SaveWindowState()
     {
         try
         {
-            // Use in-memory savedLeft/savedTop instead of WPF Left/Top to avoid
-            // persisting stale values from hidden or uninitialized windows.
-            var effectiveLeft = this.hasUserPosition ? (this.savedLeft ?? this.Left) : this.Left;
-            var effectiveTop = this.hasUserPosition ? (this.savedTop ?? this.Top) : this.Top;
+            var hwnd = new WindowInteropHelper(this).Handle;
+            if (hwnd != IntPtr.Zero && GetWindowRect(hwnd, out var rect))
+            {
+                this.physicalLeft = rect.Left;
+                this.physicalTop = rect.Top;
+            }
+            else if (!double.IsNaN(this.Left) && !double.IsNaN(this.Top))
+            {
+                // No HWND (window not shown yet) — approximate from WPF DIPs.
+                this.physicalLeft = (int)this.Left;
+                this.physicalTop = (int)this.Top;
+            }
 
             var appSettings = this.settings.Load();
             appSettings.ZoomLevel = this.zoomLevel;
             appSettings.WindowWidth = this.lastWidth;
-            appSettings.WindowHeight = this.lastHeight;
-            appSettings.WindowLeft = effectiveLeft;
-            appSettings.WindowTop = effectiveTop;
-            this.savedLeft = effectiveLeft;
-            this.savedTop = effectiveTop;
-            this.hasUserPosition = true;
+            appSettings.WindowHeight = null;
+            appSettings.WindowLeft = this.physicalLeft;
+            appSettings.WindowTop = this.physicalTop;
 
             this.settings.Save(appSettings);
         }
@@ -351,5 +435,23 @@ public partial class MainWindow : Window
         {
             // Best-effort — don't crash on save failure
         }
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct RECT
+    {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
+    }
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Auto)]
+    internal struct MONITORINFO
+    {
+        public int CbSize;
+        public RECT RcMonitor;
+        public RECT RcWork;
+        public uint DwFlags;
     }
 }

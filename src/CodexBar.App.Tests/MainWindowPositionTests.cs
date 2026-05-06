@@ -8,6 +8,120 @@ using System.Windows.Threading;
 using CodexBar.Core.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 
+public sealed class ClampToWorkAreaTests
+{
+    [Fact]
+    public void WindowInsideWorkArea_NoChange()
+    {
+        var window = new MainWindow.RECT { Left = 100, Top = 100, Right = 440, Bottom = 500 };
+        var workArea = new MainWindow.RECT { Left = 0, Top = 0, Right = 1920, Bottom = 1040 };
+
+        var result = MainWindow.ClampToWorkArea(window, workArea);
+
+        Assert.Equal(100, result.Left);
+        Assert.Equal(100, result.Top);
+    }
+
+    [Fact]
+    public void WindowOnSecondaryMonitor_StaysOnSecondary()
+    {
+        // Window at x=2100 on a secondary monitor spanning 1920..3840
+        var window = new MainWindow.RECT { Left = 2100, Top = 300, Right = 2440, Bottom = 700 };
+        var workArea = new MainWindow.RECT { Left = 1920, Top = 0, Right = 3840, Bottom = 1080 };
+
+        var result = MainWindow.ClampToWorkArea(window, workArea);
+
+        Assert.Equal(2100, result.Left);
+        Assert.Equal(300, result.Top);
+    }
+
+    [Fact]
+    public void WindowExceedingRightEdge_ClampsToRight()
+    {
+        var window = new MainWindow.RECT { Left = 1700, Top = 100, Right = 2040, Bottom = 500 };
+        var workArea = new MainWindow.RECT { Left = 0, Top = 0, Right = 1920, Bottom = 1040 };
+
+        var result = MainWindow.ClampToWorkArea(window, workArea);
+
+        Assert.Equal(1580, result.Left); // 1920 - 340 width
+        Assert.Equal(100, result.Top);
+    }
+
+    [Fact]
+    public void WindowExceedingBottomEdge_ClampsToBottom()
+    {
+        var window = new MainWindow.RECT { Left = 100, Top = 900, Right = 440, Bottom = 1300 };
+        var workArea = new MainWindow.RECT { Left = 0, Top = 0, Right = 1920, Bottom = 1040 };
+
+        var result = MainWindow.ClampToWorkArea(window, workArea);
+
+        Assert.Equal(100, result.Left);
+        Assert.Equal(640, result.Top); // 1040 - 400 height
+    }
+
+    [Fact]
+    public void WindowOnLeftSecondaryMonitor_NegativeCoordinatesPreserved()
+    {
+        // Secondary monitor to the left with negative X
+        var window = new MainWindow.RECT { Left = -1500, Top = 200, Right = -1160, Bottom = 600 };
+        var workArea = new MainWindow.RECT { Left = -1920, Top = 0, Right = 0, Bottom = 1080 };
+
+        var result = MainWindow.ClampToWorkArea(window, workArea);
+
+        Assert.Equal(-1500, result.Left);
+        Assert.Equal(200, result.Top);
+    }
+
+    [Fact]
+    public void WindowAbovePrimaryMonitor_NegativeYPreserved()
+    {
+        // Secondary monitor above primary with negative Y
+        var window = new MainWindow.RECT { Left = 100, Top = -800, Right = 440, Bottom = -400 };
+        var workArea = new MainWindow.RECT { Left = 0, Top = -1080, Right = 1920, Bottom = 0 };
+
+        var result = MainWindow.ClampToWorkArea(window, workArea);
+
+        Assert.Equal(100, result.Left);
+        Assert.Equal(-800, result.Top);
+    }
+
+    [Fact]
+    public void WindowBeyondLeftEdge_ClampsToLeft()
+    {
+        var window = new MainWindow.RECT { Left = -50, Top = 100, Right = 290, Bottom = 500 };
+        var workArea = new MainWindow.RECT { Left = 0, Top = 0, Right = 1920, Bottom = 1040 };
+
+        var result = MainWindow.ClampToWorkArea(window, workArea);
+
+        Assert.Equal(0, result.Left);
+        Assert.Equal(100, result.Top);
+    }
+
+    [Fact]
+    public void WindowLargerThanWorkArea_AlignsToTopLeft()
+    {
+        var window = new MainWindow.RECT { Left = 100, Top = 100, Right = 2100, Bottom = 1200 };
+        var workArea = new MainWindow.RECT { Left = 0, Top = 0, Right = 1920, Bottom = 1040 };
+
+        var result = MainWindow.ClampToWorkArea(window, workArea);
+
+        Assert.Equal(0, result.Left);
+        Assert.Equal(0, result.Top);
+    }
+
+    [Fact]
+    public void PreservesWindowSize()
+    {
+        var window = new MainWindow.RECT { Left = 2100, Top = 300, Right = 2440, Bottom = 700 };
+        var workArea = new MainWindow.RECT { Left = 1920, Top = 0, Right = 3840, Bottom = 1080 };
+
+        var result = MainWindow.ClampToWorkArea(window, workArea);
+
+        Assert.Equal(340, result.Right - result.Left);
+        Assert.Equal(400, result.Bottom - result.Top);
+    }
+}
+
 [Collection("WPF UI")]
 public sealed class MainWindowPositionTests : IDisposable
 {
