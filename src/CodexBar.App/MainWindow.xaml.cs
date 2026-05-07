@@ -132,7 +132,7 @@ public partial class MainWindow : Window
             }
             else
             {
-                // First show: set approximate WPF Left/Top, correct in OnSourceInitialized.
+                // First show: set approximate WPF Left/Top; correct in Loaded via SetWindowPos.
                 this.Left = this.physicalLeft.Value;
                 this.Top = this.physicalTop.Value;
                 this.Loaded += this.OnLoadedEnsureOnScreen;
@@ -154,6 +154,18 @@ public partial class MainWindow : Window
     private void OnLoadedEnsureOnScreen(object? sender, EventArgs e)
     {
         this.Loaded -= this.OnLoadedEnsureOnScreen;
+
+        // Apply exact physical pixel position AFTER WPF has finished its own
+        // DPI-based positioning. OnSourceInitialized is too early — WPF overrides it.
+        if (this.physicalLeft is not null && this.physicalTop is not null)
+        {
+            var hwnd = new WindowInteropHelper(this).Handle;
+            if (hwnd != IntPtr.Zero)
+            {
+                SetWindowPos(hwnd, IntPtr.Zero, this.physicalLeft.Value, this.physicalTop.Value, 0, 0, SWPNOSIZE | SWPNOZORDER | SWPNOACTIVATE);
+            }
+        }
+
         this.EnsureOnScreen();
     }
 
@@ -299,17 +311,6 @@ public partial class MainWindow : Window
         base.OnSourceInitialized(e);
         this.hwndSource = PresentationSource.FromVisual(this) as HwndSource;
         this.hwndSource?.AddHook(this.WndProc);
-
-        // Correct window position using exact physical pixel coordinates.
-        // This fires before the first paint, so no flicker.
-        if (this.physicalLeft is not null && this.physicalTop is not null)
-        {
-            var hwnd = new WindowInteropHelper(this).Handle;
-            if (hwnd != IntPtr.Zero)
-            {
-                SetWindowPos(hwnd, IntPtr.Zero, this.physicalLeft.Value, this.physicalTop.Value, 0, 0, SWPNOSIZE | SWPNOZORDER | SWPNOACTIVATE);
-            }
-        }
     }
 
     private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
