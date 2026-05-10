@@ -2,6 +2,7 @@
 
 namespace CodexBar.App;
 
+using System.IO;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Input;
@@ -20,6 +21,7 @@ public partial class MainWindow : Window
     private const int WMENTERSIZEMOVE = 0x0231;
     private const int WMEXITSIZEMOVE = 0x0232;
     private const int WMSETCURSOR = 0x0020;
+    private const int WMMOVE = 0x0003;
     private const int HTCAPTION = 2;
     private const uint MONITORDEFAULTTONEAREST = 2;
     private const uint SWPNOSIZE = 0x0001;
@@ -63,6 +65,10 @@ public partial class MainWindow : Window
     /// <summary>Saved physical pixel Y coordinate (from GetWindowRect). Null = no saved position.</summary>
     private int? physicalTop;
 
+    /// <summary>Last position received via WM_MOVE during a drag. Used to commit the final position.</summary>
+    private int lastDragX;
+    private int lastDragY;
+
     private bool isDragging;
     private DateTime dragEndedAtUtc = DateTime.MinValue;
     private HwndSource? hwndSource;
@@ -87,7 +93,7 @@ public partial class MainWindow : Window
 
         this.lastWidth = appSettings.WindowWidth ?? this.Width;
 
-        // Store saved physical pixel position for later use in OnSourceInitialized.
+        // Store saved physical pixel position for later use in Loaded handler.
         // Also set WPF Left/Top as a best-effort initial hint (exact at 100% DPI).
         if (appSettings.WindowLeft is not null && appSettings.WindowTop is not null)
         {
@@ -95,6 +101,11 @@ public partial class MainWindow : Window
             this.physicalTop = (int)appSettings.WindowTop.Value;
             this.Left = appSettings.WindowLeft.Value;
             this.Top = appSettings.WindowTop.Value;
+            LogPosition($"CTOR: Loaded from settings → physicalLeft={this.physicalLeft}, physicalTop={this.physicalTop}, WPF Left={this.Left}, Top={this.Top}");
+        }
+        else
+        {
+            LogPosition("CTOR: No saved position in settings");
         }
 
         this.SizeChanged += this.OnSizeChanged;
@@ -122,12 +133,14 @@ public partial class MainWindow : Window
         this.ZoomTransform.ScaleY = this.zoomLevel;
 
         var hwnd = new WindowInteropHelper(this).Handle;
+        LogPosition($"RESTORE: physicalLeft={this.physicalLeft}, physicalTop={this.physicalTop}, hwnd={hwnd}");
         if (this.physicalLeft is not null && this.physicalTop is not null)
         {
             if (hwnd != IntPtr.Zero)
             {
                 // Re-show: HWND exists, position directly in physical pixels.
                 SetWindowPos(hwnd, IntPtr.Zero, this.physicalLeft.Value, this.physicalTop.Value, 0, 0, SWPNOSIZE | SWPNOZORDER | SWPNOACTIVATE);
+                LogPosition($"RESTORE: Re-show SetWindowPos({this.physicalLeft}, {this.physicalTop})");
                 this.EnsureOnScreen();
             }
             else
@@ -135,6 +148,7 @@ public partial class MainWindow : Window
                 // First show: set approximate WPF Left/Top; correct in Loaded via SetWindowPos.
                 this.Left = this.physicalLeft.Value;
                 this.Top = this.physicalTop.Value;
+                LogPosition($"RESTORE: First show, set WPF Left={this.Left}, Top={this.Top}, hooking Loaded");
                 this.Loaded += this.OnLoadedEnsureOnScreen;
             }
         }
@@ -162,11 +176,26 @@ public partial class MainWindow : Window
             var hwnd = new WindowInteropHelper(this).Handle;
             if (hwnd != IntPtr.Zero)
             {
+                // Log position BEFORE SetWindowPos
+                GetWindowRect(hwnd, out var beforeRect);
+                LogPosition($"LOADED: Before SetWindowPos → GetWindowRect=({beforeRect.Left},{beforeRect.Top}), target=({this.physicalLeft},{this.physicalTop})");
+
                 SetWindowPos(hwnd, IntPtr.Zero, this.physicalLeft.Value, this.physicalTop.Value, 0, 0, SWPNOSIZE | SWPNOZORDER | SWPNOACTIVATE);
+
+                // Log position AFTER SetWindowPos
+                GetWindowRect(hwnd, out var afterRect);
+                LogPosition($"LOADED: After SetWindowPos → GetWindowRect=({afterRect.Left},{afterRect.Top})");
             }
         }
 
         this.EnsureOnScreen();
+
+        // Log final position
+        var finalHwnd = new WindowInteropHelper(this).Handle;
+        if (finalHwnd != IntPtr.Zero && GetWindowRect(finalHwnd, out var finalRect))
+        {
+            LogPosition($"LOADED: Final after EnsureOnScreen → GetWindowRect=({finalRect.Left},{finalRect.Top}), WPF Left={this.Left}, Top={this.Top}");
+        }
     }
 
     private void OnLoadedPositionNearTray(object? sender, EventArgs e)
@@ -331,11 +360,30 @@ public partial class MainWindow : Window
             case WMENTERSIZEMOVE:
                 this.isDragging = true;
                 this.hideTimer.Stop();
+                LogPosition("DRAG: WM_ENTERSIZEMOVE received — drag started");
                 break;
             case WMEXITSIZEMOVE:
                 this.isDragging = false;
                 this.dragEndedAtUtc = DateTime.UtcNow;
+
+                // WPF layered windows (AllowsTransparency=True) never commit the final
+                // drag position to the native HWND — GetWindowRect returns stale pre-drag
+                // coordinates. Track the real position from the last WM_MOVE instead.
+                this.physicalLeft = this.lastDragX;
+                this.physicalTop = this.lastDragY;
+                LogPosition($"DRAG: WM_EXITSIZEMOVE — saved position ({this.lastDragX},{this.lastDragY})");
+
                 this.SaveWindowState();
+                break;
+            case WMMOVE:
+                var moveX = (short)(lParam.ToInt64() & 0xFFFF);
+                var moveY = (short)((lParam.ToInt64() >> 16) & 0xFFFF);
+                if (this.isDragging)
+                {
+                    this.lastDragX = moveX;
+                    this.lastDragY = moveY;
+                }
+
                 break;
         }
 
@@ -410,17 +458,20 @@ public partial class MainWindow : Window
     {
         try
         {
-            var hwnd = new WindowInteropHelper(this).Handle;
-            if (hwnd != IntPtr.Zero && GetWindowRect(hwnd, out var rect))
+            // physicalLeft / physicalTop are maintained by:
+            //   - Constructor: loaded from persisted settings
+            //   - WM_EXITSIZEMOVE: updated from the last WM_MOVE coordinates
+            // We do NOT read from GetWindowRect because it returns stale values
+            // for WPF layered windows (AllowsTransparency=True).
+            if (this.physicalLeft == null || this.physicalTop == null)
             {
-                this.physicalLeft = rect.Left;
-                this.physicalTop = rect.Top;
-            }
-            else if (!double.IsNaN(this.Left) && !double.IsNaN(this.Top))
-            {
-                // No HWND (window not shown yet) — approximate from WPF DIPs.
-                this.physicalLeft = (int)this.Left;
-                this.physicalTop = (int)this.Top;
+                // Fallback for test scenarios where no HWND/drag ever occurred.
+                if (!double.IsNaN(this.Left) && !double.IsNaN(this.Top))
+                {
+                    this.physicalLeft = (int)this.Left;
+                    this.physicalTop = (int)this.Top;
+                    LogPosition($"SAVE: Fallback from WPF Left/Top → ({this.physicalLeft},{this.physicalTop})");
+                }
             }
 
             var appSettings = this.settings.Load();
@@ -431,10 +482,24 @@ public partial class MainWindow : Window
             appSettings.WindowTop = this.physicalTop;
 
             this.settings.Save(appSettings);
+            LogPosition($"SAVE: Written to settings → WindowLeft={appSettings.WindowLeft}, WindowTop={appSettings.WindowTop}");
+        }
+        catch (Exception ex)
+        {
+            LogPosition($"SAVE: EXCEPTION → {ex.Message}");
+        }
+    }
+
+    private static void LogPosition(string message)
+    {
+        try
+        {
+            var logPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codexbar", "position-debug.log");
+            File.AppendAllText(logPath, $"[{DateTime.Now:HH:mm:ss.fff}] {message}{Environment.NewLine}");
         }
         catch
         {
-            // Best-effort — don't crash on save failure
+            // Ignore logging failures
         }
     }
 

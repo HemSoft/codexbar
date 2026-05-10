@@ -126,6 +126,21 @@ public partial class App : Application
         exitItem.Click += (_, _) =>
         {
             this._mainWindow?.SaveWindowState();
+
+            // Close context menu and remove tray icon BEFORE shutdown
+            // to prevent a ghost icon/menu lingering in the system tray.
+            if (this._trayIcon != null)
+            {
+                if (this._trayIcon.ContextMenu is { IsOpen: true } ctx)
+                {
+                    ctx.IsOpen = false;
+                }
+
+                this._trayIcon.Visibility = System.Windows.Visibility.Collapsed;
+                this._trayIcon.Dispose();
+                this._trayIcon = null;
+            }
+
             this.Shutdown();
         };
         menu.Items.Add(exitItem);
@@ -192,9 +207,18 @@ public partial class App : Application
     {
         this._mainWindow?.SaveWindowState();
 
-        // Only dispose non-DI resources manually. _viewModel and _refreshService
-        // are DI singletons — ServiceProvider.Dispose() handles their lifetime.
-        this._trayIcon?.Dispose();
+        if (this._trayIcon != null)
+        {
+            if (this._trayIcon.ContextMenu is { IsOpen: true } menu)
+            {
+                menu.IsOpen = false;
+            }
+
+            this._trayIcon.Visibility = System.Windows.Visibility.Collapsed;
+            this._trayIcon.Dispose();
+            this._trayIcon = null;
+        }
+
         this._services?.Dispose();
         base.OnExit(e);
     }
