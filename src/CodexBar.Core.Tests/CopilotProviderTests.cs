@@ -96,7 +96,7 @@ public class CopilotProviderTests
         var quota = new CodexBar.Core.Models.CopilotQuotaSnapshot { Unlimited = false, Entitlement = 100, Remaining = 30 };
         var (pct, label, isUnlimited) = CopilotProvider.ComputeUsageMetrics(quota, "premium");
         Assert.Equal(0.7, pct);
-        Assert.Equal("70 / 100 Premium interactions", label);
+        Assert.Equal("70 / 100", label);
         Assert.False(isUnlimited);
     }
 
@@ -106,7 +106,7 @@ public class CopilotProviderTests
         var quota = new CodexBar.Core.Models.CopilotQuotaSnapshot { Unlimited = false, Entitlement = 100, Remaining = -5, OverageCount = 5, OveragePermitted = true };
         var (pct, label, isUnlimited) = CopilotProvider.ComputeUsageMetrics(quota, "premium");
         Assert.Equal(1.05, pct);
-        Assert.Equal("105 / 100 Premium interactions ($0.20 overage)", label);
+        Assert.Equal("105 - $0.20", label);
         Assert.False(isUnlimited);
     }
 
@@ -124,7 +124,30 @@ public class CopilotProviderTests
         var (pct, label, isUnlimited) = CopilotProvider.ComputeUsageMetrics(quota, "premium");
 
         Assert.Equal(1.05, pct);
-        Assert.Equal("105 / 100 Premium interactions ($0.20 overage)", label);
+        Assert.Equal("105 - $0.20", label);
         Assert.False(isUnlimited);
+    }
+
+    [Fact]
+    public void ComputeUsageMetrics_ChatLabel_KeepsQuotaType()
+    {
+        var quota = new CodexBar.Core.Models.CopilotQuotaSnapshot { Unlimited = false, Entitlement = 300, Remaining = 100 };
+        var (_, label, _) = CopilotProvider.ComputeUsageMetrics(quota, "chat");
+        Assert.Equal("200 / 300 Chat", label);
+    }
+
+    [Fact]
+    public void ComputeUsageMetrics_OverageNotPermitted_ShowsOverLimit()
+    {
+        var quota = new CodexBar.Core.Models.CopilotQuotaSnapshot
+        {
+            Unlimited = false,
+            Entitlement = 100,
+            Remaining = -10,
+            OverageCount = 10,
+            OveragePermitted = false,
+        };
+        var (_, label, _) = CopilotProvider.ComputeUsageMetrics(quota, "premium");
+        Assert.Equal("110 / 100 (over limit)", label);
     }
 }

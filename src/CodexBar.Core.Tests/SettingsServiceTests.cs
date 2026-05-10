@@ -282,4 +282,44 @@ public class SettingsServiceTests : IDisposable
         var service3 = this.CreateService();
         Assert.Equal(150m, service3.GetSessionBaseline(ProviderId.OpenRouter));
     }
+
+    [Fact]
+    public void GetSessionBaseline_StringKey_WhenNotSet_ReturnsNull()
+    {
+        var service = this.CreateService();
+        Assert.Null(service.GetSessionBaseline("copilot:testuser"));
+    }
+
+    [Fact]
+    public void SetSessionBaseline_StringKey_PersistsAcrossInstances()
+    {
+        var service = this.CreateService();
+        service.SetSessionBaseline("copilot:testuser", 4.80m);
+
+        var service2 = this.CreateService();
+        Assert.Equal(4.80m, service2.GetSessionBaseline("copilot:testuser"));
+    }
+
+    [Fact]
+    public void SetSessionBaseline_StringKey_IndependentPerAccount()
+    {
+        var service = this.CreateService();
+        service.SetSessionBaseline("copilot:alice", 1.20m);
+        service.SetSessionBaseline("copilot:bob", 3.60m);
+
+        var service2 = this.CreateService();
+        Assert.Equal(1.20m, service2.GetSessionBaseline("copilot:alice"));
+        Assert.Equal(3.60m, service2.GetSessionBaseline("copilot:bob"));
+    }
+
+    [Fact]
+    public void SetSessionBaseline_ProviderAndStringKeys_Coexist()
+    {
+        var service = this.CreateService();
+        service.SetSessionBaseline(ProviderId.OpenRouter, 100m);
+        service.SetSessionBaseline("copilot:testuser", 5.00m);
+
+        Assert.Equal(100m, service.GetSessionBaseline(ProviderId.OpenRouter));
+        Assert.Equal(5.00m, service.GetSessionBaseline("copilot:testuser"));
+    }
 }

@@ -51,5 +51,11 @@ public class OpenRouterProviderTests
         public void SetSessionBaseline(ProviderId providerId, decimal balance)
         {
         }
+
+        public decimal? GetSessionBaseline(string key) => null;
+
+        public void SetSessionBaseline(string key, decimal baseline)
+        {
+        }
     }
 }

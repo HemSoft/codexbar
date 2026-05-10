@@ -232,22 +232,28 @@ public sealed class SettingsService : ISettingsService
     }
 
     public decimal? GetSessionBaseline(ProviderId providerId)
+        => this.GetSessionBaseline(providerId.ToString());
+
+    public void SetSessionBaseline(ProviderId providerId, decimal balance)
+        => this.SetSessionBaseline(providerId.ToString(), balance);
+
+    public decimal? GetSessionBaseline(string key)
     {
         lock (this._lock)
         {
             var settings = this.EnsureCached();
-            return settings.SessionSpendingBaselines.TryGetValue(providerId.ToString(), out var baseline)
+            return settings.SessionSpendingBaselines.TryGetValue(key, out var baseline)
                 ? baseline
                 : null;
         }
     }
 
-    public void SetSessionBaseline(ProviderId providerId, decimal balance)
+    public void SetSessionBaseline(string key, decimal baseline)
     {
         lock (this._lock)
         {
             var settings = this.EnsureCached();
-            settings.SessionSpendingBaselines[providerId.ToString()] = balance;
+            settings.SessionSpendingBaselines[key] = baseline;
             this.SaveInternal(settings);
         }
     }

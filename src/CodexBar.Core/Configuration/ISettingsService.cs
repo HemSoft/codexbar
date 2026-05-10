@@ -26,4 +26,8 @@ public interface ISettingsService
     decimal? GetSessionBaseline(ProviderId providerId);
 
     void SetSessionBaseline(ProviderId providerId, decimal balance);
+
+    decimal? GetSessionBaseline(string key);
+
+    void SetSessionBaseline(string key, decimal baseline);
 }

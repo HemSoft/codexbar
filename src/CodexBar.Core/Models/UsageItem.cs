@@ -37,4 +37,7 @@ public sealed record UsageItem
 
     /// <summary>Gets error message if this item failed.</summary>
     public string? ErrorMessage { get; init; }
+
+    /// <summary>Gets the current overage cost in dollars (Copilot premium interactions).</summary>
+    public decimal? OverageCost { get; init; }
 }

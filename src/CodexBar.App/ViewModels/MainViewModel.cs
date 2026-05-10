@@ -320,6 +320,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                     CardKey = item.Key,
                     DisplayName = item.DisplayName,
                     StatusText = "Loading…",
+                    ResetSessionSpendingCommand = new RelayCommand(_ => this.ResetOverageSessionSpending(item.Key)),
                 };
                 this.Providers.Add(card);
                 this.cardsByKey[item.Key] = card;
@@ -339,6 +340,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                 card.IsError = true;
                 card.Bars.Clear();
                 card.HasBars = false;
+                card.OverageCost = null;
+                card.SessionSpending = null;
                 continue;
             }
 
@@ -371,6 +374,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                     card.IsHighUsage = false;
                 }
 
+                card.OverageCost = null;
+                card.SessionSpending = null;
                 continue;
             }
 
@@ -424,6 +429,18 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             {
                 card.WeeklyText = null;
                 card.WeeklyPercent = 0;
+            }
+
+            // Overage-based session spending (e.g., Copilot premium interactions)
+            if (item.OverageCost is not null)
+            {
+                card.OverageCost = item.OverageCost;
+                this.UpdateOverageSessionSpending(card);
+            }
+            else
+            {
+                card.OverageCost = null;
+                card.SessionSpending = null;
             }
         }
 
@@ -507,6 +524,35 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         card.SessionSpending = $"${spending:F2}";
     }
 
+    private void UpdateOverageSessionSpending(ProviderCardViewModel card)
+    {
+        if (card.OverageCost is not { } overage)
+        {
+            card.SessionSpending = null;
+            return;
+        }
+
+        var key = card.CardKey.ToLowerInvariant();
+        var baseline = this.settingsService.GetSessionBaseline(key);
+        if (baseline is null)
+        {
+            this.settingsService.SetSessionBaseline(key, overage);
+            card.SessionSpending = "$0.00";
+            return;
+        }
+
+        if (overage < baseline.Value)
+        {
+            // Overage decreased (monthly quota reset) — auto-reset baseline
+            this.settingsService.SetSessionBaseline(key, overage);
+            card.SessionSpending = "$0.00";
+            return;
+        }
+
+        var spending = overage - baseline.Value;
+        card.SessionSpending = $"${spending:F2}";
+    }
+
     private void ResetSessionSpending(ProviderId providerId)
     {
         var key = providerId.ToString().ToLowerInvariant();
@@ -518,6 +564,21 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         if (card.CreditsBalance is { } balance)
         {
             this.settingsService.SetSessionBaseline(providerId, balance);
+        }
+
+        card.SessionSpending = "$0.00";
+    }
+
+    private void ResetOverageSessionSpending(string cardKey)
+    {
+        if (!this.cardsByKey.TryGetValue(cardKey, out var card))
+        {
+            return;
+        }
+
+        if (card.OverageCost is { } overage)
+        {
+            this.settingsService.SetSessionBaseline(cardKey.ToLowerInvariant(), overage);
         }
 
         card.SessionSpending = "$0.00";
@@ -796,6 +857,17 @@ public sealed class ProviderCardViewModel : INotifyPropertyChanged
     {
         get => this.creditsBalance;
         set => this.SetField(ref this.creditsBalance, value);
+    }
+
+    private decimal? overageCost;
+
+    /// <summary>
+    /// Gets or sets the current overage cost for cumulative session-spending calculations (Copilot).
+    /// </summary>
+    public decimal? OverageCost
+    {
+        get => this.overageCost;
+        set => this.SetField(ref this.overageCost, value);
     }
 
     private string? sessionSpending;

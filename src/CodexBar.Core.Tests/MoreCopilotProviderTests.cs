@@ -101,7 +101,7 @@ public class MoreCopilotProviderTests
         var (usedPercent, usageLabel, isUnlimited) = CopilotProvider.ComputeUsageMetrics(quota, "premium");
         Assert.False(isUnlimited);
         Assert.Equal(0.75, usedPercent, 2);
-        Assert.Contains("Premium interactions", usageLabel);
+        Assert.Equal("1,500 / 2,000", usageLabel);
     }
 
     [Fact]
@@ -147,7 +147,8 @@ public class MoreCopilotProviderTests
         };
 
         var (_, usageLabel, _) = CopilotProvider.ComputeUsageMetrics(quota, "premium");
-        Assert.Contains("overage", usageLabel);
+        Assert.Contains("$", usageLabel);
+        Assert.StartsWith("2,100 - ", usageLabel);
     }
 
     [Fact]

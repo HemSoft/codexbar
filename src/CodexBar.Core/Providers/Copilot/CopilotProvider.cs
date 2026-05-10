@@ -553,10 +553,14 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
         var premium = result.PremiumInteractions;
         UsageSnapshot? primaryUsage = null;
         UsageSnapshot? secondaryUsage = null;
+        decimal? overageCost = null;
 
         if (premium is not null)
         {
             primaryUsage = BuildUsageSnapshot(premium, result.QuotaResetDateUtc, "premium");
+            overageCost = premium.OveragePermitted
+                ? ComputeOverageRequests(premium) * OverageCostPerRequest
+                : null;
         }
 
         if (result.Chat is not null)
@@ -570,6 +574,7 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
             DisplayName = FormatDisplayName(username, result.Plan),
             PrimaryUsage = primaryUsage,
             SecondaryUsage = secondaryUsage,
+            OverageCost = overageCost,
             Success = true,
         };
     }
@@ -629,15 +634,25 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
 
     private static string BuildUsageLabel(int used, int entitlement, string quotaLabel, int overageRequests, bool overagePermitted)
     {
-        var baseLabel = $"{used:N0} / {entitlement:N0} {FormatQuotaLabel(quotaLabel)}";
-        if (overageRequests <= 0)
+        if (overageRequests > 0 && overagePermitted)
         {
-            return baseLabel;
+            return $"{used:N0} - ${overageRequests * OverageCostPerRequest:F2}";
         }
 
-        return overagePermitted
-            ? $"{baseLabel} (${overageRequests * OverageCostPerRequest:F2} overage)"
-            : $"{baseLabel} (over limit)";
+        var baseLabel = $"{used:N0} / {entitlement:N0}";
+
+        // Keep the quota type label for non-premium quotas (e.g., "Chat")
+        if (quotaLabel != "premium")
+        {
+            baseLabel += $" {FormatQuotaLabel(quotaLabel)}";
+        }
+
+        if (overageRequests > 0 && !overagePermitted)
+        {
+            return $"{baseLabel} (over limit)";
+        }
+
+        return baseLabel;
     }
 
     internal static (DateTimeOffset? ResetsAt, string? ResetDescription) ParseReset(string? resetDateUtc)
