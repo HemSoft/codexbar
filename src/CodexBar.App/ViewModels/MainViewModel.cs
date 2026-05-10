@@ -5,13 +5,16 @@ namespace CodexBar.App.ViewModels;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
+using System.Windows.Input;
 using System.Windows.Threading;
+using CodexBar.Core.Configuration;
 using CodexBar.Core.Models;
 using CodexBar.Core.Services;
 
 public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 {
     private readonly UsageRefreshService refreshService;
+    private readonly ISettingsService settingsService;
     private readonly DispatcherTimer refreshIndicatorTimer;
     private DateTimeOffset? nextRefreshAtUtc;
     private bool isDisposed;
@@ -45,9 +48,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     // Stable key → card view model for reconciliation
     private readonly Dictionary<string, ProviderCardViewModel> cardsByKey = new(StringComparer.OrdinalIgnoreCase);
 
-    public MainViewModel(UsageRefreshService refreshService)
+    public MainViewModel(UsageRefreshService refreshService, ISettingsService settingsService)
     {
         this.refreshService = refreshService;
+        this.settingsService = settingsService;
         this.refreshService.UsageUpdated += this.OnUsageUpdated;
         this.refreshService.NextRefreshChanged += this.OnNextRefreshChanged;
         this.refreshIndicatorTimer = new DispatcherTimer(DispatcherPriority.Background)
@@ -73,6 +77,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                 StatusText = "Waiting…",
                 UsedPercent = 0,
                 IsCompactCard = id is ProviderId.OpenRouter or ProviderId.OpenCodeZen,
+                ResetSessionSpendingCommand = new RelayCommand(_ => this.ResetSessionSpending(id)),
             };
             this.Providers.Add(card);
             this.cardsByKey[card.CardKey] = card;
@@ -176,6 +181,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             card.IsHighUsage = false;
             card.ShowUsagePercent = false;
             card.IsCreditsDisplay = true;
+            card.CreditsBalance = result.CreditsRemaining;
+            this.UpdateSessionSpending(card);
         }
         else
         {
@@ -471,6 +478,51 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         }
     }
 
+    private void UpdateSessionSpending(ProviderCardViewModel card)
+    {
+        if (card.CreditsBalance is not { } balance)
+        {
+            card.SessionSpending = null;
+            return;
+        }
+
+        var baseline = this.settingsService.GetSessionBaseline(card.ProviderId);
+        if (baseline is null)
+        {
+            // First time seeing this provider — set baseline to current balance
+            this.settingsService.SetSessionBaseline(card.ProviderId, balance);
+            card.SessionSpending = "$0.00";
+            return;
+        }
+
+        if (balance > baseline.Value)
+        {
+            // Balance increased (top-up) — auto-reset baseline
+            this.settingsService.SetSessionBaseline(card.ProviderId, balance);
+            card.SessionSpending = "$0.00";
+            return;
+        }
+
+        var spending = baseline.Value - balance;
+        card.SessionSpending = $"${spending:F2}";
+    }
+
+    private void ResetSessionSpending(ProviderId providerId)
+    {
+        var key = providerId.ToString().ToLowerInvariant();
+        if (!this.cardsByKey.TryGetValue(key, out var card))
+        {
+            return;
+        }
+
+        if (card.CreditsBalance is { } balance)
+        {
+            this.settingsService.SetSessionBaseline(providerId, balance);
+        }
+
+        card.SessionSpending = "$0.00";
+    }
+
     public void Dispose()
     {
         this.isDisposed = true;
@@ -735,6 +787,39 @@ public sealed class ProviderCardViewModel : INotifyPropertyChanged
         set => this.SetField(ref this.isHiddenCompanion, value);
     }
 
+    private decimal? creditsBalance;
+
+    /// <summary>
+    /// Gets or sets the current numeric credit balance for session-spending calculations.
+    /// </summary>
+    public decimal? CreditsBalance
+    {
+        get => this.creditsBalance;
+        set => this.SetField(ref this.creditsBalance, value);
+    }
+
+    private string? sessionSpending;
+
+    /// <summary>
+    /// Gets or sets the formatted session spending since last reset (e.g., "+$1.23").
+    /// </summary>
+    public string? SessionSpending
+    {
+        get => this.sessionSpending;
+        set => this.SetField(ref this.sessionSpending, value);
+    }
+
+    private System.Windows.Input.ICommand? resetSessionSpendingCommand;
+
+    /// <summary>
+    /// Gets or sets the command to reset session spending for this provider.
+    /// </summary>
+    public System.Windows.Input.ICommand? ResetSessionSpendingCommand
+    {
+        get => this.resetSessionSpendingCommand;
+        set => this.SetField(ref this.resetSessionSpendingCommand, value);
+    }
+
     public event PropertyChangedEventHandler? PropertyChanged;
 
     private void SetField<T>(ref T field, T value, [CallerMemberName] string? name = null)
@@ -747,4 +832,16 @@ public sealed class ProviderCardViewModel : INotifyPropertyChanged
         field = value;
         this.PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
     }
+}
+
+/// <summary>
+/// Minimal relay command for binding button clicks to actions.
+/// </summary>
+public sealed class RelayCommand(Action<object?> execute) : ICommand
+{
+    public event EventHandler? CanExecuteChanged;
+
+    public bool CanExecute(object? parameter) => true;
+
+    public void Execute(object? parameter) => execute(parameter);
 }

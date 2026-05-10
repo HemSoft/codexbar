@@ -45,5 +45,11 @@ public class OpenRouterProviderTests
         public string? GetOpenCodeGoWorkspaceId() => null;
 
         public IReadOnlyList<string> GetCopilotAccounts() => [];
+
+        public decimal? GetSessionBaseline(ProviderId providerId) => null;
+
+        public void SetSessionBaseline(ProviderId providerId, decimal balance)
+        {
+        }
     }
 }

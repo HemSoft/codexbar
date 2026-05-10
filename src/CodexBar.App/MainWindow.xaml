@@ -160,13 +160,69 @@
                                     <!-- Primary credits -->
                                     <StackPanel Grid.Column="0">
                                         <TextBlock Text="{Binding DisplayName}" FontSize="14" FontWeight="Medium" Foreground="{StaticResource TextPrimaryBrush}" Opacity="0.7" />
-                                        <TextBlock Text="{Binding StatusText}" FontSize="22" FontWeight="SemiBold" Foreground="{StaticResource TextPrimaryBrush}" Margin="0,2,0,0" />
+                                        <StackPanel Orientation="Horizontal" Margin="0,2,0,0">
+                                            <TextBlock Text="{Binding StatusText}" FontSize="22" FontWeight="SemiBold" Foreground="{StaticResource TextPrimaryBrush}" />
+                                        </StackPanel>
+                                        <!-- Session spending -->
+                                        <StackPanel Orientation="Horizontal" Margin="0,2,0,0"
+                                                    Visibility="{Binding SessionSpending, Converter={x:Static local:NullToCollapsedConverter.Instance}}">
+                                            <TextBlock Text="{Binding SessionSpending}" FontSize="12" Foreground="#22C55E" Opacity="0.85" VerticalAlignment="Center" />
+                                            <Button Command="{Binding ResetSessionSpendingCommand}"
+                                                    Content="↺" FontSize="11" Foreground="{StaticResource TextSecondaryBrush}"
+                                                    Background="Transparent" BorderThickness="0" Cursor="Hand"
+                                                    Padding="4,0,0,0" VerticalAlignment="Center" Opacity="0.6"
+                                                    ToolTip="Reset session spending">
+                                                <Button.Style>
+                                                    <Style TargetType="Button">
+                                                        <Setter Property="Template">
+                                                            <Setter.Value>
+                                                                <ControlTemplate TargetType="Button">
+                                                                    <TextBlock Text="{TemplateBinding Content}"
+                                                                               FontSize="{TemplateBinding FontSize}"
+                                                                               Foreground="{TemplateBinding Foreground}"
+                                                                               Opacity="{TemplateBinding Opacity}"
+                                                                               Cursor="Hand" />
+                                                                </ControlTemplate>
+                                                            </Setter.Value>
+                                                        </Setter>
+                                                    </Style>
+                                                </Button.Style>
+                                            </Button>
+                                        </StackPanel>
                                     </StackPanel>
 
                                     <!-- Companion credits -->
                                     <StackPanel Grid.Column="2">
                                         <TextBlock Text="{Binding CompanionCard.DisplayName}" FontSize="14" FontWeight="Medium" Foreground="{StaticResource TextPrimaryBrush}" Opacity="0.7" />
-                                        <TextBlock Text="{Binding CompanionCard.StatusText}" FontSize="22" FontWeight="SemiBold" Foreground="{StaticResource TextPrimaryBrush}" Margin="0,2,0,0" />
+                                        <StackPanel Orientation="Horizontal" Margin="0,2,0,0">
+                                            <TextBlock Text="{Binding CompanionCard.StatusText}" FontSize="22" FontWeight="SemiBold" Foreground="{StaticResource TextPrimaryBrush}" />
+                                        </StackPanel>
+                                        <!-- Companion session spending -->
+                                        <StackPanel Orientation="Horizontal" Margin="0,2,0,0"
+                                                    Visibility="{Binding CompanionCard.SessionSpending, Converter={x:Static local:NullToCollapsedConverter.Instance}}">
+                                            <TextBlock Text="{Binding CompanionCard.SessionSpending}" FontSize="12" Foreground="#22C55E" Opacity="0.85" VerticalAlignment="Center" />
+                                            <Button Command="{Binding CompanionCard.ResetSessionSpendingCommand}"
+                                                    Content="↺" FontSize="11" Foreground="{StaticResource TextSecondaryBrush}"
+                                                    Background="Transparent" BorderThickness="0" Cursor="Hand"
+                                                    Padding="4,0,0,0" VerticalAlignment="Center" Opacity="0.6"
+                                                    ToolTip="Reset session spending">
+                                                <Button.Style>
+                                                    <Style TargetType="Button">
+                                                        <Setter Property="Template">
+                                                            <Setter.Value>
+                                                                <ControlTemplate TargetType="Button">
+                                                                    <TextBlock Text="{TemplateBinding Content}"
+                                                                               FontSize="{TemplateBinding FontSize}"
+                                                                               Foreground="{TemplateBinding Foreground}"
+                                                                               Opacity="{TemplateBinding Opacity}"
+                                                                               Cursor="Hand" />
+                                                                </ControlTemplate>
+                                                            </Setter.Value>
+                                                        </Setter>
+                                                    </Style>
+                                                </Button.Style>
+                                            </Button>
+                                        </StackPanel>
                                     </StackPanel>
                                 </Grid>
 

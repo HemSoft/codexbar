@@ -49,6 +49,13 @@ public sealed class AppSettings
     /// <summary>Gets or sets saved window top position (null = position near tray).</summary>
     [JsonPropertyName("windowTop")]
     public double? WindowTop { get; set; }
+
+    /// <summary>
+    /// Gets or sets the credit balance baseline per provider for session-spending tracking.
+    /// Key = <see cref="ProviderId"/>.ToString(), value = balance at last reset.
+    /// </summary>
+    [JsonPropertyName("sessionSpendingBaselines")]
+    public Dictionary<string, decimal> SessionSpendingBaselines { get; set; } = [];
 }
 
 public sealed class ProviderSettings

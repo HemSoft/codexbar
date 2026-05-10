@@ -22,4 +22,8 @@ public interface ISettingsService
     string? GetOpenCodeGoWorkspaceId();
 
     IReadOnlyList<string> GetCopilotAccounts();
+
+    decimal? GetSessionBaseline(ProviderId providerId);
+
+    void SetSessionBaseline(ProviderId providerId, decimal balance);
 }

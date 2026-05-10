@@ -244,5 +244,11 @@ public class OpenCodeZenProviderTests
         public string? GetOpenCodeGoWorkspaceId() => this.workspaceId;
 
         public IReadOnlyList<string> GetCopilotAccounts() => [];
+
+        public decimal? GetSessionBaseline(ProviderId providerId) => null;
+
+        public void SetSessionBaseline(ProviderId providerId, decimal balance)
+        {
+        }
     }
 }

@@ -227,4 +227,59 @@ public class SettingsServiceTests : IDisposable
         var accounts = service2.GetCopilotAccounts();
         Assert.Equal(3, accounts.Count);
     }
+
+    [Fact]
+    public void GetSessionBaseline_WhenNotSet_ReturnsNull()
+    {
+        var service = this.CreateService();
+        Assert.Null(service.GetSessionBaseline(ProviderId.OpenRouter));
+    }
+
+    [Fact]
+    public void SetSessionBaseline_PersistsAcrossInstances()
+    {
+        var service = this.CreateService();
+        service.SetSessionBaseline(ProviderId.OpenRouter, 178.14m);
+
+        var service2 = this.CreateService();
+        Assert.Equal(178.14m, service2.GetSessionBaseline(ProviderId.OpenRouter));
+    }
+
+    [Fact]
+    public void SetSessionBaseline_IndependentPerProvider()
+    {
+        var service = this.CreateService();
+        service.SetSessionBaseline(ProviderId.OpenRouter, 100m);
+        service.SetSessionBaseline(ProviderId.OpenCodeZen, 200m);
+
+        var service2 = this.CreateService();
+        Assert.Equal(100m, service2.GetSessionBaseline(ProviderId.OpenRouter));
+        Assert.Equal(200m, service2.GetSessionBaseline(ProviderId.OpenCodeZen));
+    }
+
+    [Fact]
+    public void SetSessionBaseline_OverwritesPrevious()
+    {
+        var service = this.CreateService();
+        service.SetSessionBaseline(ProviderId.OpenRouter, 100m);
+        service.SetSessionBaseline(ProviderId.OpenRouter, 90m);
+
+        Assert.Equal(90m, service.GetSessionBaseline(ProviderId.OpenRouter));
+    }
+
+    [Fact]
+    public void Save_PreservesSessionBaselinesFromDisk()
+    {
+        var service = this.CreateService();
+        service.SetSessionBaseline(ProviderId.OpenRouter, 150m);
+
+        // Second instance loads but saves without baselines in memory
+        var service2 = this.CreateService();
+        var settings2 = service2.Load();
+        service2.Save(settings2);
+
+        // Third instance should still see the baseline via disk merge
+        var service3 = this.CreateService();
+        Assert.Equal(150m, service3.GetSessionBaseline(ProviderId.OpenRouter));
+    }
 }

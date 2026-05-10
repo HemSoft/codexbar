@@ -111,6 +111,13 @@ public sealed class SettingsService : ISettingsService
             {
                 settings.OpenCodeGoWorkspaceId = disk.OpenCodeGoWorkspaceId;
             }
+
+            // Preserve session spending baselines from disk that are not in memory
+            settings.SessionSpendingBaselines ??= [];
+            foreach (var (key, diskBaseline) in disk.SessionSpendingBaselines ?? [])
+            {
+                settings.SessionSpendingBaselines.TryAdd(key, diskBaseline);
+            }
         }
         catch (Exception ex)
         {
@@ -135,6 +142,7 @@ public sealed class SettingsService : ISettingsService
                 WindowHeight = settings.WindowHeight,
                 WindowLeft = settings.WindowLeft,
                 WindowTop = settings.WindowTop,
+                SessionSpendingBaselines = (settings.SessionSpendingBaselines ?? []).ToDictionary(kvp => kvp.Key, kvp => kvp.Value),
                 Providers = providers.ToDictionary(
                     kvp => kvp.Key,
                     kvp => new ProviderSettings
@@ -223,6 +231,27 @@ public sealed class SettingsService : ISettingsService
         }
     }
 
+    public decimal? GetSessionBaseline(ProviderId providerId)
+    {
+        lock (this._lock)
+        {
+            var settings = this.EnsureCached();
+            return settings.SessionSpendingBaselines.TryGetValue(providerId.ToString(), out var baseline)
+                ? baseline
+                : null;
+        }
+    }
+
+    public void SetSessionBaseline(ProviderId providerId, decimal balance)
+    {
+        lock (this._lock)
+        {
+            var settings = this.EnsureCached();
+            settings.SessionSpendingBaselines[providerId.ToString()] = balance;
+            this.SaveInternal(settings);
+        }
+    }
+
     /// <summary>
     /// Returns the cached settings, initializing from disk if needed.
     /// Must be called while holding <see cref="@lock"/>. Does NOT deep-copy.
@@ -300,6 +329,7 @@ public sealed class SettingsService : ISettingsService
         WindowHeight = source.WindowHeight,
         WindowLeft = source.WindowLeft,
         WindowTop = source.WindowTop,
+        SessionSpendingBaselines = (source.SessionSpendingBaselines ?? []).ToDictionary(kvp => kvp.Key, kvp => kvp.Value),
         Providers = (source.Providers ?? [])
             .ToDictionary(
                 kvp => kvp.Key,

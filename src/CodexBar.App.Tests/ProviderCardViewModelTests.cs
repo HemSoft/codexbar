@@ -78,4 +78,45 @@ public sealed class ProviderCardViewModelTests
 
         Assert.False(card.ShowStatusTextLine);
     }
+
+    [Fact]
+    public void SessionSpending_DefaultIsNull()
+    {
+        var card = new ProviderCardViewModel();
+        Assert.Null(card.SessionSpending);
+    }
+
+    [Fact]
+    public void SessionSpending_RaisesPropertyChanged()
+    {
+        var card = new ProviderCardViewModel();
+        var raised = false;
+        card.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName == nameof(ProviderCardViewModel.SessionSpending))
+            {
+                raised = true;
+            }
+        };
+
+        card.SessionSpending = "$1.23";
+        Assert.True(raised);
+    }
+
+    [Fact]
+    public void CreditsBalance_DefaultIsNull()
+    {
+        var card = new ProviderCardViewModel();
+        Assert.Null(card.CreditsBalance);
+    }
+
+    [Fact]
+    public void ResetSessionSpendingCommand_CanBeSet()
+    {
+        var card = new ProviderCardViewModel();
+        var invoked = false;
+        card.ResetSessionSpendingCommand = new RelayCommand(_ => invoked = true);
+        card.ResetSessionSpendingCommand.Execute(null);
+        Assert.True(invoked);
+    }
 }
