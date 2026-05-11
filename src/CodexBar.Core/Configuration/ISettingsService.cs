@@ -30,4 +30,8 @@ public interface ISettingsService
     decimal? GetSessionBaseline(string key);
 
     void SetSessionBaseline(string key, decimal baseline);
+
+    DateTimeOffset? GetSessionResetTime(ProviderId providerId);
+
+    DateTimeOffset? GetSessionResetTime(string key);
 }

@@ -57,5 +57,9 @@ public class OpenRouterProviderTests
         public void SetSessionBaseline(string key, decimal baseline)
         {
         }
+
+        public DateTimeOffset? GetSessionResetTime(ProviderId providerId) => null;
+
+        public DateTimeOffset? GetSessionResetTime(string key) => null;
     }
 }

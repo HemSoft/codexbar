@@ -118,6 +118,13 @@ public sealed class SettingsService : ISettingsService
             {
                 settings.SessionSpendingBaselines.TryAdd(key, diskBaseline);
             }
+
+            // Preserve session spending reset times from disk that are not in memory
+            settings.SessionSpendingResetTimes ??= [];
+            foreach (var (key, diskTime) in disk.SessionSpendingResetTimes ?? [])
+            {
+                settings.SessionSpendingResetTimes.TryAdd(key, diskTime);
+            }
         }
         catch (Exception ex)
         {
@@ -143,6 +150,7 @@ public sealed class SettingsService : ISettingsService
                 WindowLeft = settings.WindowLeft,
                 WindowTop = settings.WindowTop,
                 SessionSpendingBaselines = (settings.SessionSpendingBaselines ?? []).ToDictionary(kvp => kvp.Key, kvp => kvp.Value),
+                SessionSpendingResetTimes = (settings.SessionSpendingResetTimes ?? []).ToDictionary(kvp => kvp.Key, kvp => kvp.Value),
                 Providers = providers.ToDictionary(
                     kvp => kvp.Key,
                     kvp => new ProviderSettings
@@ -254,7 +262,22 @@ public sealed class SettingsService : ISettingsService
         {
             var settings = this.EnsureCached();
             settings.SessionSpendingBaselines[key] = baseline;
+            settings.SessionSpendingResetTimes[key] = DateTimeOffset.Now;
             this.SaveInternal(settings);
+        }
+    }
+
+    public DateTimeOffset? GetSessionResetTime(ProviderId providerId)
+        => this.GetSessionResetTime(providerId.ToString());
+
+    public DateTimeOffset? GetSessionResetTime(string key)
+    {
+        lock (this._lock)
+        {
+            var settings = this.EnsureCached();
+            return settings.SessionSpendingResetTimes.TryGetValue(key, out var time)
+                ? time
+                : null;
         }
     }
 
@@ -336,6 +359,7 @@ public sealed class SettingsService : ISettingsService
         WindowLeft = source.WindowLeft,
         WindowTop = source.WindowTop,
         SessionSpendingBaselines = (source.SessionSpendingBaselines ?? []).ToDictionary(kvp => kvp.Key, kvp => kvp.Value),
+        SessionSpendingResetTimes = (source.SessionSpendingResetTimes ?? []).ToDictionary(kvp => kvp.Key, kvp => kvp.Value),
         Providers = (source.Providers ?? [])
             .ToDictionary(
                 kvp => kvp.Key,

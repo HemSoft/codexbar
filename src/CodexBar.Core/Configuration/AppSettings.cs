@@ -56,6 +56,13 @@ public sealed class AppSettings
     /// </summary>
     [JsonPropertyName("sessionSpendingBaselines")]
     public Dictionary<string, decimal> SessionSpendingBaselines { get; set; } = [];
+
+    /// <summary>
+    /// Gets or sets the timestamp of the last session-spending reset per key.
+    /// Key matches <see cref="SessionSpendingBaselines"/>.
+    /// </summary>
+    [JsonPropertyName("sessionSpendingResetTimes")]
+    public Dictionary<string, DateTimeOffset> SessionSpendingResetTimes { get; set; } = [];
 }
 
 public sealed class ProviderSettings

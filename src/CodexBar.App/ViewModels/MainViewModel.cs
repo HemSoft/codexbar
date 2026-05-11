@@ -342,6 +342,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                 card.HasBars = false;
                 card.OverageCost = null;
                 card.SessionSpending = null;
+                card.SessionResetTime = null;
                 continue;
             }
 
@@ -376,6 +377,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
                 card.OverageCost = null;
                 card.SessionSpending = null;
+                card.SessionResetTime = null;
                 continue;
             }
 
@@ -441,6 +443,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             {
                 card.OverageCost = null;
                 card.SessionSpending = null;
+                card.SessionResetTime = null;
             }
         }
 
@@ -500,6 +503,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         if (card.CreditsBalance is not { } balance)
         {
             card.SessionSpending = null;
+            card.SessionResetTime = null;
             return;
         }
 
@@ -509,6 +513,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             // First time seeing this provider — set baseline to current balance
             this.settingsService.SetSessionBaseline(card.ProviderId, balance);
             card.SessionSpending = "$0.00";
+            card.SessionResetTime = FormatResetTime(this.settingsService.GetSessionResetTime(card.ProviderId));
             return;
         }
 
@@ -517,11 +522,13 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             // Balance increased (top-up) — auto-reset baseline
             this.settingsService.SetSessionBaseline(card.ProviderId, balance);
             card.SessionSpending = "$0.00";
+            card.SessionResetTime = FormatResetTime(this.settingsService.GetSessionResetTime(card.ProviderId));
             return;
         }
 
         var spending = baseline.Value - balance;
         card.SessionSpending = $"${spending:F2}";
+        card.SessionResetTime = FormatResetTime(this.settingsService.GetSessionResetTime(card.ProviderId));
     }
 
     private void UpdateOverageSessionSpending(ProviderCardViewModel card)
@@ -529,6 +536,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         if (card.OverageCost is not { } overage)
         {
             card.SessionSpending = null;
+            card.SessionResetTime = null;
             return;
         }
 
@@ -538,6 +546,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         {
             this.settingsService.SetSessionBaseline(key, overage);
             card.SessionSpending = "$0.00";
+            card.SessionResetTime = FormatResetTime(this.settingsService.GetSessionResetTime(key));
             return;
         }
 
@@ -546,11 +555,13 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             // Overage decreased (monthly quota reset) — auto-reset baseline
             this.settingsService.SetSessionBaseline(key, overage);
             card.SessionSpending = "$0.00";
+            card.SessionResetTime = FormatResetTime(this.settingsService.GetSessionResetTime(key));
             return;
         }
 
         var spending = overage - baseline.Value;
         card.SessionSpending = $"${spending:F2}";
+        card.SessionResetTime = FormatResetTime(this.settingsService.GetSessionResetTime(key));
     }
 
     private void ResetSessionSpending(ProviderId providerId)
@@ -567,6 +578,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         }
 
         card.SessionSpending = "$0.00";
+        card.SessionResetTime = FormatResetTime(this.settingsService.GetSessionResetTime(providerId));
     }
 
     private void ResetOverageSessionSpending(string cardKey)
@@ -582,7 +594,11 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         }
 
         card.SessionSpending = "$0.00";
+        card.SessionResetTime = FormatResetTime(this.settingsService.GetSessionResetTime(cardKey.ToLowerInvariant()));
     }
+
+    private static string? FormatResetTime(DateTimeOffset? resetTime) =>
+        resetTime?.ToLocalTime().ToString("yyyy-MM-dd hh:mm tt");
 
     public void Dispose()
     {
@@ -873,12 +889,23 @@ public sealed class ProviderCardViewModel : INotifyPropertyChanged
     private string? sessionSpending;
 
     /// <summary>
-    /// Gets or sets the formatted session spending since last reset (e.g., "+$1.23").
+    /// Gets or sets the formatted session spending since last reset (e.g., "$1.23").
     /// </summary>
     public string? SessionSpending
     {
         get => this.sessionSpending;
         set => this.SetField(ref this.sessionSpending, value);
+    }
+
+    private string? sessionResetTime;
+
+    /// <summary>
+    /// Gets or sets the formatted time of the last session spending reset.
+    /// </summary>
+    public string? SessionResetTime
+    {
+        get => this.sessionResetTime;
+        set => this.SetField(ref this.sessionResetTime, value);
     }
 
     private System.Windows.Input.ICommand? resetSessionSpendingCommand;
