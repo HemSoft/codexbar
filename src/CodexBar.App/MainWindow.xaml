@@ -149,8 +149,9 @@
                                            Visibility="{Binding ShowStatusTextLine, Converter={StaticResource BoolToVis}}" />
 
                                 <!-- Session spending for legacy single-bar cards (e.g., Copilot overage) -->
-                                <StackPanel Orientation="Horizontal" Margin="0,2,0,0"
-                                            Visibility="{Binding SessionSpending, Converter={x:Static local:NullToCollapsedConverter.Instance}}">
+                                <StackPanel Visibility="{Binding ShowStatusTextLine, Converter={StaticResource BoolToVis}}">
+                                    <StackPanel Orientation="Horizontal" Margin="0,2,0,0"
+                                                Visibility="{Binding SessionSpending, Converter={x:Static local:NullToCollapsedConverter.Instance}}">
                                     <TextBlock Text="{Binding SessionSpending}" FontSize="12" Foreground="#22C55E" Opacity="0.85" VerticalAlignment="Center" />
                                     <Button Command="{Binding ResetSessionSpendingCommand}"
                                             Content="↺" FontSize="11" Foreground="{StaticResource TextSecondaryBrush}"
@@ -173,6 +174,7 @@
                                             </Style>
                                         </Button.Style>
                                     </Button>
+                                    </StackPanel>
                                 </StackPanel>
 
                                 <!-- Paired credits display: two balances side by side -->
