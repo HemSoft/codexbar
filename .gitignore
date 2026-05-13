@@ -48,9 +48,14 @@ publish/
 # Copilot hooks (local-only)
 .github/hooks/
 
+# Test and coverage output
+TestResults/
+coverage/
 coverage-report/
 
-TestResults/
+# Mutation testing (Stryker.NET)
+.stryker/
+StrykerOutput/
 
 # Temporary build artefacts that must never be committed
 bin_check_temp/
