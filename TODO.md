@@ -4,7 +4,7 @@
 |--------|----------|------|-------|
 | 📋 | High | [#6 Add Stryker.NET mutation testing](#add-mutation-testing) | Target ≥ 80% mutation score |
 | 📋 | Medium | [#11 Create scorecard skill](#create-scorecard-skill) | Model after hs-buddy and relias-assistant scorecard skills |
-| 📋 | Low | [#8 Expand .gitignore patterns](#expand-gitignore) | Add .agents/, coverage/, TestResults/ exclusions |
+| ✅ | Low | #8 Expand .gitignore patterns | coverage/, TestResults/, .stryker/, StrykerOutput/, coverage-report/ added (2026-05-14) |
 | ✅ | High | #9 Backfill test coverage to 80% | Coverage target met (2026-05-05) |
 | ✅ | High | #7 Add CRAP score tooling | ReportGenerator + coverlet configured (2026-05-05) |
 | ✅ | Medium | #5 Add husky + lint-staged pre-commit hooks | Pre-commit hooks active (2026-05-06) |
@@ -22,7 +22,7 @@
 
 ## Progress
 
-**Completed: 14 / 17** (82%)
+**Completed: 15 / 17** (88%)
 
 ---
 
@@ -44,10 +44,3 @@
 
 **Solution:** Model after `hs-buddy/.agents/skills/scorecard/` and `relias-assistant/.agents/skills/scorecard/`. Create `.agents/skills/scorecard/SKILL.md` with status + improve commands.
 
----
-
-### Expand .gitignore
-
-**Problem:** `.gitignore` is missing patterns for new tooling artifacts.
-
-**Solution:** Add `.agents/`, `coverage/`, `TestResults/`, `.stryker/`, and other tool outputs.
