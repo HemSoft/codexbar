@@ -1,6 +1,6 @@
 {
   "stryker-config": {
-    "project": "CodexBar.Core.csproj",
+    "project": "../CodexBar.Core/CodexBar.Core.csproj",
     "reporters": ["progress", "html", "json"],
     "thresholds": {
       "high": 80,
