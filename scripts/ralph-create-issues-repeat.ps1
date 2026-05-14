@@ -1,5 +1,5 @@
 # ralph-create-issues-repeat.ps1 — Repeated codebase scanner → GitHub Issues.
-# Version: 1.2.0
+# Version: 1.2.1
 # Between each run, pulls latest main so the next scan sees fresh code.
 # NOTE: PowerShell uses single-dash params: -Help, -Times 5 (not --help)
 param(
@@ -35,7 +35,7 @@ if ($Help) {
     Write-Host "  -Labels <strings>      Labels to apply to created issues"
     Write-Host "  -DryRun               Report findings without creating issues"
     Write-Host "  -Model <name>          Model to pass through (validated by ralph-issues.ps1)"
-    Write-Host "  -Provider <name>       CLI provider: copilot, opencode (validated by ralph-issues.ps1)"
+    Write-Host "  -Provider <name>       CLI provider to pass through (validated downstream against config)"
     Write-Host "  -ReviewProduct <name>  Accepted for run-all compatibility; ignored downstream"
     Write-Host "  -ReviewMode <name>     Accepted for run-all compatibility; ignored downstream"
     Write-Host "  -Agents <specs>        Agent specs (dev agents only)"

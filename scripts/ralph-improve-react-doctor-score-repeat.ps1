@@ -1,5 +1,5 @@
 # ralph-improve-react-doctor-score-repeat.ps1 — Repeated React Doctor score improver.
-# Version: 1.3.0
+# Version: 1.3.1
 # Between each run, pulls latest main so the next run branches from fresh code.
 # NOTE: PowerShell uses single-dash params: -Help, -Times 5 (not --help)
 param(
@@ -27,7 +27,7 @@ if ($Help) {
     Write-Host "PARAMETERS" -ForegroundColor Yellow
     Write-Host "  -Times <int>           Number of times to run (default: 3)"
     Write-Host "  -Model <name>          Model to pass through (validated by ralph.ps1)"
-    Write-Host "  -Provider <name>       CLI provider: copilot, opencode (validated by ralph.ps1)"
+    Write-Host "  -Provider <name>       CLI provider to pass through (validated downstream against config)"
     Write-Host "  -ReviewProduct <name>  Automated PR review product to pass through"
     Write-Host "  -ReviewMode <name>     Review request mode to pass through when supported"
     Write-Host "  -Agents <specs>        Agent specs: role or role@model (validated by ralph.ps1)"

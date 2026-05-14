@@ -1,5 +1,5 @@
 # ralph-create-issues.ps1 — Scan codebase and create GitHub Issues.
-# Version: 1.2.0
+# Version: 1.2.1
 # Wrapper that invokes ralph-issues.ps1 with a configurable scan focus.
 # Detects stacks in the repo and applies appropriate scanning:
 #   .NET    → analyzers, code quality, security, test gaps
@@ -34,7 +34,7 @@ if ($Help) {
     Write-Host "  -Labels <strings>      Labels to apply (comma-separated). Auto-adds focus label if not set."
     Write-Host "  -DryRun               Report findings without creating issues"
     Write-Host "  -Model <name>          Model to use (validated by ralph-issues.ps1)"
-    Write-Host "  -Provider <name>       CLI provider: copilot, opencode (validated by ralph-issues.ps1)"
+    Write-Host "  -Provider <name>       CLI provider to pass through (validated downstream against config)"
     Write-Host "  -ReviewProduct <name>  Accepted for run-all compatibility; ignored (no PR review phase)"
     Write-Host "  -ReviewMode <name>     Accepted for run-all compatibility; ignored (no PR review phase)"
     Write-Host "  -Agents <specs>        Agent specs (dev agents only)"

@@ -1,5 +1,5 @@
 # ralph-improve-quality.ps1 — Unified code quality improver (multi-stack).
-# Version: 1.3.0
+# Version: 1.3.1
 # Detects stacks in the repo and applies appropriate quality tooling:
 #   .NET    → C# quality expert (analyzers, code style, strictness levels)
 #   TS/React → react-doctor (component health, patterns, accessibility)
@@ -30,7 +30,7 @@ if ($Help) {
     Write-Host "PARAMETERS" -ForegroundColor Yellow
     Write-Host "  -Stack <name>          Focus on a specific stack: all, dotnet, typescript (default: all)"
     Write-Host "  -Model <name>          Model to use (validated by ralph.ps1)"
-    Write-Host "  -Provider <name>       CLI provider: copilot, opencode (validated by ralph.ps1)"
+    Write-Host "  -Provider <name>       CLI provider to pass through (validated downstream against config)"
     Write-Host "  -ReviewProduct <name>  Automated PR review product for ralph-pr handoff"
     Write-Host "  -ReviewMode <name>     Review request mode when the product supports multiple modes"
     Write-Host "  -Agents <specs>        Agent specs: role or role@model (validated by ralph.ps1)"
