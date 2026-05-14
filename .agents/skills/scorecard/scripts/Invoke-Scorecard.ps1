@@ -20,7 +20,7 @@ param(
 $ErrorActionPreference = 'Continue'
 
 if (-not $RepoRoot) {
-    $RepoRoot = Resolve-Path (Join-Path $PSScriptRoot '..\..\..\..')
+    $RepoRoot = Resolve-Path (Join-Path $PSScriptRoot '..' '..' '..' '..')
 }
 Set-Location $RepoRoot
 
@@ -43,7 +43,8 @@ function Add-Rule {
 # --- Bronze Tier ---
 
 # 1. Build with zero warnings
-$buildOutput = dotnet build "$RepoRoot\CodexBar.slnx" --verbosity minimal 2>&1 | Out-String
+$slnPath = Join-Path $RepoRoot 'CodexBar.slnx'
+$buildOutput = dotnet build $slnPath --verbosity minimal 2>&1 | Out-String
 $buildExitCode = $LASTEXITCODE
 $buildPassed = ($buildExitCode -eq 0) -and ($buildOutput -notmatch '[1-9]\d*\s+Warning\(s\)')
 Add-Rule 'Bronze' 'Build with zero warnings' 5 $buildPassed $(
@@ -51,7 +52,7 @@ Add-Rule 'Bronze' 'Build with zero warnings' 5 $buildPassed $(
 )
 
 # 2. Code format clean
-dotnet format "$RepoRoot\CodexBar.slnx" --verify-no-changes --verbosity minimal 2>&1 | Out-Null
+dotnet format $slnPath --verify-no-changes --verbosity minimal 2>&1 | Out-Null
 $formatExitCode = $LASTEXITCODE
 $formatPassed = $formatExitCode -eq 0
 Add-Rule 'Bronze' 'Code format clean' 5 $formatPassed $(
@@ -59,7 +60,7 @@ Add-Rule 'Bronze' 'Code format clean' 5 $formatPassed $(
 )
 
 # 3. All tests pass
-$testOutput = dotnet test "$RepoRoot\CodexBar.slnx" --verbosity minimal --no-build 2>&1 | Out-String
+$testOutput = dotnet test $slnPath --verbosity minimal --no-build 2>&1 | Out-String
 $testExitCode = $LASTEXITCODE
 $testPassed = $testExitCode -eq 0
 $testMatch = [regex]::Matches($testOutput, 'Passed:\s+(\d+)')
@@ -69,7 +70,7 @@ Add-Rule 'Bronze' 'All tests pass' 5 $testPassed $(
 )
 
 # 4. CI/CD workflow exists
-$ciPath = Join-Path $RepoRoot '.github\workflows\ci.yml'
+$ciPath = Join-Path $RepoRoot '.github' 'workflows' 'ci.yml'
 $ciExists = Test-Path $ciPath
 $ciHasBuildTest = $false
 if ($ciExists) {
@@ -101,9 +102,10 @@ Add-Rule 'Bronze' 'License defined' 5 $licenseExists $(
 # --- Silver Tier ---
 
 # Coverage (run tests with coverage)
-$coverageOutput = dotnet test "$RepoRoot\src\CodexBar.Core.Tests\CodexBar.Core.Tests.csproj" `
+$testProjectPath = Join-Path $RepoRoot 'src' 'CodexBar.Core.Tests' 'CodexBar.Core.Tests.csproj'
+$coverageOutput = dotnet test $testProjectPath `
     --collect:"XPlat Code Coverage" --verbosity minimal --no-build 2>&1 | Out-String
-$coverageFile = Get-ChildItem -Path "$RepoRoot\src\CodexBar.Core.Tests\TestResults" -Recurse `
+$coverageFile = Get-ChildItem -Path (Join-Path $RepoRoot 'src' 'CodexBar.Core.Tests' 'TestResults') -Recurse `
     -Filter "coverage.cobertura.xml" -ErrorAction SilentlyContinue |
     Sort-Object LastWriteTime -Descending | Select-Object -First 1
 
@@ -126,7 +128,7 @@ Add-Rule 'Silver' 'Branch coverage >= 80%' 5 ($branchRate -ge 0.80) $(
 )
 
 # 9. Security audit clean
-$secOutput = dotnet list "$RepoRoot\CodexBar.slnx" package --vulnerable --include-transitive 2>&1 | Out-String
+$secOutput = dotnet list $slnPath package --vulnerable --include-transitive 2>&1 | Out-String
 $secExitCode = $LASTEXITCODE
 $secPassed = ($secExitCode -eq 0) -and ($secOutput -notmatch 'vulnerable package|vulnerable packages|has the following vulnerable packages')
 Add-Rule 'Silver' 'Security audit clean' 5 $secPassed $(
@@ -152,7 +154,7 @@ Add-Rule 'Silver' 'CRAP score: 0 methods > 30' 10 $crapPassed $crapDetail
 # --- Gold Tier ---
 
 # 12-13. Mutation score (check most recent Stryker report)
-$strykerReport = Get-ChildItem -Path "$RepoRoot\src\CodexBar.Core.Tests\StrykerOutput" -Recurse `
+$strykerReport = Get-ChildItem -Path (Join-Path $RepoRoot 'src' 'CodexBar.Core.Tests' 'StrykerOutput') -Recurse `
     -Filter "mutation-report.json" -ErrorAction SilentlyContinue |
     Sort-Object LastWriteTime -Descending | Select-Object -First 1
 
@@ -191,7 +193,7 @@ Add-Rule 'Gold' 'Branch coverage 100%' 5 ($branchRate -ge 1.0) $(
 )
 
 # 16. Zero TODO/HACK comments
-$todoHacks = Get-ChildItem -Path "$RepoRoot\src" -Recurse -Include "*.cs" |
+$todoHacks = Get-ChildItem -Path (Join-Path $RepoRoot 'src') -Recurse -Include "*.cs" |
     Where-Object { $_.FullName -notmatch 'Tests' } |
     Select-String -Pattern 'TODO|HACK' -CaseSensitive |
     Measure-Object
@@ -311,7 +313,7 @@ try { $histTz = [System.TimeZoneInfo]::FindSystemTimeZoneById('America/New_York'
 catch { $histTz = [System.TimeZoneInfo]::FindSystemTimeZoneById('Eastern Standard Time') }
 $histEt = [System.TimeZoneInfo]::ConvertTime((Get-Date).ToUniversalTime(), $histTz)
 
-$historyPath = Join-Path $PSScriptRoot '..\score-history.log'
+$historyPath = Join-Path $PSScriptRoot '..' 'score-history.log'
 $historyLine = "$($histEt.ToString('yyyy-MM-dd HH:mm')) ET | Score: $totalScore/100 | Classification: $classification | Passed: $totalPassed/$totalRules | Bronze: $bronzePassed/$($bronzeRules.Count) | Silver: $silverPassed/$($silverRules.Count) | Gold: $goldPassed/$($goldRules.Count)"
 
 $shouldAppend = $true
