@@ -35,10 +35,13 @@ displays the current scorecard.
 5. Log the score to `score-history.log` in this skill's directory.
 
 **Score logging rules:**
+
 - Append one line per evaluation in this format:
+
   ```text
   YYYY-MM-DD HH:MM ET | Score: X/100 | Classification: Level | Passed: X/Y | Bronze: X/Y | Silver: X/Y | Gold: X/Y
   ```
+
 - Timestamps must be US Eastern Time (use `Get-Date` with timezone conversion).
 - Only append if the score or classification changed from the last entry.
 - Create the file with a header if it does not exist.
@@ -139,6 +142,7 @@ Analyzes failing rules and recommends the single highest-impact improvement.
 | Zero TODO/HACK comments in source | 5 | `grep -r "TODO\|HACK" src/ --include="*.cs"` | 0 matches (excludes test files) |
 
 **Classification logic:**
+
 - **Gold**: All Bronze + Silver + Gold rules pass
 - **Silver**: All Bronze + Silver rules pass
 - **Bronze**: All Bronze rules pass
