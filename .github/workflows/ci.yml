@@ -42,6 +42,21 @@ jobs:
       - name: Test
         run: dotnet test --no-build --verbosity minimal
 
+      - name: Restore Tools
+        run: dotnet tool restore
+
+      - name: Mutation Testing (Core)
+        working-directory: src/CodexBar.Core.Tests
+        run: dotnet stryker --verbosity warning
+
+      - name: Upload Mutation Report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: stryker-report
+          path: src/CodexBar.Core.Tests/StrykerOutput/**/reports/
+          retention-days: 14
+
       - name: Security Audit
         shell: pwsh
         run: |
