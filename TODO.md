@@ -2,8 +2,8 @@
 
 | Status | Priority | Task | Notes |
 |--------|----------|------|-------|
-| 📋 | High | [#6 Add Stryker.NET mutation testing](#add-mutation-testing) | Target ≥ 80% mutation score |
 | 📋 | Medium | [#11 Create scorecard skill](#create-scorecard-skill) | Model after hs-buddy and relias-assistant scorecard skills |
+| ✅ | High | #6 Add Stryker.NET mutation testing | Stryker 4.14.1 installed, CI step added, 32.65% baseline score (2026-05-14) |
 | ✅ | Low | #8 Expand .gitignore patterns | coverage/, TestResults/, .stryker/, StrykerOutput/, coverage-report/ added (2026-05-14) |
 | ✅ | High | #9 Backfill test coverage to 80% | Coverage target met (2026-05-05) |
 | ✅ | High | #7 Add CRAP score tooling | ReportGenerator + coverlet configured (2026-05-05) |
@@ -22,21 +22,11 @@
 
 ## Progress
 
-**Completed: 15 / 17** (88%)
+**Completed: 16 / 17** (94%)
 
 ---
 
 ## Remaining Items
-
-### Add mutation testing
-
-**Problem:** Tests may have weak assertions. Mutation testing verifies test quality by mutating code and checking if tests catch the change.
-
-**Solution:** Install `Stryker.NET` (`dotnet tool install dotnet-stryker`) and run per-project.
-
-**Target:** ≥ 80% mutation score.
-
----
 
 ### Create scorecard skill
 
