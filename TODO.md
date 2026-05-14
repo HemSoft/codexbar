@@ -2,7 +2,7 @@
 
 | Status | Priority | Task | Notes |
 |--------|----------|------|-------|
-| 📋 | Medium | [#11 Create scorecard skill](#create-scorecard-skill) | Model after hs-buddy and relias-assistant scorecard skills |
+| ✅ | Medium | #11 Create scorecard skill | Scorecard skill with Bronze/Silver/Gold tiers, 16 rules, Invoke-Scorecard.ps1 (2026-05-14) |
 | ✅ | High | #6 Add Stryker.NET mutation testing | Stryker 4.14.1 installed, CI step added, 32.65% baseline score (2026-05-14) |
 | ✅ | Low | #8 Expand .gitignore patterns | coverage/, TestResults/, .stryker/, StrykerOutput/, coverage-report/ added (2026-05-14) |
 | ✅ | High | #9 Backfill test coverage to 80% | Coverage target met (2026-05-05) |
@@ -22,14 +22,10 @@
 
 ## Progress
 
-**Completed: 16 / 17** (94%)
+**Completed: 17 / 17** (100%) ✅
 
 ---
 
 ## Remaining Items
 
-### Create scorecard skill
-
-**Problem:** No scorecard skill exists to track org-metrics maturity.
-
-**Solution:** Model after `hs-buddy/.agents/skills/scorecard/` and `relias-assistant/.agents/skills/scorecard/`. Create `.agents/skills/scorecard/SKILL.md` with status + improve commands.
+_All items complete. 🎉_
