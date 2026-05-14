@@ -141,7 +141,7 @@ Analyzes failing rules and recommends the single highest-impact improvement.
 | Branch coverage 100% | 5 | Same as Silver coverage | branch-rate = 1.00 |
 | Zero TODO/HACK comments in source | 5 | `grep -r "TODO\|HACK" src/ --include="*.cs"` | 0 matches (excludes test files) |
 
-#### Classification logic
+### Classification logic
 
 - **Gold**: All Bronze + Silver + Gold rules pass
 - **Silver**: All Bronze + Silver rules pass
