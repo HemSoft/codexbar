@@ -76,7 +76,7 @@ public sealed class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFa
     /// <summary>
     /// Normalises a Unix epoch that may be in milliseconds to seconds.
     /// </summary>
-    private static long NormalizeEpochToSeconds(long value) =>
+    internal static long NormalizeEpochToSeconds(long value) =>
         value > 1_000_000_000_000 ? value / 1000 : value;
 
     public Task<bool> IsAvailableAsync(CancellationToken ct = default)
@@ -651,7 +651,7 @@ public sealed class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFa
         }
     }
 
-    private static UnifiedRateLimits? ParseRateLimitHeaders(HttpResponseHeaders headers)
+    internal static UnifiedRateLimits? ParseRateLimitHeaders(HttpResponseHeaders headers)
     {
         static string? GetHeader(HttpResponseHeaders h, string name) =>
             h.TryGetValues(name, out var values) ? values.FirstOrDefault() : null;

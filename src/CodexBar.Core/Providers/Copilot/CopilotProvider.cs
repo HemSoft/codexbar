@@ -55,6 +55,12 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
     private string? _lastDiscoveryError;
     private readonly ConcurrentDictionary<string, string> _tokenCache = new(StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>
+    /// Gets or sets an optional delegate that overrides token resolution for a given username.
+    /// When set, <see cref="ResolveTokenForUserAsync"/> delegates to this instead of spawning <c>gh</c>.
+    /// </summary>
+    internal Func<string, CancellationToken, Task<string?>>? TokenResolverOverride { get; set; }
+
     public ProviderMetadata Metadata { get; } = new()
     {
         Id = ProviderId.Copilot,
@@ -420,6 +426,17 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
         if (this._tokenCache.TryGetValue(username, out var cached))
         {
             return cached;
+        }
+
+        if (this.TokenResolverOverride is not null)
+        {
+            var resolved = await this.TokenResolverOverride(username, ct);
+            if (!string.IsNullOrWhiteSpace(resolved))
+            {
+                this._tokenCache[username] = resolved;
+            }
+
+            return resolved;
         }
 
         try
