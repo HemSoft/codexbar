@@ -22,7 +22,7 @@
 
 ## Progress
 
-**Completed: 13 / 17** (76%)
+**Completed: 14 / 17** (82%)
 
 ---
 

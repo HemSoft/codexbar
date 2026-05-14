@@ -57,6 +57,8 @@ coverage-report/
 .stryker/
 StrykerOutput/
 
+# .agents/ is intentionally versioned (skill definitions live there)
+
 # Temporary build artefacts that must never be committed
 bin_check_temp/
 
