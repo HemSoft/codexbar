@@ -48,9 +48,16 @@ publish/
 # Copilot hooks (local-only)
 .github/hooks/
 
+# Test and coverage output
+TestResults/
+coverage/
 coverage-report/
 
-TestResults/
+# Mutation testing (Stryker.NET)
+.stryker/
+StrykerOutput/
+
+# .agents/ is intentionally versioned (skill definitions live there)
 
 # Temporary build artefacts that must never be committed
 bin_check_temp/
