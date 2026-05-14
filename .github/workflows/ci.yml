@@ -47,7 +47,7 @@ jobs:
 
       - name: Mutation Testing (Core)
         working-directory: src/CodexBar.Core.Tests
-        run: dotnet stryker --verbosity minimal
+        run: dotnet stryker --verbosity warning
 
       - name: Upload Mutation Report
         if: always()
