@@ -26,7 +26,7 @@ is self-evaluated by running quality gates locally.
 Default command when no arguments are provided. Runs all quality gates and
 displays the current scorecard.
 
-**Steps:**
+#### Steps
 
 1. Run each quality gate (see Rules section below) and collect pass/fail.
 2. Calculate points per tier and overall score.
@@ -34,7 +34,7 @@ displays the current scorecard.
 4. Present the report (see template below).
 5. Log the score to `score-history.log` in this skill's directory.
 
-**Score logging rules:**
+#### Score logging rules
 
 - Append one line per evaluation in this format:
 
@@ -46,7 +46,7 @@ displays the current scorecard.
 - Only append if the score or classification changed from the last entry.
 - Create the file with a header if it does not exist.
 
-**Report template:**
+#### Report template
 
 ```markdown
 ## Scorecard Status — CodexBar
@@ -77,7 +77,7 @@ _Report generated YYYY-MM-DD HH:MM ET_
 
 Analyzes failing rules and recommends the single highest-impact improvement.
 
-**Steps:**
+#### Steps
 
 1. Run `scorecard status` to get current state.
 2. Collect all failing rules.
@@ -88,7 +88,7 @@ Analyzes failing rules and recommends the single highest-impact improvement.
 4. Present the recommendation with specific fix strategy.
 5. Ask the user if they want to implement the fix now.
 
-**Report template:**
+#### Report template
 
 ```markdown
 ## Scorecard Improvement Recommendation
@@ -141,7 +141,7 @@ Analyzes failing rules and recommends the single highest-impact improvement.
 | Branch coverage 100% | 5 | Same as Silver coverage | branch-rate = 1.00 |
 | Zero TODO/HACK comments in source | 5 | `grep -r "TODO\|HACK" src/ --include="*.cs"` | 0 matches (excludes test files) |
 
-**Classification logic:**
+#### Classification logic
 
 - **Gold**: All Bronze + Silver + Gold rules pass
 - **Silver**: All Bronze + Silver rules pass
