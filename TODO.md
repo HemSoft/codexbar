@@ -2,14 +2,14 @@
 
 | Status | Priority | Task | Notes |
 |--------|----------|------|-------|
-| 🚧 | High | [#9 Backfill test coverage to 80%](#backfill-test-coverage) | Currently 13% line / 12% branch. Need tests for all providers, services, config |
-| 📋 | High | [#7 Add CRAP score tooling](#add-crap-score-tooling) | ReportGenerator + coverlet.runsettings for complexity × coverage analysis |
 | 📋 | High | [#6 Add Stryker.NET mutation testing](#add-mutation-testing) | Target ≥ 80% mutation score |
 | 📋 | Medium | [#11 Create scorecard skill](#create-scorecard-skill) | Model after hs-buddy and relias-assistant scorecard skills |
-| 📋 | Medium | [#5 Add husky + lint-staged pre-commit hooks](#add-husky-hooks) | Auto-run dotnet format and dotnet test on commit |
 | 📋 | Low | [#8 Expand .gitignore patterns](#expand-gitignore) | Add .agents/, coverage/, TestResults/ exclusions |
+| ✅ | High | #9 Backfill test coverage to 80% | Coverage target met (2026-05-05) |
+| ✅ | High | #7 Add CRAP score tooling | ReportGenerator + coverlet configured (2026-05-05) |
+| ✅ | Medium | #5 Add husky + lint-staged pre-commit hooks | Pre-commit hooks active (2026-05-06) |
 | ✅ | High | Fix popup restart position regression | RestoreState before Show(); SaveWindowState uses savedLeft/savedTop; defer EnsureOnScreen to Loaded (2026-05-05) |
-| ✅ | Low | [#10 Add markdownlint-cli](#add-markdownlint) | markdownlint-cli added, CI step enforces, all docs pass (2026-05-04) |
+| ✅ | Low | #10 Add markdownlint-cli | markdownlint-cli added, CI step enforces, all docs pass (2026-05-04) |
 | ✅ | High | Fix 233 code formatting violations | Resolved with `dotnet format` (2026-05-04) |
 | ✅ | High | Add .editorconfig | Created with .NET C# conventions (2026-05-04) |
 | ✅ | High | Add static analysis (Roslyn + StyleCop) | Added to Core, App, and Tests projects (2026-05-04) |
@@ -22,43 +22,11 @@
 
 ## Progress
 
-**Completed: 10 / 17** (59%)
+**Completed: 13 / 17** (76%)
 
 ---
 
 ## Remaining Items
-
-### Backfill test coverage
-
-**Problem:** Coverage is at ~13% line / 12% branch. Only 55 Core tests exist; the entire WPF App layer was untested until the new App.Tests project was created.
-
-**What to test:**
-
-- `ClaudeProvider` — full HTTP mocking for auth, quota, and error paths
-- `CopilotProvider` — multi-account discovery, token resolution, API responses
-- `OpenRouterProvider` — credits, usage parsing
-- `OpenCodeGoProvider` — minimal but present
-- `SettingsService` / `FileSecurityHelper` — file I/O with temp directories
-- `UsageRefreshService` — timer behavior, event firing, provider failure handling
-- `MainViewModel` — property changes, command execution
-- `MainWindow` — position persistence, zoom, drag behavior (UI automation or extracted logic)
-
-**Target:** 80% line / 70% branch as first milestone, then ratchet up.
-
----
-
-### Add CRAP score tooling
-
-**Problem:** No automated CRAP (Change Risk Anti-Patterns) score analysis exists.
-
-**Solution:**
-
-1. Add `coverlet.runsettings` with thresholds
-2. Install `dotnet-reportgenerator-globaltool`
-3. Configure CI to generate JSON + HTML reports
-4. Flag any method with CRAP > 30 and fail CI if found
-
----
 
 ### Add mutation testing
 
@@ -75,24 +43,6 @@
 **Problem:** No scorecard skill exists to track org-metrics maturity.
 
 **Solution:** Model after `hs-buddy/.agents/skills/scorecard/` and `relias-assistant/.agents/skills/scorecard/`. Create `.agents/skills/scorecard/SKILL.md` with status + improve commands.
-
----
-
-### Add husky hooks
-
-**Problem:** No pre-commit validation. Formatting or test breakages can be committed accidentally.
-
-**Solution:** Add `husky` + `lint-staged` (or equivalent .NET git hooks) to run `dotnet format --verify-no-changes` and `dotnet test` before each commit.
-
----
-
-### Add markdownlint
-
-**Problem:** No markdown linting configured.
-
-**Solution:** Add `markdownlint-cli` to package.json and enforce in CI.
-
-**Status:** ✅ Complete (2026-05-04). `markdownlint-cli` added as devDependency, `.markdownlint.json` config exists with MD013/MD060 disabled, `npm run lint:md` script added, CI workflow runs lint check.
 
 ---
 
