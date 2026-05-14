@@ -43,4 +43,3 @@
 **Problem:** No scorecard skill exists to track org-metrics maturity.
 
 **Solution:** Model after `hs-buddy/.agents/skills/scorecard/` and `relias-assistant/.agents/skills/scorecard/`. Create `.agents/skills/scorecard/SKILL.md` with status + improve commands.
-
