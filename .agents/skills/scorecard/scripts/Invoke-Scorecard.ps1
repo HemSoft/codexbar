@@ -126,10 +126,13 @@ Add-Rule 'Silver' 'Branch coverage >= 80%' 5 ($branchRate -ge 0.80) $(
 )
 
 # 9. Security audit clean
-$secOutput = dotnet list package --vulnerable --include-transitive 2>&1 | Out-String
-$secPassed = $secOutput -notmatch 'has the following vulnerable packages'
+$secOutput = dotnet list "$RepoRoot\CodexBar.slnx" package --vulnerable --include-transitive 2>&1 | Out-String
+$secExitCode = $LASTEXITCODE
+$secPassed = ($secExitCode -eq 0) -and ($secOutput -notmatch 'vulnerable package|vulnerable packages|has the following vulnerable packages')
 Add-Rule 'Silver' 'Security audit clean' 5 $secPassed $(
-    if ($secPassed) { '0 vulnerabilities' } else { 'Vulnerable packages found' }
+    if ($secPassed) { '0 vulnerabilities' }
+    elseif ($secExitCode -ne 0) { 'Security audit command failed' }
+    else { 'Vulnerable packages found' }
 )
 
 # 10. Markdown lint clean
@@ -141,8 +144,8 @@ Add-Rule 'Silver' 'Markdown lint clean' 5 $mdPassed $(
 )
 
 # 11. CRAP score: 0 methods > 30
-# Simplified check - look for ReportGenerator output or skip
-$crapPassed = $true
+# Do not award points when the metric is not evaluated
+$crapPassed = $false
 $crapDetail = 'Not evaluated (requires ReportGenerator run)'
 Add-Rule 'Silver' 'CRAP score: 0 methods > 30' 10 $crapPassed $crapDetail
 
@@ -296,8 +299,32 @@ else {
         }
     }
 
-    $tz = [System.TimeZoneInfo]::FindSystemTimeZoneById('Eastern Standard Time')
+    try { $tz = [System.TimeZoneInfo]::FindSystemTimeZoneById('America/New_York') }
+    catch { $tz = [System.TimeZoneInfo]::FindSystemTimeZoneById('Eastern Standard Time') }
     $et = [System.TimeZoneInfo]::ConvertTime((Get-Date).ToUniversalTime(), $tz)
     Write-Output ""
     Write-Output "_Report generated $($et.ToString('yyyy-MM-dd HH:mm')) ET_"
+}
+
+# --- Score History ---
+try { $histTz = [System.TimeZoneInfo]::FindSystemTimeZoneById('America/New_York') }
+catch { $histTz = [System.TimeZoneInfo]::FindSystemTimeZoneById('Eastern Standard Time') }
+$histEt = [System.TimeZoneInfo]::ConvertTime((Get-Date).ToUniversalTime(), $histTz)
+
+$historyPath = Join-Path $PSScriptRoot '..\score-history.log'
+$historyLine = "$($histEt.ToString('yyyy-MM-dd HH:mm')) ET | Score: $totalScore/100 | Classification: $classification | Passed: $totalPassed/$totalRules | Bronze: $bronzePassed/$($bronzeRules.Count) | Silver: $silverPassed/$($silverRules.Count) | Gold: $goldPassed/$($goldRules.Count)"
+
+$shouldAppend = $true
+if (Test-Path $historyPath) {
+    $lastDataLine = Get-Content $historyPath | Where-Object { $_ -and $_ -notmatch '^#' } | Select-Object -Last 1
+    if ($lastDataLine -match '\| Score: (?<score>\d+)/100 \| Classification: (?<class>\w+)') {
+        $shouldAppend = -not (($matches['score'] -eq "$totalScore") -and ($matches['class'] -eq $classification))
+    }
+}
+else {
+    Set-Content $historyPath "# Score history for scorecard skill"
+}
+
+if ($shouldAppend) {
+    Add-Content $historyPath $historyLine
 }
