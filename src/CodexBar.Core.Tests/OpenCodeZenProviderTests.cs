@@ -8,6 +8,7 @@ using CodexBar.Core.Models;
 using CodexBar.Core.Providers.OpenCodeZen;
 using Microsoft.Extensions.Logging.Abstractions;
 
+[Collection("OpenCodeZenEnvVars")]
 public class OpenCodeZenProviderTests
 {
     [Fact]

@@ -9,6 +9,7 @@ using CodexBar.Core.Providers.OpenCodeZen;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
 
+[Collection("OpenCodeZenEnvVars")]
 public class OpenCodeZenProviderMoreTests
 {
     private static OpenCodeZenProvider CreateProviderWithHandler(
