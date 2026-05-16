@@ -166,6 +166,7 @@ public class OpenRouterProviderTests
 
         Assert.False(result.Success);
         Assert.Equal(ProviderId.OpenRouter, result.Provider);
+        Assert.NotNull(result.ErrorMessage);
         Assert.NotEmpty(result.ErrorMessage);
     }
 

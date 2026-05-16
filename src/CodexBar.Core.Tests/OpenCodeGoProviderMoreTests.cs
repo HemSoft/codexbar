@@ -92,9 +92,10 @@ public class OpenCodeGoProviderMoreTests
         Assert.Equal(0.80, result.Items[0].PrimaryUsage!.UsedPercent);
 
         // Should have one bar for the monthly window
-        Assert.NotNull(result.Items[0].Bars);
-        Assert.Single(result.Items[0].Bars);
-        Assert.Contains("Monthly limit", result.Items[0].Bars[0].Label);
+        var bars = result.Items[0].Bars;
+        Assert.NotNull(bars);
+        Assert.Single(bars);
+        Assert.Contains("Monthly limit", bars[0].Label);
     }
 
     [Fact]
@@ -121,10 +122,11 @@ public class OpenCodeGoProviderMoreTests
         Assert.Equal(0.75, result.Items[0].PrimaryUsage!.UsedPercent);
 
         // Should have two bars: weekly and monthly
-        Assert.NotNull(result.Items[0].Bars);
-        Assert.Equal(2, result.Items[0].Bars.Count);
-        Assert.Contains("Weekly limit", result.Items[0].Bars[0].Label);
-        Assert.Contains("Monthly limit", result.Items[0].Bars[1].Label);
+        var bars = result.Items[0].Bars;
+        Assert.NotNull(bars);
+        Assert.Equal(2, bars.Count);
+        Assert.Contains("Weekly limit", bars[0].Label);
+        Assert.Contains("Monthly limit", bars[1].Label);
     }
 
     [Fact]
@@ -189,11 +191,12 @@ public class OpenCodeGoProviderMoreTests
         Assert.Equal(0.40, result.Items[0].PrimaryUsage!.UsedPercent);
 
         // Should have three bars: rolling, weekly, monthly
-        Assert.NotNull(result.Items[0].Bars);
-        Assert.Equal(3, result.Items[0].Bars.Count);
+        var bars = result.Items[0].Bars;
+        Assert.NotNull(bars);
+        Assert.Equal(3, bars.Count);
 
         // Verify bar labels
-        var labels = result.Items[0].Bars.Select(b => b.Label).ToList();
+        var labels = bars.Select(b => b.Label).ToList();
         Assert.Contains("5-hour limit", labels);
         Assert.Contains("Weekly limit", labels);
         Assert.Contains("Monthly limit", labels);
@@ -216,12 +219,14 @@ public class OpenCodeGoProviderMoreTests
 
         Assert.True(result.Success);
         Assert.NotNull(result.Items);
-        Assert.NotNull(result.Items[0].Bars);
-        Assert.NotEmpty(result.Items[0].Bars);
+        var bars = result.Items[0].Bars;
+        Assert.NotNull(bars);
+        Assert.NotEmpty(bars);
 
         // Should have a description with reset information
-        Assert.NotNull(result.Items[0].Bars[0].ResetDescription);
-        Assert.NotEmpty(result.Items[0].Bars[0].ResetDescription!);
+        var resetDescription = bars[0].ResetDescription;
+        Assert.NotNull(resetDescription);
+        Assert.NotEmpty(resetDescription);
     }
 
     private static string CreateDashboardHtml(
