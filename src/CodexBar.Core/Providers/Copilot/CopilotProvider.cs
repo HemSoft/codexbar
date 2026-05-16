@@ -61,6 +61,12 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
     /// </summary>
     internal Func<string, CancellationToken, Task<string?>>? TokenResolverOverride { get; set; }
 
+    /// <summary>
+    /// Gets or sets an optional delegate that overrides account discovery.
+    /// When set, <see cref="GetAccountsToFetchAsync"/> calls this instead of <see cref="DiscoverGhAccountsAsync"/>.
+    /// </summary>
+    internal Func<CancellationToken, Task<List<string>>>? AccountDiscoveryOverride { get; set; }
+
     public ProviderMetadata Metadata { get; } = new()
     {
         Id = ProviderId.Copilot,
@@ -156,7 +162,10 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
                     return [];
                 }
 
-                this._cachedAccounts = await this.DiscoverGhAccountsAsync(ct);
+                var discoveryOverride = this.AccountDiscoveryOverride;
+                this._cachedAccounts = discoveryOverride is not null
+                    ? await discoveryOverride(ct)
+                    : await this.DiscoverGhAccountsAsync(ct);
             }
 
             // Cache empty results for 5 minutes to avoid repeated process spawning on persistent failures

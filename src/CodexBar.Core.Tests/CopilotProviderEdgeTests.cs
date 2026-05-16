@@ -200,8 +200,10 @@ public class CopilotProviderEdgeTests
         settings.GetCopilotAccounts().Returns(new List<string>());
         var factory = Substitute.For<IHttpClientFactory>();
 
-        // TokenResolverOverride blocks gh discovery so we get zero accounts
         var provider = CreateProvider(settings, factory, (_, _) => Task.FromResult<string?>(null));
+
+        // Override discovery to avoid calling real gh CLI — deterministic on all machines
+        provider.AccountDiscoveryOverride = _ => Task.FromResult(new List<string>());
 
         var result = await provider.FetchUsageAsync();
 
