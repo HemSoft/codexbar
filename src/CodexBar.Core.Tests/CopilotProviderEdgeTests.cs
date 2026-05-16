@@ -310,13 +310,15 @@ public class CopilotProviderEdgeTests
         var (resetsAt, description) = CopilotProvider.ParseReset(future);
 
         Assert.NotNull(resetsAt);
-        Assert.Matches(@"\dd", description!); // e.g. "9d" or "10d"
+        Assert.Matches(@"\b\d+d\b", description!);
     }
 
     [Fact]
     public void ParseReset_ExactlyTomorrow_ReturnsTomorrowLabel()
     {
-        var tomorrow = DateTimeOffset.UtcNow.AddHours(30).ToString("o");
+        var tomorrow = new DateTimeOffset(
+            DateTime.UtcNow.Date.AddDays(1).AddHours(12),
+            TimeSpan.Zero).ToString("o");
         var (_, description) = CopilotProvider.ParseReset(tomorrow);
 
         Assert.Contains("tomorrow", description!, StringComparison.OrdinalIgnoreCase);

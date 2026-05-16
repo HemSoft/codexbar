@@ -304,6 +304,8 @@ public class SettingsServiceEdgeTests : IDisposable
 
         Assert.True(File.Exists(path));
         var service2 = this.CreateService();
-        Assert.Equal("new-key", service2.GetApiKey(ProviderId.OpenRouter) is null ? "new-key" : service2.GetApiKey(ProviderId.OpenRouter));
+        var reloaded = service2.Load();
+        Assert.True(reloaded.Providers.ContainsKey("NewProvider"));
+        Assert.Equal("new-key", reloaded.Providers["NewProvider"].ApiKey);
     }
 }
