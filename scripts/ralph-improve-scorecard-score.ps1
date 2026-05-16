@@ -1,5 +1,5 @@
 # ralph-improve-scorecard-score.ps1 — GitHub scorecard score improver.
-# Version: 1.3.0
+# Version: 1.3.1
 param(
     [switch]$Autopilot,
     [switch]$NoAudio,
@@ -22,7 +22,7 @@ if ($Help) {
     Write-Host ""
     Write-Host "PARAMETERS" -ForegroundColor Yellow
     Write-Host "  -Model <name>          Model to use (validated by ralph.ps1)"
-    Write-Host "  -Provider <name>       CLI provider: copilot, opencode (validated by ralph.ps1)"
+    Write-Host "  -Provider <name>       CLI provider to pass through (validated downstream against config)"
     Write-Host "  -ReviewProduct <name>  Automated PR review product for ralph-pr handoff"
     Write-Host "  -ReviewMode <name>     Review request mode when the product supports multiple modes"
     Write-Host "  -Agents <specs>        Agent specs: role or role@model (validated by ralph.ps1)"

@@ -1,5 +1,5 @@
 # ralph-run-all.ps1 — Sequential autopilot orchestrator.
-# Version: 1.3.0
+# Version: 1.3.1
 # Between each script, pulls latest main so the next run branches from fresh code.
 # Stops on the first failure.
 param(
@@ -27,7 +27,7 @@ if ($Help) {
     Write-Host "PARAMETERS" -ForegroundColor Yellow
     Write-Host "  -Pick                  Choose which scripts to run (default: run all)"
     Write-Host "  -Model <name>          Model to pass through (validated by ralph.ps1)"
-    Write-Host "  -Provider <name>       CLI provider: copilot, opencode (validated by ralph.ps1)"
+    Write-Host "  -Provider <name>       CLI provider to pass through (validated downstream against config)"
     Write-Host "  -ReviewProduct <name>  Automated PR review product to pass through"
     Write-Host "  -ReviewMode <name>     Review request mode to pass through when supported"
     Write-Host "  -Agents <specs>        Agent specs: role or role@model (validated by ralph.ps1)"
@@ -70,6 +70,12 @@ if ($allScripts.Count -eq 0) {
 }
 
 $scripts = $allScripts
+
+function Get-ScriptParameterNames {
+    param([Parameter(Mandatory)][string]$Path)
+
+    @((Get-Command -Name $Path -ErrorAction Stop).Parameters.Keys)
+}
 
 # --- Pick mode ---
 if ($Pick) {
@@ -141,17 +147,20 @@ for ($i = 0; $i -lt $scripts.Count; $i++) {
     Write-Host "====================================" -ForegroundColor Magenta
     Write-Host ""
 
-    # Build args — always pass -Autopilot
-    $scriptArgs = @{ Autopilot = $true }
-    if ($NoAudio) { $scriptArgs['NoAudio'] = $true }
-    if ($SkipReview) { $scriptArgs['SkipReview'] = $true }
-    if ($Model) { $scriptArgs['Model'] = $Model }
-    if ($Provider) { $scriptArgs['Provider'] = $Provider }
-    if ($ReviewProduct) { $scriptArgs['ReviewProduct'] = $ReviewProduct }
-    if ($ReviewMode) { $scriptArgs['ReviewMode'] = $ReviewMode }
-    if ($Agents) { $scriptArgs['Agents'] = $Agents }
-    if ($WorkUntil) { $scriptArgs['WorkUntil'] = $WorkUntil }
-    if ($Once) { $scriptArgs['Once'] = $true }
+    $supportedParameters = @(Get-ScriptParameterNames -Path $script.FullName)
+
+    # Forward only parameters each script actually supports.
+    $scriptArgs = @{}
+    if ($supportedParameters -contains 'Autopilot') { $scriptArgs['Autopilot'] = $true }
+    if ($NoAudio -and $supportedParameters -contains 'NoAudio') { $scriptArgs['NoAudio'] = $true }
+    if ($SkipReview -and $supportedParameters -contains 'SkipReview') { $scriptArgs['SkipReview'] = $true }
+    if ($Model -and $supportedParameters -contains 'Model') { $scriptArgs['Model'] = $Model }
+    if ($Provider -and $supportedParameters -contains 'Provider') { $scriptArgs['Provider'] = $Provider }
+    if ($ReviewProduct -and $supportedParameters -contains 'ReviewProduct') { $scriptArgs['ReviewProduct'] = $ReviewProduct }
+    if ($ReviewMode -and $supportedParameters -contains 'ReviewMode') { $scriptArgs['ReviewMode'] = $ReviewMode }
+    if ($Agents -and $supportedParameters -contains 'Agents') { $scriptArgs['Agents'] = $Agents }
+    if ($WorkUntil -and $supportedParameters -contains 'WorkUntil') { $scriptArgs['WorkUntil'] = $WorkUntil }
+    if ($Once -and $supportedParameters -contains 'Once') { $scriptArgs['Once'] = $true }
 
     # Invoke the script
     & $script.FullName @scriptArgs

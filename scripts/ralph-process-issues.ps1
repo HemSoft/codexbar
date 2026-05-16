@@ -1,5 +1,5 @@
 # ralph-process-issues.ps1 — Process GitHub Issues until none remain.
-# Version: 1.5.0
+# Version: 1.5.2
 # Repeatedly calls ralph -Issue until no open issues are left.
 # Supports explicit issue ordering via -Issues or a config file.
 # Pulls main between each run so the next issue sees the latest code.
@@ -21,6 +21,81 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+function Resolve-RalphScriptPath {
+    $candidatePaths = @(
+        (Join-Path $PSScriptRoot '..' 'ralph.ps1'),
+        (Join-Path $PSScriptRoot '..' 'ralph-loops' 'ralph.ps1')
+    )
+
+    $scriptRootPath = (Resolve-Path $PSScriptRoot -ErrorAction SilentlyContinue).Path
+    $searchRoot = $scriptRootPath
+    while ($searchRoot) {
+        $candidatePaths += (Join-Path $searchRoot 'ai-tools\ralph-loops\ralph.ps1')
+
+        $driveRoot = [System.IO.Path]::GetPathRoot($searchRoot)
+        if ($searchRoot -ne $driveRoot) {
+            $candidatePaths += @(Get-ChildItem -Path $searchRoot -Directory -ErrorAction SilentlyContinue |
+                ForEach-Object { Join-Path $_.FullName 'ai-tools\ralph-loops\ralph.ps1' })
+        }
+
+        $parentRoot = Split-Path $searchRoot -Parent
+        if (-not $parentRoot -or $parentRoot -eq $searchRoot) {
+            break
+        }
+
+        $searchRoot = $parentRoot
+    }
+
+    foreach ($candidatePath in @($candidatePaths | Where-Object { $_ } | Select-Object -Unique)) {
+        $resolvedCandidatePath = (Resolve-Path $candidatePath -ErrorAction SilentlyContinue).Path
+        if ($resolvedCandidatePath -and (Test-Path $resolvedCandidatePath)) {
+            return $resolvedCandidatePath
+        }
+    }
+
+    foreach ($commandName in @('ralph.ps1', 'ralph')) {
+        $ralphCmd = Get-Command $commandName -ErrorAction SilentlyContinue
+        if (-not $ralphCmd) {
+            continue
+        }
+
+        if ($ralphCmd.CommandType -eq 'Function' -and $ralphCmd.ScriptBlock -match "'([^']+\.ps1)'") {
+            $resolvedCommandPath = (Resolve-Path $matches[1] -ErrorAction SilentlyContinue).Path
+            if ($resolvedCommandPath -and (Test-Path $resolvedCommandPath)) {
+                return $resolvedCommandPath
+            }
+        }
+
+        $resolvedSourcePath = (Resolve-Path $ralphCmd.Source -ErrorAction SilentlyContinue).Path
+        if ($resolvedSourcePath -and (Test-Path $resolvedSourcePath)) {
+            return $resolvedSourcePath
+        }
+    }
+
+    return $null
+}
+
+$ralphPath = Resolve-RalphScriptPath
+if (-not $ralphPath) {
+    throw "Cannot resolve ralph.ps1 from the script directory or from 'ralph.ps1'/'ralph' on PATH."
+}
+
+$configPath = (Resolve-Path (Join-Path (Split-Path $ralphPath -Parent) 'lib' 'config.ps1') -ErrorAction SilentlyContinue).Path
+if (-not $configPath -or -not (Test-Path $configPath)) {
+    throw "Cannot resolve config.ps1 relative to ralph.ps1 at '$ralphPath'."
+}
+
+. $configPath
+
+if (-not $Provider) { $Provider = Get-RalphDefaultProvider }
+try {
+    $script:ProviderConfig = Resolve-RalphProvider -Name $Provider
+}
+catch {
+    Write-Host "Invalid provider '$Provider'. Valid: $((Get-RalphProviderNames) -join ', ')" -ForegroundColor Red
+    exit 1
+}
 
 if ($Help) {
     Write-Host ""
@@ -63,15 +138,6 @@ if ($Help) {
 }
 
 # --- Resolve ralph.ps1 path ---
-$ralphPath = Join-Path $PSScriptRoot ".." "ralph.ps1"
-if (-not (Test-Path $ralphPath)) {
-    # Fallback: resolve from ralph command
-    $ralphCmd = Get-Command ralph -ErrorAction SilentlyContinue
-    if ($ralphCmd) {
-        $ralphPath = Join-Path (Split-Path $ralphCmd.Source -Parent) ".." "ralph.ps1"
-    }
-}
-$ralphPath = (Resolve-Path $ralphPath -ErrorAction SilentlyContinue).Path
 if (-not $ralphPath -or -not (Test-Path $ralphPath)) {
     Write-Host "ERROR: Cannot find ralph.ps1" -ForegroundColor Red
     exit 1
@@ -247,9 +313,9 @@ $arrUp = [char]0x2191; $arrDn = [char]0x2193; $dot = [char]0x2022
 $tokInStr = ConvertTo-TokenDisplayString $accTokensIn
 $tokOutStr = ConvertTo-TokenDisplayString $accTokensOut
 $tokCachedStr = ConvertTo-TokenDisplayString $accTokensCached
-$modelList = if ($accModels.Count -gt 0) { ($accModels.GetEnumerator() | ForEach-Object { "$($_.Key) x$($_.Value)" }) -join ', ' } else { $Model ?? '(default)' }
+$modelList = if ($accModels.Count -gt 0) { ($accModels.Keys | Sort-Object) -join ', ' } else { $Model ?? '(default)' }
 $providerModelList = if ($accProviderModels.Count -gt 0) {
-    ($accProviderModels.GetEnumerator() | Sort-Object Key | ForEach-Object { "$($_.Key) x$($_.Value)" }) -join ', '
+    ($accProviderModels.Keys | Sort-Object) -join ', '
 }
 elseif ($Provider -and $Model) {
     "$Provider/$Model"
