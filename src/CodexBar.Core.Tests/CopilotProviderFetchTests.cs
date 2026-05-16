@@ -471,10 +471,28 @@ public class CopilotProviderFetchTests
     // --- Delegating handler for tests ---
     private sealed class DelegatingHandlerStub : HttpMessageHandler
     {
-        private readonly HttpResponseMessage? _response;
+        private readonly Func<HttpResponseMessage>? _responseFactory;
         private readonly Exception? _exception;
 
-        public DelegatingHandlerStub(HttpResponseMessage response) => this._response = response;
+        public DelegatingHandlerStub(HttpResponseMessage response)
+        {
+            var statusCode = response.StatusCode;
+            var payload = response.Content?.ReadAsStringAsync().GetAwaiter().GetResult();
+            var mediaType = response.Content?.Headers.ContentType?.MediaType;
+
+            this._responseFactory = () =>
+            {
+                var clone = new HttpResponseMessage(statusCode);
+                if (payload is not null)
+                {
+                    clone.Content = mediaType is null
+                        ? new StringContent(payload, Encoding.UTF8)
+                        : new StringContent(payload, Encoding.UTF8, mediaType);
+                }
+
+                return clone;
+            };
+        }
 
         public DelegatingHandlerStub(Exception exception) => this._exception = exception;
 
@@ -486,7 +504,7 @@ public class CopilotProviderFetchTests
                 throw this._exception;
             }
 
-            return Task.FromResult(this._response!);
+            return Task.FromResult(this._responseFactory!());
         }
     }
 }

@@ -110,7 +110,7 @@ public class SettingsServiceMoreTests : IDisposable
     }
 
     [Fact]
-    public void Save_PreservesSessionSpendingResetTimes()
+    public void Save_WhenSessionBaselineIsSet_PreservesSessionSpendingResetTimes()
     {
         var service = this.CreateSettingsService();
         service.SetSessionBaseline(ProviderId.Claude, 50.0m);
@@ -126,7 +126,7 @@ public class SettingsServiceMoreTests : IDisposable
     }
 
     [Fact]
-    public void Save_PreservesWindowDimensions()
+    public void Save_WhenWindowDimensionsAreSet_PreservesWindowDimensions()
     {
         var service = this.CreateSettingsService();
         var settings = service.Load();
@@ -146,7 +146,7 @@ public class SettingsServiceMoreTests : IDisposable
     }
 
     [Fact]
-    public void MergeFromDisk_PreservesOpenCodeGoWorkspaceId()
+    public void MergeFromDisk_WhenWorkspaceIdExists_PreservesOpenCodeGoWorkspaceId()
     {
         // Write initial settings with workspace ID
         var json = """{"openCodeGoWorkspaceId":"workspace-123-abc","providers":{}}""";
@@ -159,7 +159,7 @@ public class SettingsServiceMoreTests : IDisposable
     }
 
     [Fact]
-    public void Save_PreservesSessionSpendingBaselines()
+    public void Save_WhenSessionBaselineIsSet_PreservesSessionSpendingBaselines()
     {
         var service = this.CreateSettingsService();
         service.SetSessionBaseline(ProviderId.Copilot, 75.0m);
@@ -171,7 +171,7 @@ public class SettingsServiceMoreTests : IDisposable
     }
 
     [Fact]
-    public void Save_PreservesCopilotAccounts()
+    public void Save_WhenCopilotAccountsAreSet_PreservesCopilotAccounts()
     {
         var service = this.CreateSettingsService();
         var settings = service.Load();
@@ -187,7 +187,7 @@ public class SettingsServiceMoreTests : IDisposable
     }
 
     [Fact]
-    public void Save_PreservesZoomLevel()
+    public void Save_WhenZoomLevelIsSet_PreservesZoomLevel()
     {
         var service = this.CreateSettingsService();
         var settings = service.Load();
@@ -209,7 +209,7 @@ public class SettingsServiceMoreTests : IDisposable
     }
 
     [Fact]
-    public void SetSessionBaseline_StoresAndRetrievesValue()
+    public void SetSessionBaseline_WhenCalled_StoresAndRetrievesValue()
     {
         var service = this.CreateSettingsService();
         service.SetSessionBaseline(ProviderId.OpenRouter, 100.0m);

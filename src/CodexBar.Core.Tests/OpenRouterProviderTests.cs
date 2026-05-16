@@ -14,6 +14,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
 using Xunit;
 
+[Collection("EnvironmentVariableTests")]
 public class OpenRouterProviderTests
 {
     private const string ValidApiKey = "test-api-key-12345";

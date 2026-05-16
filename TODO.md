@@ -28,4 +28,4 @@
 
 ## Remaining Items
 
-_All items complete. 🎉_
+All items complete. 🎉
