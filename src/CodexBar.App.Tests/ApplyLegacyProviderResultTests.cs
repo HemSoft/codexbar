@@ -22,7 +22,7 @@ public sealed class ApplyLegacyProviderResultTests
 
     // --- Error path ---
     [Fact]
-    public void ErrorResult_SetsIsError()
+    public void ApplyLegacyProviderResult_ErrorResult_SetsIsError()
     {
         var card = CreateCard();
         var result = ProviderUsageResult.Failure(ProviderId.OpenRouter, "Network error");
@@ -34,7 +34,7 @@ public sealed class ApplyLegacyProviderResultTests
     }
 
     [Fact]
-    public void ErrorResult_ResetsUsageFields()
+    public void ApplyLegacyProviderResult_ErrorResult_ResetsUsageFields()
     {
         var card = CreateCard();
         card.UsedPercent = 0.9;
@@ -52,7 +52,7 @@ public sealed class ApplyLegacyProviderResultTests
     }
 
     [Fact]
-    public void ErrorResult_NullMessage_UsesDefaultError()
+    public void ApplyLegacyProviderResult_NullErrorMessage_UsesDefaultText()
     {
         var card = CreateCard();
         var result = new ProviderUsageResult
@@ -68,7 +68,7 @@ public sealed class ApplyLegacyProviderResultTests
     }
 
     [Fact]
-    public void ErrorResult_ShowsPercentBar()
+    public void ApplyLegacyProviderResult_ErrorResult_ShowsPercentBar()
     {
         var card = CreateCard();
         var result = ProviderUsageResult.Failure(ProviderId.OpenRouter, "Error");
@@ -79,7 +79,7 @@ public sealed class ApplyLegacyProviderResultTests
     }
 
     [Fact]
-    public void ErrorResult_ClearsBars()
+    public void ApplyLegacyProviderResult_ErrorResult_ClearsBars()
     {
         var card = CreateCard();
         card.Bars.Add(new UsageBarViewModel { Label = "test" });
@@ -94,7 +94,7 @@ public sealed class ApplyLegacyProviderResultTests
 
     // --- Success with SessionUsage ---
     [Fact]
-    public void SuccessWithSession_SetsUsedPercent()
+    public void ApplyLegacyProviderResult_SuccessWithSession_SetsUsedPercent()
     {
         var card = CreateCard();
         var result = new ProviderUsageResult
@@ -116,7 +116,7 @@ public sealed class ApplyLegacyProviderResultTests
     }
 
     [Fact]
-    public void SuccessWithSession_HighUsage_SetsFlag()
+    public void ApplyLegacyProviderResult_SessionHighUsage_SetsFlag()
     {
         var card = CreateCard();
         var result = new ProviderUsageResult
@@ -136,7 +136,7 @@ public sealed class ApplyLegacyProviderResultTests
     }
 
     [Fact]
-    public void SuccessWithSession_LowUsage_ClearsFlag()
+    public void ApplyLegacyProviderResult_SessionLowUsage_ClearsFlag()
     {
         var card = CreateCard();
         card.IsHighUsage = true;
@@ -157,7 +157,7 @@ public sealed class ApplyLegacyProviderResultTests
     }
 
     [Fact]
-    public void SuccessWithSession_Unlimited_HidesPercentBar()
+    public void ApplyLegacyProviderResult_SessionUnlimited_HidesPercentBar()
     {
         var card = CreateCard();
         var result = new ProviderUsageResult
@@ -178,7 +178,7 @@ public sealed class ApplyLegacyProviderResultTests
     }
 
     [Fact]
-    public void SuccessWithSession_ResetDescription_Applied()
+    public void ApplyLegacyProviderResult_SessionResetDescription_AppliesResetText()
     {
         var card = CreateCard();
         var result = new ProviderUsageResult
@@ -199,7 +199,7 @@ public sealed class ApplyLegacyProviderResultTests
     }
 
     [Fact]
-    public void SuccessWithSession_NullLabel_UsesPercentFormat()
+    public void ApplyLegacyProviderResult_SessionNullLabel_UsesPercentFormat()
     {
         var card = CreateCard();
         var result = new ProviderUsageResult
@@ -220,7 +220,7 @@ public sealed class ApplyLegacyProviderResultTests
 
     // --- Success with Credits ---
     [Fact]
-    public void SuccessWithCredits_SetsCreditsDisplay()
+    public void ApplyLegacyProviderResult_SuccessWithCredits_SetsCreditsDisplay()
     {
         var card = CreateCard();
         var result = new ProviderUsageResult
@@ -240,7 +240,7 @@ public sealed class ApplyLegacyProviderResultTests
 
     // --- Success with no session/credits ---
     [Fact]
-    public void SuccessNoData_ShowsNoData()
+    public void ApplyLegacyProviderResult_SuccessNoData_ShowsNoDataText()
     {
         var card = CreateCard();
         var result = new ProviderUsageResult
@@ -257,7 +257,7 @@ public sealed class ApplyLegacyProviderResultTests
 
     // --- Weekly usage ---
     [Fact]
-    public void SuccessWithWeekly_SetsWeeklyFields()
+    public void ApplyLegacyProviderResult_SuccessWithWeekly_SetsWeeklyFields()
     {
         var card = CreateCard();
         var result = new ProviderUsageResult
@@ -275,7 +275,7 @@ public sealed class ApplyLegacyProviderResultTests
     }
 
     [Fact]
-    public void SuccessNoWeekly_ClearsWeeklyFields()
+    public void ApplyLegacyProviderResult_SuccessNoWeekly_ClearsWeeklyFields()
     {
         var card = CreateCard();
         card.WeeklyText = "old";
@@ -295,7 +295,7 @@ public sealed class ApplyLegacyProviderResultTests
 
     // --- State transitions ---
     [Fact]
-    public void Transition_ErrorToSuccess_ClearsError()
+    public void ApplyLegacyProviderResult_ErrorToSuccess_ClearsErrorFlag()
     {
         var card = CreateCard();
         card.IsError = true;
@@ -314,7 +314,7 @@ public sealed class ApplyLegacyProviderResultTests
     }
 
     [Fact]
-    public void Transition_CreditsToSession_ClearsCreditsFlags()
+    public void ApplyLegacyProviderResult_CreditsToSession_ClearsCreditsState()
     {
         var card = CreateCard();
         card.IsCreditsDisplay = true;
@@ -334,7 +334,7 @@ public sealed class ApplyLegacyProviderResultTests
     }
 
     [Fact]
-    public void Transition_CreditsToError_ClearsCreditsBalance()
+    public void ApplyLegacyProviderResult_CreditsToError_ClearsCreditsBalance()
     {
         var card = CreateCard();
         card.IsCreditsDisplay = true;

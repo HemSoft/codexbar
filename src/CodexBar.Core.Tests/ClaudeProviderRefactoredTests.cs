@@ -62,8 +62,8 @@ public class ClaudeProviderRefactoredTests
 
         Assert.True(snapshot.IsUnlimited);
 
-        // With empty subscription type and no data, FormatUsageLabel returns empty
-        Assert.Contains("Rate limits unavailable", snapshot.UsageLabel);
+        // Empty subscription type produces " plan" prefix via FormatUsageLabel
+        Assert.Equal(" plan · Rate limits unavailable", snapshot.UsageLabel);
     }
 
     // --- BuildSessionSnapshotFromLimits ---
