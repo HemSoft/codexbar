@@ -366,6 +366,34 @@ public sealed class ItemCardReconcilerTests
     }
 
     [Fact]
+    public void Reconcile_ItemWithBarsAndPrimaryUsageNullLabel_ShowsNoDataFallback()
+    {
+        var result = new ProviderUsageResult
+        {
+            Provider = ProviderId.Copilot,
+            Success = true,
+            Items =
+            [
+                new UsageItem
+                {
+                    Key = "copilot:HemSoft",
+                    DisplayName = "Copilot · HemSoft",
+                    Success = true,
+                    PrimaryUsage = new UsageSnapshot { UsedPercent = 0.5, UsageLabel = null },
+                    Bars = [new UsageBar { Label = "5-hour", UsedPercent = 0.3 }],
+                },
+            ],
+        };
+
+        this._sut.Reconcile(ProviderId.Copilot, "copilot:", result);
+
+        var card = this._providers[0];
+        Assert.Equal("No data", card.StatusText);
+        Assert.Equal(0.5, card.UsedPercent);
+        Assert.True(card.HasBars);
+    }
+
+    [Fact]
     public void Reconcile_ItemWithBarsNoPrimaryUsage_ShowsNoData()
     {
         var result = new ProviderUsageResult
@@ -547,6 +575,38 @@ public sealed class ItemCardReconcilerTests
         Assert.Equal(0.6, card.UsedPercent);
         Assert.Equal("Resets Monday", card.ResetText);
         Assert.Null(card.WeeklyText);
+    }
+
+    [Fact]
+    public void Reconcile_OnlySecondaryUsageNullLabel_ShowsPercentFallback()
+    {
+        var result = new ProviderUsageResult
+        {
+            Provider = ProviderId.Claude,
+            Success = true,
+            Items =
+            [
+                new UsageItem
+                {
+                    Key = "claude:acct1",
+                    DisplayName = "Claude",
+                    Success = true,
+                    SecondaryUsage = new UsageSnapshot
+                    {
+                        UsedPercent = 0.45,
+                        UsageLabel = null,
+                        ResetDescription = "Resets Monday",
+                    },
+                },
+            ],
+        };
+
+        this._sut.Reconcile(ProviderId.Claude, "claude:", result);
+
+        var card = this._providers[0];
+        Assert.Equal("45% used", card.StatusText);
+        Assert.Equal(0.45, card.UsedPercent);
+        Assert.Equal("Resets Monday", card.ResetText);
     }
 
     // ---------------------------------------------------------------
