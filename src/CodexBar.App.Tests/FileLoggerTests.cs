@@ -288,7 +288,7 @@ public sealed class FileLoggerTests : IDisposable
         var logger = loggerFactory.CreateLogger("ExtTest");
         logger.LogInformation("Extension method works");
 
-        // Give a moment for flush, then dispose to ensure write completes
+        // Dispose to flush and ensure write completes
         sp.Dispose();
 
         var content = File.ReadAllText(logPath);
