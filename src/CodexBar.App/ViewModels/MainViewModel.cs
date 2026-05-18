@@ -228,6 +228,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         card.IsHighUsage = false;
         card.ShowUsagePercent = true;
         card.IsError = true;
+        card.CreditsBalance = null;
         card.Bars.Clear();
         card.HasBars = false;
     }
@@ -236,6 +237,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     {
         card.IsError = false;
         card.IsCreditsDisplay = false;
+        card.CreditsBalance = null;
         card.StatusText = "No data";
         card.UsedPercent = 0;
         card.ResetText = null;

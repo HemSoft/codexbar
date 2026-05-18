@@ -461,8 +461,11 @@ public sealed class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFa
 
     private bool TryGetFreshCachedLimits(out UnifiedRateLimits? cached)
     {
-        cached = this.cachedLimits;
+        // Read ticks first — Volatile.Read provides an acquire fence that
+        // guarantees the subsequent read of cachedLimits sees the value
+        // written before the corresponding Volatile.Write in CacheAndReturnLimits.
         var cachedTicks = Volatile.Read(ref this.limitsCachedAtTicks);
+        cached = this.cachedLimits;
         return cached is not null &&
                cachedTicks > 0 &&
                DateTimeOffset.UtcNow.UtcTicks - cachedTicks < CacheTtl.Ticks;

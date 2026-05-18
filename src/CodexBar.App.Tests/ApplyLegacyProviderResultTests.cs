@@ -329,6 +329,26 @@ public sealed class ApplyLegacyProviderResultTests
         MainViewModel.ApplyLegacyProviderResult(card, result);
 
         Assert.False(card.IsCreditsDisplay);
+        Assert.Null(card.CreditsBalance);
         Assert.True(card.ShowUsagePercent);
+    }
+
+    [Fact]
+    public void Transition_CreditsToError_ClearsCreditsBalance()
+    {
+        var card = CreateCard();
+        card.IsCreditsDisplay = true;
+        card.CreditsBalance = 25m;
+        var result = new ProviderUsageResult
+        {
+            Provider = ProviderId.OpenRouter,
+            Success = false,
+            ErrorMessage = "API down",
+        };
+
+        MainViewModel.ApplyLegacyProviderResult(card, result);
+
+        Assert.True(card.IsError);
+        Assert.Null(card.CreditsBalance);
     }
 }
