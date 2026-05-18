@@ -47,11 +47,17 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
     // Stable key → card view model for reconciliation
     private readonly Dictionary<string, ProviderCardViewModel> cardsByKey = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ItemCardReconciler _itemCardReconciler;
 
     public MainViewModel(UsageRefreshService refreshService, ISettingsService settingsService)
     {
         this.refreshService = refreshService;
         this.settingsService = settingsService;
+        this._itemCardReconciler = new ItemCardReconciler(
+            this.cardsByKey,
+            this.Providers,
+            this.UpdateOverageSessionSpending,
+            key => new RelayCommand(_ => this.ResetOverageSessionSpending(key)));
         this.refreshService.UsageUpdated += this.OnUsageUpdated;
         this.refreshService.NextRefreshChanged += this.OnNextRefreshChanged;
         this.refreshIndicatorTimer = new DispatcherTimer(DispatcherPriority.Background)
@@ -245,258 +251,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
     /// <summary>
     /// Generic reconciliation for providers that use per-item cards (e.g., Copilot, Claude).
+    /// Delegates to <see cref="ItemCardReconciler"/> for testability.
     /// </summary>
-    private void ReconcileItemCards(ProviderId providerId, string keyPrefix, ProviderUsageResult result)
-    {
-        var items = result.Items;
-        var errorKey = $"{keyPrefix}error";
-        var providerDisplayName = providerId.ToString();
-
-        // If no items and overall failure, show a single error card
-        if (items is null || items.Count == 0)
-        {
-            // Remove stale account cards so they don't linger alongside the error
-            var staleAccountKeys = this.cardsByKey.Keys
-                .Where(k => k.StartsWith(keyPrefix, StringComparison.OrdinalIgnoreCase) && k != errorKey)
-                .ToList();
-            foreach (var key in staleAccountKeys)
-            {
-                if (this.cardsByKey.TryGetValue(key, out var staleCard))
-                {
-                    this.Providers.Remove(staleCard);
-                    this.cardsByKey.Remove(key);
-                }
-            }
-
-            if (!this.cardsByKey.TryGetValue(errorKey, out var errorCard))
-            {
-                errorCard = new ProviderCardViewModel
-                {
-                    ProviderId = providerId,
-                    CardKey = errorKey,
-                    DisplayName = providerDisplayName,
-                    StatusText = result.ErrorMessage ?? "No accounts",
-                    IsError = true,
-                    ShowUsagePercent = false,
-                };
-                this.Providers.Add(errorCard);
-                this.cardsByKey[errorKey] = errorCard;
-            }
-            else
-            {
-                errorCard.StatusText = result.ErrorMessage ?? "No accounts";
-                errorCard.IsError = true;
-                errorCard.ShowUsagePercent = false;
-                errorCard.UsedPercent = 0;
-                errorCard.WeeklyText = null;
-                errorCard.WeeklyPercent = 0;
-                errorCard.ResetText = null;
-                errorCard.IsHighUsage = false;
-                errorCard.Bars.Clear();
-                errorCard.HasBars = false;
-            }
-
-            return;
-        }
-
-        // Remove stale error card if items arrived
-        if (this.cardsByKey.TryGetValue(errorKey, out var staleError))
-        {
-            this.Providers.Remove(staleError);
-            this.cardsByKey.Remove(errorKey);
-        }
-
-        var currentKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-        foreach (var item in items)
-        {
-            currentKeys.Add(item.Key);
-
-            if (!this.cardsByKey.TryGetValue(item.Key, out var card))
-            {
-                card = new ProviderCardViewModel
-                {
-                    ProviderId = providerId,
-                    CardKey = item.Key,
-                    DisplayName = item.DisplayName,
-                    StatusText = "Loading…",
-                    ResetSessionSpendingCommand = new RelayCommand(_ => this.ResetOverageSessionSpending(item.Key)),
-                };
-                this.Providers.Add(card);
-                this.cardsByKey[item.Key] = card;
-            }
-
-            card.DisplayName = item.DisplayName;
-
-            if (!item.Success)
-            {
-                card.StatusText = item.ErrorMessage ?? "Error";
-                card.UsedPercent = 0;
-                card.ResetText = null;
-                card.WeeklyText = null;
-                card.WeeklyPercent = 0;
-                card.IsHighUsage = false;
-                card.ShowUsagePercent = false;
-                card.IsError = true;
-                card.Bars.Clear();
-                card.HasBars = false;
-                card.OverageCost = null;
-                card.SessionSpending = null;
-                card.SessionResetTime = null;
-                continue;
-            }
-
-            card.IsError = false;
-            card.IsCreditsDisplay = false;
-
-            // Multi-bar display: if the item provides labelled bars, use them
-            if (item.Bars is { Count: > 0 })
-            {
-                ReconcileBars(card, item.Bars);
-                card.HasBars = true;
-
-                // Hide the legacy single-bar display
-                card.ShowUsagePercent = false;
-                card.WeeklyText = null;
-                card.WeeklyPercent = 0;
-                card.ResetText = null;
-
-                // Use PrimaryUsage for the status text only
-                if (item.PrimaryUsage is not null)
-                {
-                    card.StatusText = item.PrimaryUsage.UsageLabel ?? "No data";
-                    card.UsedPercent = item.PrimaryUsage.UsedPercent;
-                    card.IsHighUsage = item.PrimaryUsage.UsedPercent >= 0.8;
-                }
-                else
-                {
-                    card.StatusText = "No data";
-                    card.UsedPercent = 0;
-                    card.IsHighUsage = false;
-                }
-
-                card.OverageCost = null;
-                card.SessionSpending = null;
-                card.SessionResetTime = null;
-                continue;
-            }
-
-            // Legacy single-bar path
-            card.Bars.Clear();
-            card.HasBars = false;
-
-            if (item.PrimaryUsage is not null)
-            {
-                card.UsedPercent = item.PrimaryUsage.UsedPercent;
-                card.StatusText = item.PrimaryUsage.UsageLabel ?? $"{item.PrimaryUsage.UsedPercent:P0} used";
-                card.ResetText = item.PrimaryUsage.ResetDescription;
-                card.IsHighUsage = item.PrimaryUsage.UsedPercent >= 0.8;
-                card.ShowUsagePercent = !item.PrimaryUsage.IsUnlimited;
-            }
-            else if (item.CreditsRemaining is not null)
-            {
-                card.StatusText = $"${item.CreditsRemaining:F2}";
-                card.UsedPercent = 0;
-                card.IsHighUsage = false;
-                card.ShowUsagePercent = false;
-                card.IsCreditsDisplay = true;
-                card.ResetText = null;
-            }
-            else if (item.SecondaryUsage is not null)
-            {
-                // PrimaryUsage missing but secondary quota exists — show it as the main display.
-                card.UsedPercent = item.SecondaryUsage.UsedPercent;
-                card.StatusText = item.SecondaryUsage.UsageLabel ?? $"{item.SecondaryUsage.UsedPercent:P0} used";
-                card.ResetText = item.SecondaryUsage.ResetDescription;
-                card.IsHighUsage = item.SecondaryUsage.UsedPercent >= 0.8;
-                card.ShowUsagePercent = !item.SecondaryUsage.IsUnlimited;
-            }
-            else
-            {
-                card.StatusText = "No data";
-                card.UsedPercent = 0;
-                card.ShowUsagePercent = true;
-                card.ResetText = null;
-                card.IsHighUsage = false;
-            }
-
-            if (item.PrimaryUsage is not null && item.SecondaryUsage is not null)
-            {
-                // Only show secondary as weekly when primary is present;
-                // when secondary is promoted to the main display above, avoid duplication.
-                card.WeeklyText = item.SecondaryUsage.UsageLabel;
-                card.WeeklyPercent = item.SecondaryUsage.UsedPercent;
-            }
-            else
-            {
-                card.WeeklyText = null;
-                card.WeeklyPercent = 0;
-            }
-
-            // Overage-based session spending (e.g., Copilot premium interactions)
-            if (item.OverageCost is not null)
-            {
-                card.OverageCost = item.OverageCost;
-                this.UpdateOverageSessionSpending(card);
-            }
-            else
-            {
-                card.OverageCost = null;
-                card.SessionSpending = null;
-                card.SessionResetTime = null;
-            }
-        }
-
-        // Remove cards for accounts that are no longer present
-        var staleKeys = this.cardsByKey.Keys
-            .Where(k => k.StartsWith(keyPrefix, StringComparison.OrdinalIgnoreCase) && !currentKeys.Contains(k))
-            .ToList();
-
-        foreach (var key in staleKeys)
-        {
-            if (this.cardsByKey.TryGetValue(key, out var staleCard))
-            {
-                this.Providers.Remove(staleCard);
-                this.cardsByKey.Remove(key);
-            }
-        }
-    }
-
-    /// <summary>
-    /// Reconciles the bars collection on a card VM to match the incoming bar data.
-    /// </summary>
-    private static void ReconcileBars(ProviderCardViewModel card, IReadOnlyList<UsageBar> bars)
-    {
-        // Simple reconciliation: update in-place where possible, add/remove as needed
-        for (int i = 0; i < bars.Count; i++)
-        {
-            var bar = bars[i];
-            if (i < card.Bars.Count)
-            {
-                var existing = card.Bars[i];
-                existing.Label = bar.Label;
-                existing.UsedPercent = bar.UsedPercent;
-                existing.ResetDescription = bar.ResetDescription;
-                existing.IsHighUsage = bar.UsedPercent >= 0.8;
-            }
-            else
-            {
-                card.Bars.Add(new UsageBarViewModel
-                {
-                    Label = bar.Label,
-                    UsedPercent = bar.UsedPercent,
-                    ResetDescription = bar.ResetDescription,
-                    IsHighUsage = bar.UsedPercent >= 0.8,
-                });
-            }
-        }
-
-        // Remove excess bars
-        while (card.Bars.Count > bars.Count)
-        {
-            card.Bars.RemoveAt(card.Bars.Count - 1);
-        }
-    }
+    private void ReconcileItemCards(ProviderId providerId, string keyPrefix, ProviderUsageResult result) =>
+        this._itemCardReconciler.Reconcile(providerId, keyPrefix, result);
 
     private void UpdateSessionSpending(ProviderCardViewModel card)
     {
