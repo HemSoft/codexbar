@@ -55,6 +55,18 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
     private string? _lastDiscoveryError;
     private readonly ConcurrentDictionary<string, string> _tokenCache = new(StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>
+    /// Gets or sets an optional delegate that overrides token resolution for a given username.
+    /// When set, <see cref="ResolveTokenForUserAsync"/> delegates to this instead of spawning <c>gh</c>.
+    /// </summary>
+    internal Func<string, CancellationToken, Task<string?>>? TokenResolverOverride { get; set; }
+
+    /// <summary>
+    /// Gets or sets an optional delegate that overrides account discovery.
+    /// When set, <see cref="GetAccountsToFetchAsync"/> calls this instead of <see cref="DiscoverGhAccountsAsync"/>.
+    /// </summary>
+    internal Func<CancellationToken, Task<List<string>>>? AccountDiscoveryOverride { get; set; }
+
     public ProviderMetadata Metadata { get; } = new()
     {
         Id = ProviderId.Copilot,
@@ -150,7 +162,10 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
                     return [];
                 }
 
-                this._cachedAccounts = await this.DiscoverGhAccountsAsync(ct);
+                var discoveryOverride = this.AccountDiscoveryOverride;
+                this._cachedAccounts = discoveryOverride is not null
+                    ? await discoveryOverride(ct)
+                    : await this.DiscoverGhAccountsAsync(ct);
             }
 
             // Cache empty results for 5 minutes to avoid repeated process spawning on persistent failures
@@ -420,6 +435,17 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
         if (this._tokenCache.TryGetValue(username, out var cached))
         {
             return cached;
+        }
+
+        if (this.TokenResolverOverride is not null)
+        {
+            var resolved = await this.TokenResolverOverride(username, ct);
+            if (!string.IsNullOrWhiteSpace(resolved))
+            {
+                this._tokenCache[username] = resolved;
+            }
+
+            return resolved;
         }
 
         try
