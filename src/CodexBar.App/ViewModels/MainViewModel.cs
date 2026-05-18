@@ -222,13 +222,14 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     {
         card.StatusText = errorMessage ?? "Error";
         card.UsedPercent = 0;
+        card.IsCreditsDisplay = false;
+        card.CreditsBalance = null;
         card.ResetText = null;
         card.WeeklyText = null;
         card.WeeklyPercent = 0;
         card.IsHighUsage = false;
         card.ShowUsagePercent = true;
         card.IsError = true;
-        card.CreditsBalance = null;
         card.Bars.Clear();
         card.HasBars = false;
     }

@@ -349,6 +349,7 @@ public sealed class ApplyLegacyProviderResultTests
         MainViewModel.ApplyLegacyProviderResult(card, result);
 
         Assert.True(card.IsError);
+        Assert.False(card.IsCreditsDisplay);
         Assert.Null(card.CreditsBalance);
     }
 }
