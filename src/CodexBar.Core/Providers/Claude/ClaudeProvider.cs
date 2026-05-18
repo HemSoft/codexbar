@@ -120,6 +120,10 @@ public sealed class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFa
 
             return BuildFetchResult(limits, displaySub, totalTokens, equivalentCost, accountInfo);
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
         catch (Exception ex)
         {
             this.logger.LogWarning(ex, "Claude fetch failed");

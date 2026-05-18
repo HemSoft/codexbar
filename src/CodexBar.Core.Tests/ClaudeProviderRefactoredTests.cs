@@ -58,12 +58,12 @@ public class ClaudeProviderRefactoredTests
     [Fact]
     public void BuildSessionSnapshot_NullLimits_NoData_JustUnavailable()
     {
-        var snapshot = ClaudeProvider.BuildSessionSnapshot(null, string.Empty, 0, 0, null);
+        // Production always passes FormatSubscriptionType output — mirror that here
+        var displaySub = ClaudeProvider.FormatSubscriptionType(string.Empty);
+        var snapshot = ClaudeProvider.BuildSessionSnapshot(null, displaySub, 0, 0, null);
 
         Assert.True(snapshot.IsUnlimited);
-
-        // Empty subscription type produces " plan" prefix via FormatUsageLabel
-        Assert.Equal(" plan · Rate limits unavailable", snapshot.UsageLabel);
+        Assert.Equal("Unknown plan · Rate limits unavailable", snapshot.UsageLabel);
     }
 
     // --- BuildSessionSnapshotFromLimits ---
