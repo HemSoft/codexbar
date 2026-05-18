@@ -1155,4 +1155,85 @@ public sealed class ItemCardReconcilerTests
 
         Assert.Same(card1, card2);
     }
+
+    // ---------------------------------------------------------------
+    // Credits → Error transition clears credits state
+    // ---------------------------------------------------------------
+    [Fact]
+    public void Reconcile_CreditsToError_ClearsCreditsState()
+    {
+        // First render with CreditsRemaining
+        this._sut.Reconcile(ProviderId.OpenCodeGo, "opencode-go:", new ProviderUsageResult
+        {
+            Provider = ProviderId.OpenCodeGo,
+            Success = true,
+            Items =
+            [
+                new UsageItem
+                {
+                    Key = "opencode-go:acct1",
+                    DisplayName = "OpenCode",
+                    Success = true,
+                    CreditsRemaining = 12.50m,
+                },
+            ],
+        });
+
+        var card = this._providers[0];
+        Assert.True(card.IsCreditsDisplay);
+
+        // Then item fetch fails
+        this._sut.Reconcile(ProviderId.OpenCodeGo, "opencode-go:", new ProviderUsageResult
+        {
+            Provider = ProviderId.OpenCodeGo,
+            Success = true,
+            Items =
+            [
+                new UsageItem
+                {
+                    Key = "opencode-go:acct1",
+                    DisplayName = "OpenCode",
+                    Success = false,
+                    ErrorMessage = "API down",
+                },
+            ],
+        });
+
+        Assert.True(card.IsError);
+        Assert.False(card.IsCreditsDisplay);
+        Assert.Null(card.CreditsBalance);
+        Assert.Equal("API down", card.StatusText);
+    }
+
+    [Fact]
+    public void ApplyItemError_ClearsCreditsDisplayAndBalance()
+    {
+        var card = new ProviderCardViewModel
+        {
+            IsCreditsDisplay = true,
+            CreditsBalance = 42.00m,
+        };
+
+        ItemCardReconciler.ApplyItemError(card, "Timeout");
+
+        Assert.False(card.IsCreditsDisplay);
+        Assert.Null(card.CreditsBalance);
+        Assert.True(card.IsError);
+    }
+
+    [Fact]
+    public void ResetCardToError_ClearsCreditsDisplayAndBalance()
+    {
+        var card = new ProviderCardViewModel
+        {
+            IsCreditsDisplay = true,
+            CreditsBalance = 15.00m,
+        };
+
+        ItemCardReconciler.ResetCardToError(card, "Gone");
+
+        Assert.False(card.IsCreditsDisplay);
+        Assert.Null(card.CreditsBalance);
+        Assert.True(card.IsError);
+    }
 }

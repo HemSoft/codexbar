@@ -140,6 +140,8 @@ internal sealed class ItemCardReconciler
         card.WeeklyPercent = 0;
         card.ResetText = null;
         card.IsHighUsage = false;
+        card.IsCreditsDisplay = false;
+        card.CreditsBalance = null;
         card.Bars.Clear();
         card.HasBars = false;
     }
@@ -197,6 +199,8 @@ internal sealed class ItemCardReconciler
         card.IsHighUsage = false;
         card.ShowUsagePercent = false;
         card.IsError = true;
+        card.IsCreditsDisplay = false;
+        card.CreditsBalance = null;
         card.Bars.Clear();
         card.HasBars = false;
         card.OverageCost = null;
@@ -211,6 +215,7 @@ internal sealed class ItemCardReconciler
     {
         card.IsError = false;
         card.IsCreditsDisplay = false;
+        card.CreditsBalance = null;
 
         if (item.Bars is { Count: > 0 })
         {
