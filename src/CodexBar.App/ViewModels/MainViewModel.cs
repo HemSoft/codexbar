@@ -290,27 +290,15 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         }
 
         var baseline = this.settingsService.GetSessionBaseline(card.ProviderId);
-        if (baseline is null)
+        var result = SessionSpendingCalculator.CalculateCreditsSpending(balance, baseline);
+
+        if (result.SetBaseline is { } newBaseline)
         {
-            // First time seeing this provider — set baseline to current balance
-            this.settingsService.SetSessionBaseline(card.ProviderId, balance);
-            card.SessionSpending = "$0.00";
-            card.SessionResetTime = FormatResetTime(this.settingsService.GetSessionResetTime(card.ProviderId));
-            return;
+            this.settingsService.SetSessionBaseline(card.ProviderId, newBaseline);
         }
 
-        if (balance > baseline.Value)
-        {
-            // Balance increased (top-up) — auto-reset baseline
-            this.settingsService.SetSessionBaseline(card.ProviderId, balance);
-            card.SessionSpending = "$0.00";
-            card.SessionResetTime = FormatResetTime(this.settingsService.GetSessionResetTime(card.ProviderId));
-            return;
-        }
-
-        var spending = baseline.Value - balance;
-        card.SessionSpending = $"${spending:F2}";
-        card.SessionResetTime = FormatResetTime(this.settingsService.GetSessionResetTime(card.ProviderId));
+        card.SessionSpending = result.SpendingText;
+        card.SessionResetTime = SessionSpendingCalculator.FormatResetTime(this.settingsService.GetSessionResetTime(card.ProviderId));
     }
 
     private void UpdateOverageSessionSpending(ProviderCardViewModel card)
@@ -324,26 +312,15 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
         var key = card.CardKey.ToLowerInvariant();
         var baseline = this.settingsService.GetSessionBaseline(key);
-        if (baseline is null)
+        var result = SessionSpendingCalculator.CalculateOverageSpending(overage, baseline);
+
+        if (result.SetBaseline is { } newBaseline)
         {
-            this.settingsService.SetSessionBaseline(key, overage);
-            card.SessionSpending = "$0.00";
-            card.SessionResetTime = FormatResetTime(this.settingsService.GetSessionResetTime(key));
-            return;
+            this.settingsService.SetSessionBaseline(key, newBaseline);
         }
 
-        if (overage < baseline.Value)
-        {
-            // Overage decreased (monthly quota reset) — auto-reset baseline
-            this.settingsService.SetSessionBaseline(key, overage);
-            card.SessionSpending = "$0.00";
-            card.SessionResetTime = FormatResetTime(this.settingsService.GetSessionResetTime(key));
-            return;
-        }
-
-        var spending = overage - baseline.Value;
-        card.SessionSpending = $"${spending:F2}";
-        card.SessionResetTime = FormatResetTime(this.settingsService.GetSessionResetTime(key));
+        card.SessionSpending = result.SpendingText;
+        card.SessionResetTime = SessionSpendingCalculator.FormatResetTime(this.settingsService.GetSessionResetTime(key));
     }
 
     private void ResetSessionSpending(ProviderId providerId)
@@ -360,7 +337,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         }
 
         card.SessionSpending = "$0.00";
-        card.SessionResetTime = FormatResetTime(this.settingsService.GetSessionResetTime(providerId));
+        card.SessionResetTime = SessionSpendingCalculator.FormatResetTime(this.settingsService.GetSessionResetTime(providerId));
     }
 
     private void ResetOverageSessionSpending(string cardKey)
@@ -376,11 +353,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         }
 
         card.SessionSpending = "$0.00";
-        card.SessionResetTime = FormatResetTime(this.settingsService.GetSessionResetTime(cardKey.ToLowerInvariant()));
+        card.SessionResetTime = SessionSpendingCalculator.FormatResetTime(this.settingsService.GetSessionResetTime(cardKey.ToLowerInvariant()));
     }
-
-    private static string? FormatResetTime(DateTimeOffset? resetTime) =>
-        resetTime?.ToLocalTime().ToString("yyyy-MM-dd hh:mm tt");
 
     public void Dispose()
     {

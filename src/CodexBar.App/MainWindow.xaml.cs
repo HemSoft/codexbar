@@ -13,10 +13,6 @@ using CodexBar.Core.Configuration;
 
 public partial class MainWindow : Window
 {
-    private const double ZoomStep = 0.1;
-    private const double MinZoom = 0.5;
-    private const double MaxZoom = 3.0;
-
     private const int WMNCHITTEST = 0x0084;
     private const int WMENTERSIZEMOVE = 0x0231;
     private const int WMEXITSIZEMOVE = 0x0232;
@@ -82,7 +78,7 @@ public partial class MainWindow : Window
         this.hideTimer.Tick += this.HideTimer_Tick;
 
         var appSettings = this.settings.Load();
-        this.zoomLevel = Math.Clamp(appSettings.ZoomLevel, MinZoom, MaxZoom);
+        this.zoomLevel = ZoomHelper.ClampZoom(appSettings.ZoomLevel);
         this.ZoomTransform.ScaleX = this.zoomLevel;
         this.ZoomTransform.ScaleY = this.zoomLevel;
 
@@ -220,23 +216,20 @@ public partial class MainWindow : Window
 
     protected override void OnKeyDown(KeyEventArgs e)
     {
-        if (Keyboard.Modifiers == ModifierKeys.Control)
+        var zoomKey = e.Key switch
         {
-            switch (e.Key)
-            {
-                case Key.OemPlus or Key.Add:
-                    this.ApplyZoom(this.zoomLevel + ZoomStep);
-                    e.Handled = true;
-                    return;
-                case Key.OemMinus or Key.Subtract:
-                    this.ApplyZoom(this.zoomLevel - ZoomStep);
-                    e.Handled = true;
-                    return;
-                case Key.D0 or Key.NumPad0:
-                    this.ApplyZoom(1.0);
-                    e.Handled = true;
-                    return;
-            }
+            Key.OemPlus or Key.Add => ZoomKey.ZoomIn,
+            Key.OemMinus or Key.Subtract => ZoomKey.ZoomOut,
+            Key.D0 or Key.NumPad0 => ZoomKey.ResetZoom,
+            _ => ZoomKey.Other,
+        };
+
+        var result = ZoomHelper.EvaluateKeyInput(this.zoomLevel, Keyboard.Modifiers == ModifierKeys.Control, zoomKey);
+        if (result is not null)
+        {
+            this.ApplyZoom(result.Value.NewZoom);
+            e.Handled = true;
+            return;
         }
 
         base.OnKeyDown(e);
@@ -249,13 +242,13 @@ public partial class MainWindow : Window
             return;
         }
 
-        this.ApplyZoom(this.zoomLevel + (e.Delta > 0 ? ZoomStep : -ZoomStep));
+        this.ApplyZoom(ZoomHelper.ClampZoom(this.zoomLevel + (e.Delta > 0 ? ZoomHelper.ZoomStep : -ZoomHelper.ZoomStep)));
         e.Handled = true;
     }
 
     private void ApplyZoom(double newZoom)
     {
-        this.zoomLevel = Math.Clamp(newZoom, MinZoom, MaxZoom);
+        this.zoomLevel = ZoomHelper.ClampZoom(newZoom);
         this.ZoomTransform.ScaleX = this.zoomLevel;
         this.ZoomTransform.ScaleY = this.zoomLevel;
     }
