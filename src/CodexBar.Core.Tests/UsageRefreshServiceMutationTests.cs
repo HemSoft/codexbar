@@ -328,6 +328,9 @@ public class UsageRefreshServiceMutationTests : IAsyncDisposable
             return;
         }
 
-        await Task.WhenAny(tcs.Task, Task.Delay(2000));
+        var completed = await Task.WhenAny(tcs.Task, Task.Delay(2000));
+        Assert.True(
+            completed == tcs.Task || this._sut.NextRefreshAtUtc is not null,
+            "Timed out waiting for NextRefreshAtUtc to be set.");
     }
 }

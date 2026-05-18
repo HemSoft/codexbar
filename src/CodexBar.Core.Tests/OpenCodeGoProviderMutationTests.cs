@@ -187,7 +187,7 @@ public class OpenCodeGoProviderMutationTests : IDisposable
     {
         var handler = new ExceptionHandler(new TaskCanceledException("Timeout"));
         var settings = CreateSettings(enabled: true, workspaceId: "ws-123", apiKey: "cookie");
-        var factory = new SimpleFactory(handler);
+        var factory = CreateFactory(handler);
         var provider = new OpenCodeGoProvider(NullLogger<OpenCodeGoProvider>.Instance, factory, settings);
 
         var result = await provider.FetchUsageAsync();
@@ -235,7 +235,7 @@ public class OpenCodeGoProviderMutationTests : IDisposable
         var html = BuildHtml(rollingPct: 30, rollingSec: 600);
         var handler = new CapturingHandler(OkHtml(html));
         var settings = CreateSettings(enabled: true, workspaceId: "settings-workspace", apiKey: "settings-cookie");
-        var factory = new SimpleFactory(handler);
+        var factory = CreateFactory(handler);
         var provider = new OpenCodeGoProvider(NullLogger<OpenCodeGoProvider>.Instance, factory, settings);
 
         await provider.FetchUsageAsync();
@@ -254,7 +254,7 @@ public class OpenCodeGoProviderMutationTests : IDisposable
         var html = BuildHtml(rollingPct: 30, rollingSec: 600);
         var handler = new CapturingHandler(OkHtml(html));
         var settings = CreateSettings(enabled: true, workspaceId: "settings-ws", apiKey: "settings-cookie-value");
-        var factory = new SimpleFactory(handler);
+        var factory = CreateFactory(handler);
         var provider = new OpenCodeGoProvider(NullLogger<OpenCodeGoProvider>.Instance, factory, settings);
 
         await provider.FetchUsageAsync();
@@ -272,7 +272,7 @@ public class OpenCodeGoProviderMutationTests : IDisposable
         var html = BuildHtml(rollingPct: 30, rollingSec: 600);
         var handler = new CapturingHandler(OkHtml(html));
         var settings = CreateSettings(enabled: true, workspaceId: "ws", apiKey: "cookie");
-        var factory = new SimpleFactory(handler);
+        var factory = CreateFactory(handler);
         var provider = new OpenCodeGoProvider(NullLogger<OpenCodeGoProvider>.Instance, factory, settings);
 
         await provider.FetchUsageAsync();
@@ -287,7 +287,7 @@ public class OpenCodeGoProviderMutationTests : IDisposable
         var html = BuildHtml(rollingPct: 30, rollingSec: 600);
         var handler = new CapturingHandler(OkHtml(html));
         var settings = CreateSettings(enabled: true, workspaceId: "ws", apiKey: "cookie");
-        var factory = new SimpleFactory(handler);
+        var factory = CreateFactory(handler);
         var provider = new OpenCodeGoProvider(NullLogger<OpenCodeGoProvider>.Instance, factory, settings);
 
         await provider.FetchUsageAsync();
@@ -303,7 +303,7 @@ public class OpenCodeGoProviderMutationTests : IDisposable
         var html = BuildHtml(rollingPct: 30, rollingSec: 600);
         var handler = new CapturingHandler(OkHtml(html));
         var settings = CreateSettings(enabled: true, workspaceId: "my-special-ws", apiKey: "cookie");
-        var factory = new SimpleFactory(handler);
+        var factory = CreateFactory(handler);
         var provider = new OpenCodeGoProvider(NullLogger<OpenCodeGoProvider>.Instance, factory, settings);
 
         await provider.FetchUsageAsync();
@@ -376,14 +376,14 @@ public class OpenCodeGoProviderMutationTests : IDisposable
     {
         settings ??= CreateSettings(enabled: true, workspaceId: "ws-123", apiKey: "auth-cookie");
         var handler = new SimpleHandler(response ?? new HttpResponseMessage(HttpStatusCode.OK));
-        var factory = new SimpleFactory(handler);
+        var factory = CreateFactory(handler);
         return new OpenCodeGoProvider(NullLogger<OpenCodeGoProvider>.Instance, factory, settings);
     }
 
     private static OpenCodeGoProvider CreateProviderWithHandler(CountingHandler handler)
     {
         var settings = CreateSettings(enabled: true, workspaceId: "ws-123", apiKey: "auth-cookie");
-        var factory = new SimpleFactory(handler);
+        var factory = CreateFactory(handler);
         return new OpenCodeGoProvider(NullLogger<OpenCodeGoProvider>.Instance, factory, settings);
     }
 
@@ -443,8 +443,10 @@ public class OpenCodeGoProviderMutationTests : IDisposable
             throw exception;
     }
 
-    private sealed class SimpleFactory(HttpMessageHandler handler) : IHttpClientFactory
+    private static IHttpClientFactory CreateFactory(HttpMessageHandler handler)
     {
-        public HttpClient CreateClient(string name) => new(handler);
+        var factory = Substitute.For<IHttpClientFactory>();
+        factory.CreateClient(Arg.Any<string>()).Returns(new HttpClient(handler));
+        return factory;
     }
 }

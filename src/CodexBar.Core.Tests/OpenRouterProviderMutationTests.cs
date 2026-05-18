@@ -153,7 +153,7 @@ public class OpenRouterProviderMutationTests : IDisposable
     {
         var handler = new ExceptionHandler(new HttpRequestException("Unauthorized", null, System.Net.HttpStatusCode.Unauthorized));
         var settings = CreateSettings(enabled: true, apiKey: "key");
-        var factory = new SimpleFactory(handler);
+        var factory = CreateFactory(handler);
         var provider = new OpenRouterProvider(NullLogger<OpenRouterProvider>.Instance, factory, settings);
         var result = await provider.FetchUsageAsync();
 
@@ -166,7 +166,7 @@ public class OpenRouterProviderMutationTests : IDisposable
     {
         var handler = new ExceptionHandler(new HttpRequestException("Forbidden", null, System.Net.HttpStatusCode.Forbidden));
         var settings = CreateSettings(enabled: true, apiKey: "key");
-        var factory = new SimpleFactory(handler);
+        var factory = CreateFactory(handler);
         var provider = new OpenRouterProvider(NullLogger<OpenRouterProvider>.Instance, factory, settings);
         var result = await provider.FetchUsageAsync();
 
@@ -179,7 +179,7 @@ public class OpenRouterProviderMutationTests : IDisposable
     {
         var handler = new ExceptionHandler(new HttpRequestException("Rate limited", null, (System.Net.HttpStatusCode)429));
         var settings = CreateSettings(enabled: true, apiKey: "key");
-        var factory = new SimpleFactory(handler);
+        var factory = CreateFactory(handler);
         var provider = new OpenRouterProvider(NullLogger<OpenRouterProvider>.Instance, factory, settings);
         var result = await provider.FetchUsageAsync();
 
@@ -192,7 +192,7 @@ public class OpenRouterProviderMutationTests : IDisposable
     {
         var handler = new ExceptionHandler(new OperationCanceledException("timeout"));
         var settings = CreateSettings(enabled: true, apiKey: "key");
-        var factory = new SimpleFactory(handler);
+        var factory = CreateFactory(handler);
         var provider = new OpenRouterProvider(NullLogger<OpenRouterProvider>.Instance, factory, settings);
 
         var result = await provider.FetchUsageAsync();
@@ -206,7 +206,7 @@ public class OpenRouterProviderMutationTests : IDisposable
     {
         var handler = new ExceptionHandler(new InvalidOperationException("test error"));
         var settings = CreateSettings(enabled: true, apiKey: "key");
-        var factory = new SimpleFactory(handler);
+        var factory = CreateFactory(handler);
         var provider = new OpenRouterProvider(NullLogger<OpenRouterProvider>.Instance, factory, settings);
 
         var result = await provider.FetchUsageAsync();
@@ -234,7 +234,7 @@ public class OpenRouterProviderMutationTests : IDisposable
     {
         var handler = new CapturingHandler(OkJson("""{"data": {"total_credits": 10.0, "total_usage": 1.0}}"""));
         var settings = CreateSettings(enabled: true, apiKey: "my-secret-key");
-        var factory = new SimpleFactory(handler);
+        var factory = CreateFactory(handler);
         var provider = new OpenRouterProvider(NullLogger<OpenRouterProvider>.Instance, factory, settings);
 
         await provider.FetchUsageAsync();
@@ -249,7 +249,7 @@ public class OpenRouterProviderMutationTests : IDisposable
     {
         var handler = new CapturingHandler(OkJson("""{"data": {"total_credits": 10.0, "total_usage": 1.0}}"""));
         var settings = CreateSettings(enabled: true, apiKey: "key");
-        var factory = new SimpleFactory(handler);
+        var factory = CreateFactory(handler);
         var provider = new OpenRouterProvider(NullLogger<OpenRouterProvider>.Instance, factory, settings);
 
         await provider.FetchUsageAsync();
@@ -264,7 +264,7 @@ public class OpenRouterProviderMutationTests : IDisposable
     {
         var handler = new CapturingHandler(OkJson("""{"data": {"total_credits": 10.0, "total_usage": 1.0}}"""));
         var settings = CreateSettings(enabled: true, apiKey: "key");
-        var factory = new SimpleFactory(handler);
+        var factory = CreateFactory(handler);
         var provider = new OpenRouterProvider(NullLogger<OpenRouterProvider>.Instance, factory, settings);
 
         await provider.FetchUsageAsync();
@@ -285,6 +285,7 @@ public class OpenRouterProviderMutationTests : IDisposable
 
         Assert.False(result.Success);
         Assert.NotNull(result.ErrorMessage);
+        Assert.Contains("500", result.ErrorMessage);
     }
 
     // === Env var takes priority over settings ===
@@ -294,7 +295,7 @@ public class OpenRouterProviderMutationTests : IDisposable
         Environment.SetEnvironmentVariable("OPENROUTER_API_KEY", "env-key");
         var handler = new CapturingHandler(OkJson("""{"data": {"total_credits": 10.0, "total_usage": 1.0}}"""));
         var settings = CreateSettings(enabled: true, apiKey: "settings-key");
-        var factory = new SimpleFactory(handler);
+        var factory = CreateFactory(handler);
         var provider = new OpenRouterProvider(NullLogger<OpenRouterProvider>.Instance, factory, settings);
 
         await provider.FetchUsageAsync();
@@ -310,7 +311,7 @@ public class OpenRouterProviderMutationTests : IDisposable
     {
         settings ??= CreateSettings(enabled: true, apiKey: "test-key");
         var handler = new SimpleHandler(response ?? new HttpResponseMessage(HttpStatusCode.OK));
-        var factory = new SimpleFactory(handler);
+        var factory = CreateFactory(handler);
         return new OpenRouterProvider(NullLogger<OpenRouterProvider>.Instance, factory, settings);
     }
 
@@ -350,8 +351,10 @@ public class OpenRouterProviderMutationTests : IDisposable
             throw exception;
     }
 
-    private sealed class SimpleFactory(HttpMessageHandler handler) : IHttpClientFactory
+    private static IHttpClientFactory CreateFactory(HttpMessageHandler handler)
     {
-        public HttpClient CreateClient(string name) => new(handler);
+        var factory = Substitute.For<IHttpClientFactory>();
+        factory.CreateClient(Arg.Any<string>()).Returns(new HttpClient(handler));
+        return factory;
     }
 }
