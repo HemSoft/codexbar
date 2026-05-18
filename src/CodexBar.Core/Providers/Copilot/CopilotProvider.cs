@@ -345,69 +345,23 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
         var token = await this.ResolveTokenForUserAsync(username, ct);
         if (token is null)
         {
-            return new CopilotAccountResult
-            {
-                Username = username,
-                Success = false,
-                ErrorMessage = $"No token for '{username}'. Run 'gh auth login'.",
-            };
+            return CopilotAccountResult.TokenMissing(username);
         }
 
         try
         {
-            using var request = new HttpRequestMessage(
-                HttpMethod.Get,
-                "https://api.github.com/copilot_internal/user");
-            request.Headers.Authorization = new AuthenticationHeaderValue("token", token);
-            request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-            request.Headers.Add("Editor-Version", EditorVersion);
-            request.Headers.Add("Editor-Plugin-Version", EditorPluginVersion);
-            request.Headers.UserAgent.ParseAdd(UserAgentProduct);
-            request.Headers.Add("X-Github-Api-Version", GitHubApiVersion);
-
+            using var request = BuildCopilotApiRequest(token);
             using var httpClient = this._httpClientFactory.CreateClient();
             using var response = await httpClient.SendAsync(request, ct);
             response.EnsureSuccessStatusCode();
 
             var json = await response.Content.ReadAsStringAsync(ct);
-            var data = JsonSerializer.Deserialize<CopilotUserResponse>(json);
-
-            if (data is null)
-            {
-                return new CopilotAccountResult
-                {
-                    Username = username,
-                    Success = false,
-                    ErrorMessage = "Empty API response",
-                };
-            }
-
-            this._logger.LogDebug(
-                "Copilot {User} ({Plan}): premium remaining={Remaining}/{Entitlement}",
-                username, data.CopilotPlan ?? "unknown",
-                data.QuotaSnapshots?.PremiumInteractions?.Remaining ?? 0,
-                data.QuotaSnapshots?.PremiumInteractions?.Entitlement ?? 0);
-
-            return new CopilotAccountResult
-            {
-                Username = username,
-                Plan = data.CopilotPlan,
-                Organizations = data.OrganizationLoginList?.AsReadOnly(),
-                PremiumInteractions = data.QuotaSnapshots?.PremiumInteractions,
-                Chat = data.QuotaSnapshots?.Chat,
-                QuotaResetDateUtc = data.QuotaResetDateUtc,
-                Success = true,
-            };
+            return ParseCopilotApiResponse(json, username, this._logger);
         }
         catch (HttpRequestException ex) when (ex.StatusCode == System.Net.HttpStatusCode.Unauthorized)
         {
             await this.InvalidateTokenForUserAsync(username, ct);
-            return new CopilotAccountResult
-            {
-                Username = username,
-                Success = false,
-                ErrorMessage = "Token expired or invalid. Run 'gh auth login'.",
-            };
+            return CopilotAccountResult.Unauthorized(username);
         }
         catch (OperationCanceledException)
         {
@@ -416,13 +370,49 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
         catch (Exception ex)
         {
             this._logger.LogWarning(ex, "Copilot fetch failed for {User}", username);
-            return new CopilotAccountResult
-            {
-                Username = username,
-                Success = false,
-                ErrorMessage = ex.Message,
-            };
+            return CopilotAccountResult.Error(username, ex.Message);
         }
+    }
+
+    internal static HttpRequestMessage BuildCopilotApiRequest(string token)
+    {
+        var request = new HttpRequestMessage(
+            HttpMethod.Get,
+            "https://api.github.com/copilot_internal/user");
+        request.Headers.Authorization = new AuthenticationHeaderValue("token", token);
+        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+        request.Headers.Add("Editor-Version", EditorVersion);
+        request.Headers.Add("Editor-Plugin-Version", EditorPluginVersion);
+        request.Headers.UserAgent.ParseAdd(UserAgentProduct);
+        request.Headers.Add("X-Github-Api-Version", GitHubApiVersion);
+        return request;
+    }
+
+    internal static CopilotAccountResult ParseCopilotApiResponse(string json, string username, ILogger? logger = null)
+    {
+        var data = JsonSerializer.Deserialize<CopilotUserResponse>(json);
+
+        if (data is null)
+        {
+            return CopilotAccountResult.Error(username, "Empty API response");
+        }
+
+        logger?.LogDebug(
+            "Copilot {User} ({Plan}): premium remaining={Remaining}/{Entitlement}",
+            username, data.CopilotPlan ?? "unknown",
+            data.QuotaSnapshots?.PremiumInteractions?.Remaining ?? 0,
+            data.QuotaSnapshots?.PremiumInteractions?.Entitlement ?? 0);
+
+        return new CopilotAccountResult
+        {
+            Username = username,
+            Plan = data.CopilotPlan,
+            Organizations = data.OrganizationLoginList?.AsReadOnly(),
+            PremiumInteractions = data.QuotaSnapshots?.PremiumInteractions,
+            Chat = data.QuotaSnapshots?.Chat,
+            QuotaResetDateUtc = data.QuotaResetDateUtc,
+            Success = true,
+        };
     }
 
     /// <summary>

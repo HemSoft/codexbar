@@ -96,4 +96,25 @@ public sealed record CopilotAccountResult
 
     /// <summary>Gets error message if fetch failed.</summary>
     public string? ErrorMessage { get; init; }
+
+    internal static CopilotAccountResult TokenMissing(string username) => new()
+    {
+        Username = username,
+        Success = false,
+        ErrorMessage = $"No token for '{username}'. Run 'gh auth login'.",
+    };
+
+    internal static CopilotAccountResult Unauthorized(string username) => new()
+    {
+        Username = username,
+        Success = false,
+        ErrorMessage = "Token expired or invalid. Run 'gh auth login'.",
+    };
+
+    internal static CopilotAccountResult Error(string username, string message) => new()
+    {
+        Username = username,
+        Success = false,
+        ErrorMessage = message,
+    };
 }
