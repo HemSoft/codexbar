@@ -224,7 +224,8 @@ public partial class MainWindow : Window
             _ => ZoomKey.Other,
         };
 
-        var result = ZoomHelper.EvaluateKeyInput(this.zoomLevel, Keyboard.Modifiers == ModifierKeys.Control, zoomKey);
+        var isCtrlHeld = (Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control;
+        var result = ZoomHelper.EvaluateKeyInput(this.zoomLevel, isCtrlHeld, zoomKey);
         if (result is not null)
         {
             this.ApplyZoom(result.Value.NewZoom);

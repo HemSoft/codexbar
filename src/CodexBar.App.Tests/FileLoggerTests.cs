@@ -55,6 +55,7 @@ public sealed class FileLoggerTests : IDisposable
         }
 
         var content = File.ReadAllText(logPath);
+        Assert.Matches(@"\d{2}:\d{2}:\d{2}\.\d{3}", content);
         Assert.Contains("[INFO]", content);
         Assert.Contains("TestCategory", content);
         Assert.Contains("Hello world", content);
