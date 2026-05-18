@@ -96,110 +96,33 @@ public sealed class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFa
     {
         try
         {
-            var credentials = this.ReadCredentials();
+            var (credentials, credentialError) = this.LoadAndValidateCredentials();
             if (credentials is null)
             {
-                // Distinguish "file missing" from "file exists but could not be read"
-                if (File.Exists(CredentialsPath))
-                {
-                    return ProviderUsageResult.Failure(
-                        ProviderId.Claude,
-                        $"Claude credentials file exists but could not be read or is corrupted ({CredentialsPath}). Delete the file and run 'claude' to re-authenticate.");
-                }
+                return ProviderUsageResult.Failure(ProviderId.Claude, credentialError!);
+            }
 
+            credentials = await this.EnsureTokenFreshAsync(credentials, ct);
+            if (credentials is null)
+            {
                 return ProviderUsageResult.Failure(
                     ProviderId.Claude,
-                    "No Claude Code credentials found. Run 'claude' and sign in.");
+                    "Claude login expired and could not be refreshed. Run 'claude' in terminal and sign in again.");
             }
 
             var accountInfo = this.ReadAccountInfo();
             var stats = this.ReadStatsCache();
-
-            var subscriptionType = credentials.SubscriptionType;
-            string displaySub;
-            if (string.IsNullOrWhiteSpace(subscriptionType))
-            {
-                displaySub = "Unknown";
-            }
-            else
-            {
-                displaySub = char.ToUpperInvariant(subscriptionType[0]) + subscriptionType[1..];
-            }
-
-            var accountName = accountInfo?.DisplayName;
-
-            if (credentials.ExpiresAt > 0)
-            {
-                try
-                {
-                    var expiresAtSeconds = NormalizeEpochToSeconds(credentials.ExpiresAt);
-                    var tokenExpiry = DateTimeOffset.FromUnixTimeSeconds(expiresAtSeconds);
-                    if (tokenExpiry < DateTimeOffset.UtcNow)
-                    {
-                        this.logger.LogWarning("Claude OAuth token expired at {Expiry}, attempting refresh", tokenExpiry);
-                        var refreshed = await this.TryRefreshTokenAsync(credentials, ct);
-                        if (refreshed is null)
-                        {
-                            return ProviderUsageResult.Failure(
-                                ProviderId.Claude,
-                                "Claude login expired and could not be refreshed. Run 'claude' in terminal and sign in again.");
-                        }
-
-                        credentials = refreshed;
-                    }
-                    else
-                    {
-                        this.logger.LogDebug("Claude OAuth token valid until {Expiry}", tokenExpiry);
-                    }
-                }
-                catch (Exception ex)
-                {
-                    this.logger.LogDebug(ex, "Claude OAuth token expiry value {ExpiresAt} could not be parsed", credentials.ExpiresAt);
-                }
-            }
-            else
-            {
-                this.logger.LogDebug("Claude OAuth token has no expiry set");
-            }
+            var displaySub = FormatSubscriptionType(credentials.SubscriptionType);
 
             var equivalentCost = CalculateEquivalentCost(stats);
             var totalTokens = CalculateTotalTokens(stats);
-
-            // Fetch real-time rate-limit data via a lightweight API probe
             var limits = await this.FetchRateLimitsAsync(credentials.AccessToken, ct);
 
-            var sessionSnapshot = this.BuildSessionSnapshot(limits, displaySub, totalTokens, equivalentCost, accountInfo);
-            var weeklySnapshot = BuildWeeklySnapshot(limits);
-            var bars = BuildUsageBars(limits);
-
-            var itemKey = "claude:code";
-            var itemDisplayName = accountName is not null
-                ? $"Claude · {accountName}"
-                : "Claude Code";
-
-            var item = new UsageItem
-            {
-                Key = itemKey,
-                DisplayName = itemDisplayName,
-                PrimaryUsage = sessionSnapshot,
-                SecondaryUsage = weeklySnapshot,
-                Bars = bars,
-                Success = true,
-            };
-
-            this.logger.LogDebug(
-                "Claude: subscription={Sub}, equivalentCost=${Cost:F2}, totalTokens={Tokens:N0}, 5h={FiveH:P0}, 7d={SevenD:P0}",
-                subscriptionType ?? "unknown", equivalentCost, totalTokens,
-                limits?.FiveHourUtilization ?? -1, limits?.SevenDayUtilization ?? -1);
-
-            return new ProviderUsageResult
-            {
-                Provider = ProviderId.Claude,
-                Success = true,
-                SessionUsage = sessionSnapshot,
-                WeeklyUsage = weeklySnapshot,
-                Items = [item],
-            };
+            return BuildFetchResult(limits, displaySub, totalTokens, equivalentCost, accountInfo);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception ex)
         {
@@ -208,7 +131,90 @@ public sealed class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFa
         }
     }
 
-    private UsageSnapshot BuildSessionSnapshot(
+    private (ClaudeCredentials? Credentials, string? Error) LoadAndValidateCredentials()
+    {
+        var credentials = this.ReadCredentials();
+        if (credentials is not null)
+        {
+            return (credentials, null);
+        }
+
+        var error = File.Exists(CredentialsPath)
+            ? $"Claude credentials file exists but could not be read or is corrupted ({CredentialsPath}). Delete the file and run 'claude' to re-authenticate."
+            : "No Claude Code credentials found. Run 'claude' and sign in.";
+
+        return (null, error);
+    }
+
+    private async Task<ClaudeCredentials?> EnsureTokenFreshAsync(ClaudeCredentials credentials, CancellationToken ct)
+    {
+        if (credentials.ExpiresAt <= 0)
+        {
+            this.logger.LogDebug("Claude OAuth token has no expiry set");
+            return credentials;
+        }
+
+        try
+        {
+            var expiresAtSeconds = NormalizeEpochToSeconds(credentials.ExpiresAt);
+            var tokenExpiry = DateTimeOffset.FromUnixTimeSeconds(expiresAtSeconds);
+            if (tokenExpiry >= DateTimeOffset.UtcNow)
+            {
+                this.logger.LogDebug("Claude OAuth token valid until {Expiry}", tokenExpiry);
+                return credentials;
+            }
+
+            this.logger.LogWarning("Claude OAuth token expired at {Expiry}, attempting refresh", tokenExpiry);
+            return await this.TryRefreshTokenAsync(credentials, ct);
+        }
+        catch (Exception ex)
+        {
+            this.logger.LogDebug(ex, "Claude OAuth token expiry value {ExpiresAt} could not be parsed", credentials.ExpiresAt);
+            return credentials;
+        }
+    }
+
+    internal static string FormatSubscriptionType(string? subscriptionType) =>
+        string.IsNullOrWhiteSpace(subscriptionType)
+            ? "Unknown"
+            : char.ToUpperInvariant(subscriptionType[0]) + subscriptionType[1..];
+
+    private static ProviderUsageResult BuildFetchResult(
+        UnifiedRateLimits? limits,
+        string displaySub,
+        long totalTokens,
+        double equivalentCost,
+        ClaudeAccountInfo? accountInfo)
+    {
+        var sessionSnapshot = BuildSessionSnapshot(limits, displaySub, totalTokens, equivalentCost, accountInfo);
+        var weeklySnapshot = BuildWeeklySnapshot(limits);
+        var bars = BuildUsageBars(limits);
+
+        var itemDisplayName = accountInfo?.DisplayName is not null
+            ? $"Claude · {accountInfo.DisplayName}"
+            : "Claude Code";
+
+        var item = new UsageItem
+        {
+            Key = "claude:code",
+            DisplayName = itemDisplayName,
+            PrimaryUsage = sessionSnapshot,
+            SecondaryUsage = weeklySnapshot,
+            Bars = bars,
+            Success = true,
+        };
+
+        return new ProviderUsageResult
+        {
+            Provider = ProviderId.Claude,
+            Success = true,
+            SessionUsage = sessionSnapshot,
+            WeeklyUsage = weeklySnapshot,
+            Items = [item],
+        };
+    }
+
+    internal static UsageSnapshot BuildSessionSnapshot(
         UnifiedRateLimits? limits,
         string subscriptionType,
         long totalTokens,
@@ -217,55 +223,60 @@ public sealed class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFa
     {
         if (limits is not null)
         {
-            var usedPercent = limits.FiveHourUtilization;
-
-            var statusParts = new List<string> { $"{subscriptionType} plan" };
-            if (equivalentCost > 0)
-            {
-                statusParts.Add($"~${equivalentCost:F2} equiv.");
-            }
-            else if (totalTokens > 0)
-            {
-                statusParts.Add(FormatTokenCount(totalTokens));
-            }
-
-            if (accountInfo?.HasExtraUsageEnabled == true)
-            {
-                statusParts.Add("extra usage on");
-            }
-
-            var resetDesc = limits.FiveHourReset > 0
-                ? FormatResetCountdown(limits.FiveHourReset, "5-hour limit")
-                : null;
-
-            return new UsageSnapshot
-            {
-                UsedPercent = usedPercent,
-                UsageLabel = string.Join(" · ", statusParts),
-                ResetsAt = limits.FiveHourReset > 0
-                    ? DateTimeOffset.FromUnixTimeSeconds(limits.FiveHourReset)
-                    : null,
-                ResetDescription = resetDesc,
-                IsUnlimited = false,
-                CapturedAt = DateTimeOffset.UtcNow,
-            };
+            return BuildSessionSnapshotFromLimits(limits, subscriptionType, totalTokens, equivalentCost, accountInfo);
         }
 
         // Fallback: no API data available
         var fallbackLabel = FormatUsageLabel(subscriptionType, totalTokens, equivalentCost, accountInfo);
-        if (!string.IsNullOrEmpty(fallbackLabel))
-        {
-            fallbackLabel += " · Rate limits unavailable";
-        }
-        else
-        {
-            fallbackLabel = "Rate limits unavailable";
-        }
+        fallbackLabel = string.IsNullOrEmpty(fallbackLabel)
+            ? "Rate limits unavailable"
+            : fallbackLabel + " · Rate limits unavailable";
 
         return new UsageSnapshot
         {
             IsUnlimited = true,
             UsageLabel = fallbackLabel,
+            CapturedAt = DateTimeOffset.UtcNow,
+        };
+    }
+
+    internal static UsageSnapshot BuildSessionSnapshotFromLimits(
+        UnifiedRateLimits limits,
+        string subscriptionType,
+        long totalTokens,
+        double equivalentCost,
+        ClaudeAccountInfo? accountInfo)
+    {
+        var usedPercent = limits.FiveHourUtilization;
+
+        var statusParts = new List<string> { $"{subscriptionType} plan" };
+        if (equivalentCost > 0)
+        {
+            statusParts.Add($"~${equivalentCost:F2} equiv.");
+        }
+        else if (totalTokens > 0)
+        {
+            statusParts.Add(FormatTokenCount(totalTokens));
+        }
+
+        if (accountInfo?.HasExtraUsageEnabled == true)
+        {
+            statusParts.Add("extra usage on");
+        }
+
+        var resetDesc = limits.FiveHourReset > 0
+            ? FormatResetCountdown(limits.FiveHourReset, "5-hour limit")
+            : null;
+
+        return new UsageSnapshot
+        {
+            UsedPercent = usedPercent,
+            UsageLabel = string.Join(" · ", statusParts),
+            ResetsAt = limits.FiveHourReset > 0
+                ? DateTimeOffset.FromUnixTimeSeconds(limits.FiveHourReset)
+                : null,
+            ResetDescription = resetDesc,
+            IsUnlimited = false,
             CapturedAt = DateTimeOffset.UtcNow,
         };
     }
@@ -425,13 +436,9 @@ public sealed class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFa
     /// </summary>
     private async Task<UnifiedRateLimits?> FetchRateLimitsAsync(string? accessToken, CancellationToken ct)
     {
-        // Return cached value if still fresh (lock-free read using atomic ticks)
-        var cachedTicks = Volatile.Read(ref this.limitsCachedAtTicks);
-        if (this.cachedLimits is not null &&
-            cachedTicks > 0 &&
-            DateTimeOffset.UtcNow.UtcTicks - cachedTicks < CacheTtl.Ticks)
+        if (this.TryGetFreshCachedLimits(out var cached))
         {
-            return this.cachedLimits;
+            return cached;
         }
 
         if (string.IsNullOrEmpty(accessToken))
@@ -443,24 +450,39 @@ public sealed class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFa
         await this.cacheLock.WaitAsync(ct);
         try
         {
-            // Re-check after acquiring lock — another call may have refreshed the cache
-            cachedTicks = Volatile.Read(ref this.limitsCachedAtTicks);
-            if (this.cachedLimits is not null &&
-                cachedTicks > 0 &&
-                DateTimeOffset.UtcNow.UtcTicks - cachedTicks < CacheTtl.Ticks)
+            if (this.TryGetFreshCachedLimits(out cached))
             {
-                return this.cachedLimits;
+                return cached;
             }
 
+            return await this.ProbeAndCacheRateLimitsAsync(accessToken, ct);
+        }
+        finally
+        {
+            this.cacheLock.Release();
+        }
+    }
+
+    private bool TryGetFreshCachedLimits(out UnifiedRateLimits? cached)
+    {
+        // Read ticks first — Volatile.Read provides an acquire fence that
+        // guarantees the subsequent read of cachedLimits sees the value
+        // written before the corresponding Volatile.Write in CacheAndReturnLimits.
+        var cachedTicks = Volatile.Read(ref this.limitsCachedAtTicks);
+        cached = this.cachedLimits;
+        return cached is not null &&
+               cachedTicks > 0 &&
+               DateTimeOffset.UtcNow.UtcTicks - cachedTicks < CacheTtl.Ticks;
+    }
+
+    private async Task<UnifiedRateLimits?> ProbeAndCacheRateLimitsAsync(string accessToken, CancellationToken ct)
+    {
+        try
+        {
             using var httpClient = this.httpClientFactory.CreateClient();
             httpClient.Timeout = ApiTimeout;
 
-            using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.anthropic.com/v1/messages");
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
-            request.Headers.TryAddWithoutValidation("anthropic-version", "2023-06-01");
-            request.Headers.TryAddWithoutValidation("anthropic-beta", "oauth-2025-04-20");
-            request.Content = new StringContent(ProbeRequestBody, Encoding.UTF8, "application/json");
-
+            using var request = BuildRateLimitProbeRequest(accessToken);
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             cts.CancelAfter(ApiTimeout);
 
@@ -468,31 +490,14 @@ public sealed class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFa
 
             this.logger.LogDebug("Claude API probe returned status {StatusCode}", (int)response.StatusCode);
 
-            var result = ParseRateLimitHeaders(response.Headers);
-
             if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized)
             {
                 this.logger.LogWarning("Claude API returned 401 — OAuth token may be expired");
                 return null;
             }
 
-            if (result is not null)
-            {
-                this.cachedLimits = result;
-                Volatile.Write(ref this.limitsCachedAtTicks, DateTimeOffset.UtcNow.UtcTicks);
-                this.logger.LogDebug(
-                    "Claude rate limits: 5h={FiveH:P0}, 7d={SevenD:P0}",
-                    result.FiveHourUtilization, result.SevenDayUtilization);
-            }
-            else
-            {
-                var headerNames = string.Join(", ", response.Headers.Select(h => h.Key));
-                this.logger.LogWarning(
-                    "Claude API rate-limit headers not found. Status={StatusCode}, Response headers: {Headers}",
-                    (int)response.StatusCode, headerNames);
-            }
-
-            return result ?? this.cachedLimits;
+            var result = ParseRateLimitHeaders(response.Headers);
+            return this.CacheAndReturnLimits(result, response.Headers);
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
@@ -509,10 +514,37 @@ public sealed class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFa
             this.logger.LogWarning(ex, "Claude API probe failed: {Type}: {Message}", ex.GetType().Name, ex.Message);
             return this.cachedLimits;
         }
-        finally
+    }
+
+    internal static HttpRequestMessage BuildRateLimitProbeRequest(string accessToken)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Post, "https://api.anthropic.com/v1/messages");
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+        request.Headers.TryAddWithoutValidation("anthropic-version", "2023-06-01");
+        request.Headers.TryAddWithoutValidation("anthropic-beta", "oauth-2025-04-20");
+        request.Content = new StringContent(ProbeRequestBody, Encoding.UTF8, "application/json");
+        return request;
+    }
+
+    private UnifiedRateLimits? CacheAndReturnLimits(UnifiedRateLimits? result, HttpResponseHeaders responseHeaders)
+    {
+        if (result is not null)
         {
-            this.cacheLock.Release();
+            this.cachedLimits = result;
+            Volatile.Write(ref this.limitsCachedAtTicks, DateTimeOffset.UtcNow.UtcTicks);
+            this.logger.LogDebug(
+                "Claude rate limits: 5h={FiveH:P0}, 7d={SevenD:P0}",
+                result.FiveHourUtilization, result.SevenDayUtilization);
         }
+        else
+        {
+            var headerNames = string.Join(", ", responseHeaders.Select(h => h.Key));
+            this.logger.LogWarning(
+                "Claude API rate-limit headers not found. Response headers: {Headers}",
+                headerNames);
+        }
+
+        return result ?? this.cachedLimits;
     }
 
     private async Task<ClaudeCredentials?> TryRefreshTokenAsync(ClaudeCredentials credentials, CancellationToken ct)

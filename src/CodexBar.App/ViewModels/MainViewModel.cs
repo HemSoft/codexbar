@@ -143,63 +143,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             return;
         }
 
-        if (!result.Success)
-        {
-            card.StatusText = result.ErrorMessage ?? "Error";
-            card.UsedPercent = 0;
-            card.ResetText = null;
-            card.WeeklyText = null;
-            card.WeeklyPercent = 0;
-            card.IsHighUsage = false;
-            card.ShowUsagePercent = true;
-            card.IsError = true;
-            card.Bars.Clear();
-            card.HasBars = false;
-            return;
-        }
-
-        card.IsError = false;
-
-        card.IsError = false;
-        card.IsCreditsDisplay = false;
-        card.StatusText = "No data";
-        card.UsedPercent = 0;
-        card.ResetText = null;
-        card.WeeklyText = null;
-        card.WeeklyPercent = 0;
-        card.IsHighUsage = false;
-        card.ShowUsagePercent = true;
-        card.Bars.Clear();
-        card.HasBars = false;
-
-        if (result.SessionUsage is not null)
-        {
-            card.UsedPercent = result.SessionUsage.UsedPercent;
-            card.StatusText = result.SessionUsage.UsageLabel ?? $"{result.SessionUsage.UsedPercent:P0} used";
-            card.ResetText = result.SessionUsage.ResetDescription;
-            card.IsHighUsage = result.SessionUsage.UsedPercent >= 0.8;
-            card.ShowUsagePercent = !result.SessionUsage.IsUnlimited;
-        }
-        else if (result.CreditsRemaining is not null)
-        {
-            card.StatusText = $"${result.CreditsRemaining:F2}";
-            card.UsedPercent = 0;
-            card.IsHighUsage = false;
-            card.ShowUsagePercent = false;
-            card.IsCreditsDisplay = true;
-            card.CreditsBalance = result.CreditsRemaining;
-            this.UpdateSessionSpending(card);
-        }
-        else
-        {
-            card.StatusText = "No data";
-        }
-
-        if (result.WeeklyUsage is not null)
-        {
-            card.WeeklyText = result.WeeklyUsage.UsageLabel;
-            card.WeeklyPercent = result.WeeklyUsage.UsedPercent;
-        }
+        ApplyLegacyProviderResult(card, result);
+        this.UpdateSessionSpending(card);
     });
 
     private void OnNextRefreshChanged(DateTimeOffset? nextRefreshAtUtc) => System.Windows.Application.Current?.Dispatcher.InvokeAsync(() =>
@@ -255,6 +200,85 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     /// </summary>
     private void ReconcileItemCards(ProviderId providerId, string keyPrefix, ProviderUsageResult result) =>
         this._itemCardReconciler.Reconcile(providerId, keyPrefix, result);
+
+    /// <summary>
+    /// Applies a provider usage result to a legacy single-card view model.
+    /// Extracted for testability without WPF Dispatcher dependency.
+    /// </summary>
+    internal static void ApplyLegacyProviderResult(ProviderCardViewModel card, ProviderUsageResult result)
+    {
+        if (!result.Success)
+        {
+            ApplyLegacyError(card, result.ErrorMessage);
+            return;
+        }
+
+        ResetLegacyCardDefaults(card);
+        ApplyLegacySessionUsage(card, result);
+        ApplyLegacyWeeklyUsage(card, result);
+    }
+
+    private static void ApplyLegacyError(ProviderCardViewModel card, string? errorMessage)
+    {
+        card.StatusText = errorMessage ?? "Error";
+        card.UsedPercent = 0;
+        card.IsCreditsDisplay = false;
+        card.CreditsBalance = null;
+        card.ResetText = null;
+        card.WeeklyText = null;
+        card.WeeklyPercent = 0;
+        card.IsHighUsage = false;
+        card.ShowUsagePercent = true;
+        card.IsError = true;
+        card.Bars.Clear();
+        card.HasBars = false;
+    }
+
+    private static void ResetLegacyCardDefaults(ProviderCardViewModel card)
+    {
+        card.IsError = false;
+        card.IsCreditsDisplay = false;
+        card.CreditsBalance = null;
+        card.StatusText = "No data";
+        card.UsedPercent = 0;
+        card.ResetText = null;
+        card.WeeklyText = null;
+        card.WeeklyPercent = 0;
+        card.IsHighUsage = false;
+        card.ShowUsagePercent = true;
+        card.Bars.Clear();
+        card.HasBars = false;
+    }
+
+    private static void ApplyLegacySessionUsage(ProviderCardViewModel card, ProviderUsageResult result)
+    {
+        if (result.SessionUsage is not null)
+        {
+            card.UsedPercent = result.SessionUsage.UsedPercent;
+            card.StatusText = result.SessionUsage.UsageLabel ?? $"{result.SessionUsage.UsedPercent:P0} used";
+            card.ResetText = result.SessionUsage.ResetDescription;
+            card.IsHighUsage = result.SessionUsage.UsedPercent >= 0.8;
+            card.ShowUsagePercent = !result.SessionUsage.IsUnlimited;
+        }
+        else if (result.CreditsRemaining is not null)
+        {
+            card.StatusText = $"${result.CreditsRemaining:F2}";
+            card.UsedPercent = 0;
+            card.IsHighUsage = false;
+            card.ShowUsagePercent = false;
+            card.IsCreditsDisplay = true;
+            card.CreditsBalance = result.CreditsRemaining;
+        }
+    }
+
+    private static void ApplyLegacyWeeklyUsage(ProviderCardViewModel card, ProviderUsageResult result)
+    {
+        if (result.WeeklyUsage is not null)
+        {
+            card.WeeklyText = result.WeeklyUsage.UsageLabel;
+            card.WeeklyPercent = result.WeeklyUsage.UsedPercent;
+        }
+    }
 
     private void UpdateSessionSpending(ProviderCardViewModel card)
     {
