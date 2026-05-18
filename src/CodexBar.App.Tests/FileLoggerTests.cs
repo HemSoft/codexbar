@@ -30,7 +30,7 @@ public sealed class FileLoggerTests : IDisposable
     }
 
     [Fact]
-    public void FileLoggerProvider_CreatesLogFile()
+    public void CreateLogger_WhenMessageLogged_CreatesFile()
     {
         var logPath = Path.Combine(this._tempDir, "test.log");
 
@@ -44,7 +44,7 @@ public sealed class FileLoggerTests : IDisposable
     }
 
     [Fact]
-    public void FileLoggerProvider_WritesMessageWithTimestamp()
+    public void Log_InfoLevel_WritesTimestampAndMessage()
     {
         var logPath = Path.Combine(this._tempDir, "test.log");
 
@@ -62,7 +62,7 @@ public sealed class FileLoggerTests : IDisposable
     }
 
     [Fact]
-    public void FileLoggerProvider_WritesWarningLevel()
+    public void Log_WarningLevel_WritesWarnMarker()
     {
         var logPath = Path.Combine(this._tempDir, "test.log");
 
@@ -78,7 +78,7 @@ public sealed class FileLoggerTests : IDisposable
     }
 
     [Fact]
-    public void FileLoggerProvider_WritesErrorLevel()
+    public void Log_ErrorLevel_WritesErrorMarker()
     {
         var logPath = Path.Combine(this._tempDir, "test.log");
 
@@ -94,7 +94,7 @@ public sealed class FileLoggerTests : IDisposable
     }
 
     [Fact]
-    public void FileLoggerProvider_WritesDebugLevel()
+    public void Log_DebugLevel_WritesDebugMarker()
     {
         var logPath = Path.Combine(this._tempDir, "test.log");
 
@@ -110,7 +110,7 @@ public sealed class FileLoggerTests : IDisposable
     }
 
     [Fact]
-    public void FileLoggerProvider_WritesTraceLevel()
+    public void Log_TraceLevel_WritesTraceMarker()
     {
         var logPath = Path.Combine(this._tempDir, "test.log");
 
@@ -125,7 +125,7 @@ public sealed class FileLoggerTests : IDisposable
     }
 
     [Fact]
-    public void FileLoggerProvider_WritesCriticalLevel()
+    public void Log_CriticalLevel_WritesCriticalMarker()
     {
         var logPath = Path.Combine(this._tempDir, "test.log");
 
@@ -140,7 +140,7 @@ public sealed class FileLoggerTests : IDisposable
     }
 
     [Fact]
-    public void FileLoggerProvider_IncludesExceptionInLog()
+    public void Log_WithException_IncludesExceptionDetails()
     {
         var logPath = Path.Combine(this._tempDir, "test.log");
 
@@ -158,7 +158,7 @@ public sealed class FileLoggerTests : IDisposable
     }
 
     [Fact]
-    public void FileLoggerProvider_AfterDispose_DoesNotThrow()
+    public void Log_AfterProviderDisposed_DoesNotThrow()
     {
         var logPath = Path.Combine(this._tempDir, "test.log");
         var provider = new FileLoggerProvider(logPath);
@@ -170,7 +170,7 @@ public sealed class FileLoggerTests : IDisposable
     }
 
     [Fact]
-    public void FileLoggerProvider_DoubleDispose_DoesNotThrow()
+    public void Dispose_CalledTwice_DoesNotThrow()
     {
         var logPath = Path.Combine(this._tempDir, "test.log");
         var provider = new FileLoggerProvider(logPath);
@@ -179,7 +179,7 @@ public sealed class FileLoggerTests : IDisposable
     }
 
     [Fact]
-    public void FileLoggerProvider_IsEnabledAlwaysTrue()
+    public void IsEnabled_AnyLevel_ReturnsTrue()
     {
         var logPath = Path.Combine(this._tempDir, "test.log");
         using var provider = new FileLoggerProvider(logPath);
@@ -190,7 +190,7 @@ public sealed class FileLoggerTests : IDisposable
     }
 
     [Fact]
-    public void FileLoggerProvider_BeginScopeReturnsNull()
+    public void BeginScope_WhenCalled_ReturnsNull()
     {
         var logPath = Path.Combine(this._tempDir, "test.log");
         using var provider = new FileLoggerProvider(logPath);
@@ -200,14 +200,14 @@ public sealed class FileLoggerTests : IDisposable
     }
 
     [Fact]
-    public void FileLoggerProvider_DefaultLogPath_ContainsCodexBar()
+    public void DefaultLogPath_WhenAccessed_ContainsCodexBar()
     {
         Assert.Contains("CodexBar", FileLoggerProvider.DefaultLogPath);
         Assert.Contains("log.txt", FileLoggerProvider.DefaultLogPath);
     }
 
     [Fact]
-    public void FileLoggerProvider_CreatesDirectoryIfNotExists()
+    public void CreateLogger_DirectoryMissing_CreatesDirectory()
     {
         var logDir = Path.Combine(this._tempDir, "sub", "dir");
         var logPath = Path.Combine(logDir, "test.log");

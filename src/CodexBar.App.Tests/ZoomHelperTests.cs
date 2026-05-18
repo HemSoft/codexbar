@@ -93,14 +93,14 @@ public sealed class ZoomHelperTests
     [InlineData(3.0, 3.0)]
     [InlineData(3.5, 3.0)]
     [InlineData(10.0, 3.0)]
-    public void ClampZoom_ClampsToRange(double input, double expected)
+    public void ClampZoom_VariousInputs_ClampsToValidRange(double input, double expected)
     {
         Assert.Equal(expected, ZoomHelper.ClampZoom(input));
     }
 
     // --- Constants ---
     [Fact]
-    public void Constants_AreExpectedValues()
+    public void Constants_WhenAccessed_HaveExpectedValues()
     {
         Assert.Equal(0.1, ZoomHelper.ZoomStep);
         Assert.Equal(0.5, ZoomHelper.MinZoom);

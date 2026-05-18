@@ -7,7 +7,7 @@ using CodexBar.App.ViewModels;
 public sealed class RelayCommandTests
 {
     [Fact]
-    public void CanExecute_AlwaysReturnsTrue()
+    public void CanExecute_AnyParameter_ReturnsTrue()
     {
         var command = new RelayCommand(_ => { });
 
@@ -16,7 +16,7 @@ public sealed class RelayCommandTests
     }
 
     [Fact]
-    public void Execute_InvokesAction()
+    public void Execute_WhenCalled_InvokesAction()
     {
         var invoked = false;
         var command = new RelayCommand(_ => invoked = true);
@@ -27,7 +27,7 @@ public sealed class RelayCommandTests
     }
 
     [Fact]
-    public void Execute_PassesParameter()
+    public void Execute_WithParameter_PassesValueToAction()
     {
         object? receivedParam = null;
         var command = new RelayCommand(p => receivedParam = p);
@@ -38,7 +38,7 @@ public sealed class RelayCommandTests
     }
 
     [Fact]
-    public void Execute_PassesNullParameter()
+    public void Execute_WithNull_PassesNullToAction()
     {
         object? receivedParam = "not null";
         var command = new RelayCommand(p => receivedParam = p);
