@@ -170,24 +170,20 @@ public class UsageRefreshServiceMutationTests : IAsyncDisposable
     [Fact]
     public async Task Start_SetsNextRefreshAtUtc()
     {
+        var tcs = new TaskCompletionSource<DateTimeOffset?>(TaskCreationOptions.RunContinuationsAsynchronously);
+        this._sut.NextRefreshChanged += value =>
+        {
+            if (value is not null)
+            {
+                tcs.TrySetResult(value);
+            }
+        };
         this._sut.RefreshInterval = TimeSpan.FromMinutes(5);
+
         this._sut.Start();
+        var nextRefresh = await tcs.Task.WaitAsync(TimeSpan.FromSeconds(2));
 
-        // Wait for the initial fetch to complete via the event
-        var tcs = new TaskCompletionSource<DateTimeOffset?>();
-        this._sut.NextRefreshChanged += value => tcs.TrySetResult(value);
-
-        // If event already fired before subscription, poll briefly
-        var completed = await Task.WhenAny(tcs.Task, Task.Delay(2000));
-        if (completed != tcs.Task && this._sut.NextRefreshAtUtc is not null)
-        {
-            // already set
-        }
-        else if (completed == tcs.Task)
-        {
-            // event received
-        }
-
+        Assert.NotNull(nextRefresh);
         Assert.NotNull(this._sut.NextRefreshAtUtc);
     }
 
