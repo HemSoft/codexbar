@@ -177,6 +177,134 @@ public class OpenCodeZenProviderMutationTests : IDisposable
         Assert.Equal(3.00m, result.CreditsRemaining);
     }
 
+    // === Credential priority: env var wins over settings ===
+    [Fact]
+    public async Task FetchUsageAsync_GoEnvVarAndSettings_EnvVarWinsForWorkspace()
+    {
+        Environment.SetEnvironmentVariable("OPENCODE_GO_WORKSPACE_ID", "env-ws-id");
+        Environment.SetEnvironmentVariable("OPENCODE_GO_AUTH_COOKIE", "env-cookie");
+
+        var html = "balance:100000000";
+        var handler = new CapturingHandler(OkHtml(html));
+        var settings = CreateSettings(enabled: true, workspaceId: "settings-ws-id", apiKey: "settings-cookie");
+        var factory = new SimpleFactory(handler);
+        var provider = new OpenCodeZenProvider(NullLogger<OpenCodeZenProvider>.Instance, factory, settings);
+
+        await provider.FetchUsageAsync();
+
+        Assert.NotNull(handler.LastRequest);
+        Assert.Contains("env-ws-id", handler.LastRequest!.RequestUri?.ToString());
+        Assert.DoesNotContain("settings-ws-id", handler.LastRequest.RequestUri?.ToString());
+    }
+
+    [Fact]
+    public async Task FetchUsageAsync_GoEnvVarAndSettings_EnvVarWinsForCookie()
+    {
+        Environment.SetEnvironmentVariable("OPENCODE_GO_WORKSPACE_ID", "ws");
+        Environment.SetEnvironmentVariable("OPENCODE_GO_AUTH_COOKIE", "env-cookie-priority");
+
+        var html = "balance:100000000";
+        var handler = new CapturingHandler(OkHtml(html));
+        var settings = CreateSettings(enabled: true, workspaceId: "ws", apiKey: "settings-cookie-lower");
+        var factory = new SimpleFactory(handler);
+        var provider = new OpenCodeZenProvider(NullLogger<OpenCodeZenProvider>.Instance, factory, settings);
+
+        await provider.FetchUsageAsync();
+
+        Assert.NotNull(handler.LastRequest);
+        var cookieHeader = handler.LastRequest!.Headers.GetValues("Cookie").First();
+        Assert.Contains("env-cookie-priority", cookieHeader);
+        Assert.DoesNotContain("settings-cookie-lower", cookieHeader);
+    }
+
+    [Fact]
+    public async Task FetchUsageAsync_ZenEnvVarOverridesGoEnvVar_ForWorkspace()
+    {
+        Environment.SetEnvironmentVariable("OPENCODE_GO_WORKSPACE_ID", "go-ws");
+        Environment.SetEnvironmentVariable("OPENCODE_GO_AUTH_COOKIE", "go-cookie");
+        Environment.SetEnvironmentVariable("OPENCODE_ZEN_WORKSPACE_ID", "zen-ws-override");
+
+        var html = "balance:100000000";
+        var handler = new CapturingHandler(OkHtml(html));
+        var settings = CreateSettings(enabled: true, workspaceId: "settings-ws", apiKey: "settings-cookie");
+        var factory = new SimpleFactory(handler);
+        var provider = new OpenCodeZenProvider(NullLogger<OpenCodeZenProvider>.Instance, factory, settings);
+
+        await provider.FetchUsageAsync();
+
+        Assert.NotNull(handler.LastRequest);
+        Assert.Contains("zen-ws-override", handler.LastRequest!.RequestUri?.ToString());
+        Assert.DoesNotContain("go-ws", handler.LastRequest.RequestUri?.ToString());
+    }
+
+    [Fact]
+    public async Task FetchUsageAsync_ZenCookieEnvVarOverridesGoEnvVar()
+    {
+        Environment.SetEnvironmentVariable("OPENCODE_GO_WORKSPACE_ID", "ws");
+        Environment.SetEnvironmentVariable("OPENCODE_GO_AUTH_COOKIE", "go-cookie-lower");
+        Environment.SetEnvironmentVariable("OPENCODE_ZEN_AUTH_COOKIE", "zen-cookie-wins");
+
+        var html = "balance:100000000";
+        var handler = new CapturingHandler(OkHtml(html));
+        var settings = CreateSettings(enabled: true, workspaceId: "ws", apiKey: "settings-cookie");
+        var factory = new SimpleFactory(handler);
+        var provider = new OpenCodeZenProvider(NullLogger<OpenCodeZenProvider>.Instance, factory, settings);
+
+        await provider.FetchUsageAsync();
+
+        Assert.NotNull(handler.LastRequest);
+        var cookieHeader = handler.LastRequest!.Headers.GetValues("Cookie").First();
+        Assert.Contains("zen-cookie-wins", cookieHeader);
+        Assert.DoesNotContain("go-cookie-lower", cookieHeader);
+    }
+
+    // === Request structure verification ===
+    [Fact]
+    public async Task FetchUsageAsync_UrlContainsWorkspaceAndBillingPath()
+    {
+        var html = "balance:100000000";
+        var handler = new CapturingHandler(OkHtml(html));
+        var settings = CreateSettings(enabled: true, workspaceId: "my-workspace", apiKey: "cookie");
+        var factory = new SimpleFactory(handler);
+        var provider = new OpenCodeZenProvider(NullLogger<OpenCodeZenProvider>.Instance, factory, settings);
+
+        await provider.FetchUsageAsync();
+
+        Assert.NotNull(handler.LastRequest);
+        Assert.Contains("my-workspace", handler.LastRequest!.RequestUri?.ToString());
+        Assert.Contains("/billing", handler.LastRequest.RequestUri?.ToString());
+    }
+
+    [Fact]
+    public async Task FetchUsageAsync_SetsUserAgentHeader()
+    {
+        var html = "balance:100000000";
+        var handler = new CapturingHandler(OkHtml(html));
+        var settings = CreateSettings(enabled: true, workspaceId: "ws", apiKey: "cookie");
+        var factory = new SimpleFactory(handler);
+        var provider = new OpenCodeZenProvider(NullLogger<OpenCodeZenProvider>.Instance, factory, settings);
+
+        await provider.FetchUsageAsync();
+
+        Assert.NotNull(handler.LastRequest);
+        Assert.True(handler.LastRequest!.Headers.Contains("User-Agent"));
+    }
+
+    [Fact]
+    public async Task FetchUsageAsync_SetsAcceptHeader()
+    {
+        var html = "balance:100000000";
+        var handler = new CapturingHandler(OkHtml(html));
+        var settings = CreateSettings(enabled: true, workspaceId: "ws", apiKey: "cookie");
+        var factory = new SimpleFactory(handler);
+        var provider = new OpenCodeZenProvider(NullLogger<OpenCodeZenProvider>.Instance, factory, settings);
+
+        await provider.FetchUsageAsync();
+
+        Assert.NotNull(handler.LastRequest);
+        Assert.True(handler.LastRequest!.Headers.Contains("Accept"));
+    }
+
     [Fact]
     public async Task FetchUsageAsync_ZenApiKey_TakesPriorityOverGoApiKey()
     {
@@ -336,6 +464,17 @@ public class OpenCodeZenProviderMutationTests : IDisposable
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct) =>
             Task.FromResult(response);
+    }
+
+    private sealed class CapturingHandler(HttpResponseMessage response) : HttpMessageHandler
+    {
+        public HttpRequestMessage? LastRequest { get; private set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            this.LastRequest = request;
+            return Task.FromResult(response);
+        }
     }
 
     private sealed class CountingHandler(HttpResponseMessage response) : HttpMessageHandler

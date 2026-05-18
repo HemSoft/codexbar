@@ -168,13 +168,26 @@ public class UsageRefreshServiceMutationTests : IAsyncDisposable
 
     // === Start/Stop ===
     [Fact]
-    public void Start_SetsNextRefreshAtUtc()
+    public async Task Start_SetsNextRefreshAtUtc()
     {
         this._sut.RefreshInterval = TimeSpan.FromMinutes(5);
         this._sut.Start();
 
-        // Give it a moment to complete the initial fetch
-        Thread.Sleep(200);
+        // Wait for the initial fetch to complete via the event
+        var tcs = new TaskCompletionSource<DateTimeOffset?>();
+        this._sut.NextRefreshChanged += value => tcs.TrySetResult(value);
+
+        // If event already fired before subscription, poll briefly
+        var completed = await Task.WhenAny(tcs.Task, Task.Delay(2000));
+        if (completed != tcs.Task && this._sut.NextRefreshAtUtc is not null)
+        {
+            // already set
+        }
+        else if (completed == tcs.Task)
+        {
+            // event received
+        }
+
         Assert.NotNull(this._sut.NextRefreshAtUtc);
     }
 
@@ -189,7 +202,7 @@ public class UsageRefreshServiceMutationTests : IAsyncDisposable
     public async Task StopAsync_ClearsNextRefreshAtUtc()
     {
         this._sut.Start();
-        Thread.Sleep(200);
+        await this.WaitForNextRefreshSetAsync();
         await this._sut.StopAsync();
 
         Assert.Null(this._sut.NextRefreshAtUtc);
@@ -206,7 +219,7 @@ public class UsageRefreshServiceMutationTests : IAsyncDisposable
     public async Task StopAsync_RaisesNextRefreshChangedWithNull()
     {
         this._sut.Start();
-        Thread.Sleep(200);
+        await this.WaitForNextRefreshSetAsync();
 
         DateTimeOffset? lastValue = DateTimeOffset.UtcNow;
         this._sut.NextRefreshChanged += value => lastValue = value;
@@ -217,16 +230,17 @@ public class UsageRefreshServiceMutationTests : IAsyncDisposable
     }
 
     [Fact]
-    public void Start_RaisesNextRefreshChanged()
+    public async Task Start_RaisesNextRefreshChanged()
     {
-        DateTimeOffset? received = null;
-        this._sut.NextRefreshChanged += value => received = value;
+        var tcs = new TaskCompletionSource<DateTimeOffset?>();
+        this._sut.NextRefreshChanged += value => tcs.TrySetResult(value);
         this._sut.RefreshInterval = TimeSpan.FromMinutes(5);
 
         this._sut.Start();
-        Thread.Sleep(300);
+        var result = await Task.WhenAny(tcs.Task, Task.Delay(2000));
 
-        Assert.NotNull(received);
+        Assert.Equal(tcs.Task, result);
+        Assert.NotNull(await tcs.Task);
     }
 
     // === RefreshInterval ===
@@ -258,10 +272,10 @@ public class UsageRefreshServiceMutationTests : IAsyncDisposable
 
     // === Dispose ===
     [Fact]
-    public void Dispose_ClearsNextRefreshAtUtc()
+    public async Task Dispose_ClearsNextRefreshAtUtc()
     {
         this._sut.Start();
-        Thread.Sleep(200);
+        await this.WaitForNextRefreshSetAsync();
         this._sut.Dispose();
         Assert.Null(this._sut.NextRefreshAtUtc);
     }
@@ -272,5 +286,48 @@ public class UsageRefreshServiceMutationTests : IAsyncDisposable
         this._sut.Start();
         this._sut.Dispose();
         this._sut.Dispose();
+    }
+
+    // === Start triggers initial RefreshAll ===
+    [Fact]
+    public async Task Start_ImmediatelyCallsRefreshAll()
+    {
+        this._sut.Start();
+        await this.WaitForNextRefreshSetAsync();
+
+        // After the initial refresh, providers should have been called
+        await this._provider1.Received(1).FetchUsageAsync(Arg.Any<CancellationToken>());
+        await this._provider2.Received(1).FetchUsageAsync(Arg.Any<CancellationToken>());
+    }
+
+    // === StopAsync awaits refresh loop ===
+    [Fact]
+    public async Task StopAsync_AwaitsRefreshLoop_DoesNotThrow()
+    {
+        // Use a slow provider to ensure the loop is active
+        this._provider1.FetchUsageAsync(Arg.Any<CancellationToken>())
+            .Returns(async ci =>
+            {
+                await Task.Delay(50, ci.Arg<CancellationToken>());
+                return new ProviderUsageResult { Provider = ProviderId.Copilot, Success = true };
+            });
+
+        this._sut.Start();
+        await Task.Delay(10);
+        await this._sut.StopAsync();
+        Assert.Null(this._sut.NextRefreshAtUtc);
+    }
+
+    // === Helper to wait for NextRefreshAtUtc to be set ===
+    private async Task WaitForNextRefreshSetAsync()
+    {
+        var tcs = new TaskCompletionSource<bool>();
+        this._sut.NextRefreshChanged += _ => tcs.TrySetResult(true);
+        if (this._sut.NextRefreshAtUtc is not null)
+        {
+            return;
+        }
+
+        await Task.WhenAny(tcs.Task, Task.Delay(2000));
     }
 }

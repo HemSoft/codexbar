@@ -225,6 +225,122 @@ public class OpenCodeGoProviderMutationTests : IDisposable
         Assert.True(result.Success);
     }
 
+    // === Env var takes priority over settings ===
+    [Fact]
+    public async Task FetchUsageAsync_BothEnvVarAndSettings_EnvVarWinsForWorkspace()
+    {
+        Environment.SetEnvironmentVariable("OPENCODE_GO_WORKSPACE_ID", "env-workspace");
+        Environment.SetEnvironmentVariable("OPENCODE_GO_AUTH_COOKIE", "env-cookie");
+
+        var html = BuildHtml(rollingPct: 30, rollingSec: 600);
+        var handler = new CapturingHandler(OkHtml(html));
+        var settings = CreateSettings(enabled: true, workspaceId: "settings-workspace", apiKey: "settings-cookie");
+        var factory = new SimpleFactory(handler);
+        var provider = new OpenCodeGoProvider(NullLogger<OpenCodeGoProvider>.Instance, factory, settings);
+
+        await provider.FetchUsageAsync();
+
+        Assert.NotNull(handler.LastRequest);
+        Assert.Contains("env-workspace", handler.LastRequest!.RequestUri?.ToString());
+        Assert.DoesNotContain("settings-workspace", handler.LastRequest.RequestUri?.ToString());
+    }
+
+    [Fact]
+    public async Task FetchUsageAsync_BothEnvVarAndSettings_EnvVarWinsForCookie()
+    {
+        Environment.SetEnvironmentVariable("OPENCODE_GO_WORKSPACE_ID", "env-ws");
+        Environment.SetEnvironmentVariable("OPENCODE_GO_AUTH_COOKIE", "env-cookie-value");
+
+        var html = BuildHtml(rollingPct: 30, rollingSec: 600);
+        var handler = new CapturingHandler(OkHtml(html));
+        var settings = CreateSettings(enabled: true, workspaceId: "settings-ws", apiKey: "settings-cookie-value");
+        var factory = new SimpleFactory(handler);
+        var provider = new OpenCodeGoProvider(NullLogger<OpenCodeGoProvider>.Instance, factory, settings);
+
+        await provider.FetchUsageAsync();
+
+        Assert.NotNull(handler.LastRequest);
+        var cookieHeader = handler.LastRequest!.Headers.GetValues("Cookie").First();
+        Assert.Contains("env-cookie-value", cookieHeader);
+        Assert.DoesNotContain("settings-cookie-value", cookieHeader);
+    }
+
+    // === Request structure verification ===
+    [Fact]
+    public async Task FetchUsageAsync_SetsUserAgentHeader()
+    {
+        var html = BuildHtml(rollingPct: 30, rollingSec: 600);
+        var handler = new CapturingHandler(OkHtml(html));
+        var settings = CreateSettings(enabled: true, workspaceId: "ws", apiKey: "cookie");
+        var factory = new SimpleFactory(handler);
+        var provider = new OpenCodeGoProvider(NullLogger<OpenCodeGoProvider>.Instance, factory, settings);
+
+        await provider.FetchUsageAsync();
+
+        Assert.NotNull(handler.LastRequest);
+        Assert.True(handler.LastRequest!.Headers.Contains("User-Agent"));
+    }
+
+    [Fact]
+    public async Task FetchUsageAsync_SetsAcceptHeader()
+    {
+        var html = BuildHtml(rollingPct: 30, rollingSec: 600);
+        var handler = new CapturingHandler(OkHtml(html));
+        var settings = CreateSettings(enabled: true, workspaceId: "ws", apiKey: "cookie");
+        var factory = new SimpleFactory(handler);
+        var provider = new OpenCodeGoProvider(NullLogger<OpenCodeGoProvider>.Instance, factory, settings);
+
+        await provider.FetchUsageAsync();
+
+        Assert.NotNull(handler.LastRequest);
+        Assert.True(handler.LastRequest!.Headers.Contains("Accept"));
+        Assert.Equal("text/html", handler.LastRequest.Headers.GetValues("Accept").First());
+    }
+
+    [Fact]
+    public async Task FetchUsageAsync_UrlContainsWorkspaceId()
+    {
+        var html = BuildHtml(rollingPct: 30, rollingSec: 600);
+        var handler = new CapturingHandler(OkHtml(html));
+        var settings = CreateSettings(enabled: true, workspaceId: "my-special-ws", apiKey: "cookie");
+        var factory = new SimpleFactory(handler);
+        var provider = new OpenCodeGoProvider(NullLogger<OpenCodeGoProvider>.Instance, factory, settings);
+
+        await provider.FetchUsageAsync();
+
+        Assert.NotNull(handler.LastRequest);
+        Assert.Contains("my-special-ws", handler.LastRequest!.RequestUri?.ToString());
+        Assert.StartsWith("https://opencode.ai/workspace/", handler.LastRequest.RequestUri?.ToString());
+        Assert.EndsWith("/go", handler.LastRequest.RequestUri?.ToString());
+    }
+
+    // === ResetInSec = 0 boundary ===
+    [Fact]
+    public async Task FetchUsageAsync_ResetZeroSeconds_ShowsResetsNowOrMinutes()
+    {
+        var html = BuildHtml(rollingPct: 80, rollingSec: 0);
+        var provider = CreateProvider(response: OkHtml(html));
+        var result = await provider.FetchUsageAsync();
+
+        Assert.True(result.Success);
+        var bar = result.Items![0].Bars![0];
+        Assert.Contains("Resets", bar.ResetDescription);
+    }
+
+    // === ResetInSec in days ===
+    [Fact]
+    public async Task FetchUsageAsync_ResetInDays_ShowsDays()
+    {
+        // 172800 seconds = 2 days — safely in the days branch
+        var html = BuildHtml(rollingPct: 10, rollingSec: 172800);
+        var provider = CreateProvider(response: OkHtml(html));
+        var result = await provider.FetchUsageAsync();
+
+        Assert.True(result.Success);
+        var bar = result.Items![0].Bars![0];
+        Assert.Contains("d", bar.ResetDescription);
+    }
+
     // === Item structure ===
     [Fact]
     public async Task FetchUsageAsync_ValidResponse_ItemHasCorrectKey()
@@ -297,6 +413,17 @@ public class OpenCodeGoProviderMutationTests : IDisposable
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct) =>
             Task.FromResult(response);
+    }
+
+    private sealed class CapturingHandler(HttpResponseMessage response) : HttpMessageHandler
+    {
+        public HttpRequestMessage? LastRequest { get; private set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            this.LastRequest = request;
+            return Task.FromResult(response);
+        }
     }
 
     private sealed class CountingHandler(HttpResponseMessage response) : HttpMessageHandler

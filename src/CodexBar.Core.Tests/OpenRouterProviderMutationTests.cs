@@ -228,6 +228,81 @@ public class OpenRouterProviderMutationTests : IDisposable
         Assert.Equal("https://openrouter.ai/activity", provider.Metadata.DashboardUrl);
     }
 
+    // === Request headers and structure ===
+    [Fact]
+    public async Task FetchUsageAsync_SetsAuthorizationHeader()
+    {
+        var handler = new CapturingHandler(OkJson("""{"data": {"total_credits": 10.0, "total_usage": 1.0}}"""));
+        var settings = CreateSettings(enabled: true, apiKey: "my-secret-key");
+        var factory = new SimpleFactory(handler);
+        var provider = new OpenRouterProvider(NullLogger<OpenRouterProvider>.Instance, factory, settings);
+
+        await provider.FetchUsageAsync();
+
+        Assert.NotNull(handler.LastRequest);
+        Assert.Equal("Bearer", handler.LastRequest!.Headers.Authorization?.Scheme);
+        Assert.Equal("my-secret-key", handler.LastRequest.Headers.Authorization?.Parameter);
+    }
+
+    [Fact]
+    public async Task FetchUsageAsync_SetsXTitleHeader()
+    {
+        var handler = new CapturingHandler(OkJson("""{"data": {"total_credits": 10.0, "total_usage": 1.0}}"""));
+        var settings = CreateSettings(enabled: true, apiKey: "key");
+        var factory = new SimpleFactory(handler);
+        var provider = new OpenRouterProvider(NullLogger<OpenRouterProvider>.Instance, factory, settings);
+
+        await provider.FetchUsageAsync();
+
+        Assert.NotNull(handler.LastRequest);
+        Assert.True(handler.LastRequest!.Headers.Contains("X-Title"));
+        Assert.Equal("CodexBar", handler.LastRequest.Headers.GetValues("X-Title").First());
+    }
+
+    [Fact]
+    public async Task FetchUsageAsync_RequestsCreditsEndpoint()
+    {
+        var handler = new CapturingHandler(OkJson("""{"data": {"total_credits": 10.0, "total_usage": 1.0}}"""));
+        var settings = CreateSettings(enabled: true, apiKey: "key");
+        var factory = new SimpleFactory(handler);
+        var provider = new OpenRouterProvider(NullLogger<OpenRouterProvider>.Instance, factory, settings);
+
+        await provider.FetchUsageAsync();
+
+        Assert.NotNull(handler.LastRequest);
+        Assert.Equal("https://openrouter.ai/api/v1/credits", handler.LastRequest!.RequestUri?.ToString());
+    }
+
+    [Fact]
+    public async Task FetchUsageAsync_Http500Response_ReturnsFailure()
+    {
+        var response = new HttpResponseMessage(HttpStatusCode.InternalServerError)
+        {
+            Content = new StringContent("Server Error", System.Text.Encoding.UTF8, "text/plain"),
+        };
+        var provider = CreateProvider(response: response);
+        var result = await provider.FetchUsageAsync();
+
+        Assert.False(result.Success);
+        Assert.NotNull(result.ErrorMessage);
+    }
+
+    // === Env var takes priority over settings ===
+    [Fact]
+    public async Task FetchUsageAsync_EnvVarAndSettings_EnvVarTakesPriority()
+    {
+        Environment.SetEnvironmentVariable("OPENROUTER_API_KEY", "env-key");
+        var handler = new CapturingHandler(OkJson("""{"data": {"total_credits": 10.0, "total_usage": 1.0}}"""));
+        var settings = CreateSettings(enabled: true, apiKey: "settings-key");
+        var factory = new SimpleFactory(handler);
+        var provider = new OpenRouterProvider(NullLogger<OpenRouterProvider>.Instance, factory, settings);
+
+        await provider.FetchUsageAsync();
+
+        Assert.NotNull(handler.LastRequest);
+        Assert.Equal("env-key", handler.LastRequest!.Headers.Authorization?.Parameter);
+    }
+
     // === Helper methods ===
     private static OpenRouterProvider CreateProvider(
         ISettingsService? settings = null,
@@ -256,6 +331,17 @@ public class OpenRouterProviderMutationTests : IDisposable
     {
         protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct) =>
             Task.FromResult(response);
+    }
+
+    private sealed class CapturingHandler(HttpResponseMessage response) : HttpMessageHandler
+    {
+        public HttpRequestMessage? LastRequest { get; private set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            this.LastRequest = request;
+            return Task.FromResult(response);
+        }
     }
 
     private sealed class ExceptionHandler(Exception exception) : HttpMessageHandler
