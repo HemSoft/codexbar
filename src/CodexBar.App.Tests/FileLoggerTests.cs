@@ -2,6 +2,7 @@
 
 namespace CodexBar.App.Tests;
 
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
 public sealed class FileLoggerTests : IDisposable
@@ -220,5 +221,77 @@ public sealed class FileLoggerTests : IDisposable
 
         Assert.True(Directory.Exists(logDir));
         Assert.True(File.Exists(logPath));
+    }
+
+    [Fact]
+    public void Log_AfterDispose_DoesNotWriteToFile()
+    {
+        var logPath = Path.Combine(this._tempDir, "test.log");
+        var provider = new FileLoggerProvider(logPath);
+        var logger = provider.CreateLogger("TestCategory");
+        logger.LogInformation("Before dispose");
+        provider.Dispose();
+
+        logger.LogInformation("After dispose");
+
+        var content = File.ReadAllText(logPath);
+        Assert.Contains("Before dispose", content);
+        Assert.DoesNotContain("After dispose", content);
+    }
+
+    [Fact]
+    public void Log_MultipleMessages_AppendsToFile()
+    {
+        var logPath = Path.Combine(this._tempDir, "test.log");
+
+        using (var provider = new FileLoggerProvider(logPath))
+        {
+            var logger = provider.CreateLogger("TestCategory");
+            logger.LogInformation("First");
+            logger.LogInformation("Second");
+            logger.LogInformation("Third");
+        }
+
+        var content = File.ReadAllText(logPath);
+        Assert.Contains("First", content);
+        Assert.Contains("Second", content);
+        Assert.Contains("Third", content);
+    }
+
+    [Fact]
+    public void Log_MultipleCategories_IncludesEachCategory()
+    {
+        var logPath = Path.Combine(this._tempDir, "test.log");
+
+        using (var provider = new FileLoggerProvider(logPath))
+        {
+            var logger1 = provider.CreateLogger("Category1");
+            var logger2 = provider.CreateLogger("Category2");
+            logger1.LogInformation("From cat1");
+            logger2.LogInformation("From cat2");
+        }
+
+        var content = File.ReadAllText(logPath);
+        Assert.Contains("Category1", content);
+        Assert.Contains("Category2", content);
+    }
+
+    [Fact]
+    public void AddFile_WhenCalled_RegistersProvider()
+    {
+        var logPath = Path.Combine(this._tempDir, "ext-test.log");
+        var services = new Microsoft.Extensions.DependencyInjection.ServiceCollection();
+        services.AddLogging(builder => builder.AddFile(logPath));
+        using var sp = services.BuildServiceProvider();
+
+        var loggerFactory = sp.GetRequiredService<Microsoft.Extensions.Logging.ILoggerFactory>();
+        var logger = loggerFactory.CreateLogger("ExtTest");
+        logger.LogInformation("Extension method works");
+
+        // Give a moment for flush, then dispose to ensure write completes
+        sp.Dispose();
+
+        var content = File.ReadAllText(logPath);
+        Assert.Contains("Extension method works", content);
     }
 }
