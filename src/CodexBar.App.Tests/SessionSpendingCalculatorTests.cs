@@ -109,9 +109,7 @@ public sealed class SessionSpendingCalculatorTests
         var time = new DateTimeOffset(2026, 5, 15, 14, 30, 0, TimeSpan.Zero);
         var result = SessionSpendingCalculator.FormatResetTime(time);
 
-        Assert.NotNull(result);
-        Assert.Contains("2026", result);
-        Assert.Contains("05", result);
-        Assert.Contains("15", result);
+        var expected = time.ToLocalTime().ToString("yyyy-MM-dd hh:mm tt");
+        Assert.Equal(expected, result);
     }
 }
