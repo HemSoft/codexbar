@@ -25,7 +25,6 @@ public static class StartupManager
     /// Returns true if the CodexBar autostart entry exists in the registry.
     /// </summary>
     /// <returns></returns>
-    [ExcludeFromCodeCoverage]
     public static bool IsEnabled()
     {
         if (!OperatingSystem.IsWindows())
@@ -55,7 +54,6 @@ public static class StartupManager
     /// The entry points to the currently running executable.
     /// Throws on failure so callers can revert UI state.
     /// </summary>
-    [ExcludeFromCodeCoverage]
     public static void SetEnabled(bool enabled)
     {
         if (!OperatingSystem.IsWindows())

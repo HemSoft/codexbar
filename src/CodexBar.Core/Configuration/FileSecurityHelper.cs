@@ -32,7 +32,6 @@ internal static class FileSecurityHelper
     /// On Unix: uses <see cref="FileStreamOptions.UnixCreateMode"/> to set chmod 600 atomically.
     /// </summary>
     /// <returns></returns>
-    [ExcludeFromCodeCoverage]
     public static FileStream CreateRestrictedFileStream(string filePath)
     {
 #if WINDOWS

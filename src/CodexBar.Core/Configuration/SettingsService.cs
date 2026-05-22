@@ -367,7 +367,6 @@ public sealed class SettingsService : ISettingsService
         }
     }
 
-    [ExcludeFromCodeCoverage]
     private void SafeRestrictPermissions()
     {
         try
@@ -386,7 +385,6 @@ public sealed class SettingsService : ISettingsService
     /// On Windows: sets an explicit ACL granting FullControl only to the current user.
     /// On Unix: sets file mode to owner read/write (chmod 600).
     /// </summary>
-    [ExcludeFromCodeCoverage]
     private void RestrictFilePermissions(string filePath)
     {
         try
@@ -427,7 +425,6 @@ public sealed class SettingsService : ISettingsService
     /// On Windows: sets an explicit ACL granting FullControl only to the current user.
     /// On Unix: sets directory mode to owner-only (chmod 700).
     /// </summary>
-    [ExcludeFromCodeCoverage]
     private void RestrictDirectoryPermissions(string dirPath)
     {
         try
