@@ -141,7 +141,11 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
             items.Add(ToUsageItem(username, result));
         }
 
-        // Aggregate: use the first successful premium snapshot for the legacy SessionUsage field
+        return BuildFetchResult(accountResults, items);
+    }
+
+    private static ProviderUsageResult BuildFetchResult(List<CopilotAccountResult> accountResults, List<UsageItem> items)
+    {
         var firstSuccess = accountResults.FirstOrDefault(r => r.Success && r.PremiumInteractions is not null);
         UsageSnapshot? aggregateSession = null;
         if (firstSuccess?.PremiumInteractions is not null)
@@ -178,33 +182,36 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
         await this._accountsLock.WaitAsync(ct);
         try
         {
-            if (this._cachedAccounts is null or { Count: 0 })
-            {
-                // Respect negative-result cache to avoid hammering gh when it's not installed/configured
-                if (DateTime.UtcNow < this._emptyDiscoveryCachedUntil)
-                {
-                    return [];
-                }
-
-                var discoveryOverride = this.AccountDiscoveryOverride;
-                this._cachedAccounts = discoveryOverride is not null
-                    ? await discoveryOverride(ct)
-                    : await this.DiscoverGhAccountsAsync(ct);
-            }
-
-            // Cache empty results for 5 minutes to avoid repeated process spawning on persistent failures
-            if (this._cachedAccounts is { Count: 0 })
-            {
-                this._emptyDiscoveryCachedUntil = DateTime.UtcNow.AddMinutes(5);
-                this._cachedAccounts = null;
-            }
-
-            return this._cachedAccounts ?? [];
+            return await this.DiscoverAccountsUnderLockAsync(ct);
         }
         finally
         {
             this._accountsLock.Release();
         }
+    }
+
+    private async Task<List<string>> DiscoverAccountsUnderLockAsync(CancellationToken ct)
+    {
+        if (this._cachedAccounts is null or { Count: 0 })
+        {
+            if (DateTime.UtcNow < this._emptyDiscoveryCachedUntil)
+            {
+                return [];
+            }
+
+            var discoveryOverride = this.AccountDiscoveryOverride;
+            this._cachedAccounts = discoveryOverride is not null
+                ? await discoveryOverride(ct)
+                : await this.DiscoverGhAccountsAsync(ct);
+        }
+
+        if (this._cachedAccounts is { Count: 0 })
+        {
+            this._emptyDiscoveryCachedUntil = DateTime.UtcNow.AddMinutes(5);
+            this._cachedAccounts = null;
+        }
+
+        return this._cachedAccounts ?? [];
     }
 
     /// <summary>

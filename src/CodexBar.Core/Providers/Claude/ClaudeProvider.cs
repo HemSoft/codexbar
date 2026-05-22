@@ -266,7 +266,31 @@ public sealed class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFa
         ClaudeAccountInfo? accountInfo)
     {
         var usedPercent = limits.FiveHourUtilization;
+        var usageLabel = BuildStatusLabel(subscriptionType, totalTokens, equivalentCost, accountInfo);
 
+        var resetDesc = limits.FiveHourReset > 0
+            ? FormatResetCountdown(limits.FiveHourReset, "5-hour limit")
+            : null;
+
+        return new UsageSnapshot
+        {
+            UsedPercent = usedPercent,
+            UsageLabel = usageLabel,
+            ResetsAt = limits.FiveHourReset > 0
+                ? DateTimeOffset.FromUnixTimeSeconds(limits.FiveHourReset)
+                : null,
+            ResetDescription = resetDesc,
+            IsUnlimited = false,
+            CapturedAt = DateTimeOffset.UtcNow,
+        };
+    }
+
+    internal static string BuildStatusLabel(
+        string subscriptionType,
+        long totalTokens,
+        double equivalentCost,
+        ClaudeAccountInfo? accountInfo)
+    {
         var statusParts = new List<string> { $"{subscriptionType} plan" };
         if (equivalentCost > 0)
         {
@@ -282,21 +306,7 @@ public sealed class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFa
             statusParts.Add("extra usage on");
         }
 
-        var resetDesc = limits.FiveHourReset > 0
-            ? FormatResetCountdown(limits.FiveHourReset, "5-hour limit")
-            : null;
-
-        return new UsageSnapshot
-        {
-            UsedPercent = usedPercent,
-            UsageLabel = string.Join(" · ", statusParts),
-            ResetsAt = limits.FiveHourReset > 0
-                ? DateTimeOffset.FromUnixTimeSeconds(limits.FiveHourReset)
-                : null,
-            ResetDescription = resetDesc,
-            IsUnlimited = false,
-            CapturedAt = DateTimeOffset.UtcNow,
-        };
+        return string.Join(" · ", statusParts);
     }
 
     internal static UsageSnapshot? BuildWeeklySnapshot(UnifiedRateLimits? limits)
@@ -853,18 +863,20 @@ public sealed class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFa
 
         foreach (var prop in modelUsage.EnumerateObject())
         {
-            usages.Add(new ClaudeModelUsage
-            {
-                ModelId = prop.Name,
-                InputTokens = prop.Value.TryGetProperty("inputTokens", out var it) ? it.GetInt64() : 0,
-                OutputTokens = prop.Value.TryGetProperty("outputTokens", out var ot) ? ot.GetInt64() : 0,
-                CacheReadInputTokens = prop.Value.TryGetProperty("cacheReadInputTokens", out var crit) ? crit.GetInt64() : 0,
-                CacheCreationInputTokens = prop.Value.TryGetProperty("cacheCreationInputTokens", out var ccit) ? ccit.GetInt64() : 0,
-            });
+            usages.Add(ParseSingleModelUsage(prop.Name, prop.Value));
         }
 
         return usages;
     }
+
+    internal static ClaudeModelUsage ParseSingleModelUsage(string modelId, JsonElement value) => new()
+    {
+        ModelId = modelId,
+        InputTokens = value.TryGetProperty("inputTokens", out var it) ? it.GetInt64() : 0,
+        OutputTokens = value.TryGetProperty("outputTokens", out var ot) ? ot.GetInt64() : 0,
+        CacheReadInputTokens = value.TryGetProperty("cacheReadInputTokens", out var crit) ? crit.GetInt64() : 0,
+        CacheCreationInputTokens = value.TryGetProperty("cacheCreationInputTokens", out var ccit) ? ccit.GetInt64() : 0,
+    };
 
     internal static long CalculateTotalTokens(ClaudeStatsCache? stats)
     {
