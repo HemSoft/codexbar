@@ -163,29 +163,7 @@ public sealed class SettingsService : ISettingsService
     {
         try
         {
-            var providers = settings.Providers ?? [];
-
-            // Strip null/empty API keys to avoid persisting empty credential fields
-            var sanitized = new AppSettings
-            {
-                RefreshIntervalSeconds = settings.RefreshIntervalSeconds,
-                CopilotAccounts = (settings.CopilotAccounts ?? []).ToList(),
-                OpenCodeGoWorkspaceId = string.IsNullOrWhiteSpace(settings.OpenCodeGoWorkspaceId) ? null : settings.OpenCodeGoWorkspaceId,
-                ZoomLevel = settings.ZoomLevel is > 0 and <= 5 ? settings.ZoomLevel : 1.0,
-                WindowWidth = settings.WindowWidth,
-                WindowHeight = settings.WindowHeight,
-                WindowLeft = settings.WindowLeft,
-                WindowTop = settings.WindowTop,
-                SessionSpendingBaselines = (settings.SessionSpendingBaselines ?? []).ToDictionary(kvp => kvp.Key, kvp => kvp.Value),
-                SessionSpendingResetTimes = (settings.SessionSpendingResetTimes ?? []).ToDictionary(kvp => kvp.Key, kvp => kvp.Value),
-                Providers = providers.ToDictionary(
-                    kvp => kvp.Key,
-                    kvp => new ProviderSettings
-                    {
-                        Enabled = kvp.Value?.Enabled ?? true,
-                        ApiKey = string.IsNullOrWhiteSpace(kvp.Value?.ApiKey) ? null : kvp.Value.ApiKey
-                    }),
-            };
+            var sanitized = SanitizeForPersistence(settings);
 
             Directory.CreateDirectory(this._settingsDir);
             this.RestrictDirectoryPermissions(this._settingsDir);
@@ -214,6 +192,32 @@ public sealed class SettingsService : ISettingsService
             this._logger.LogError(ex, "Failed to save settings to {Path}", this._settingsPath);
             throw;
         }
+    }
+
+    private static AppSettings SanitizeForPersistence(AppSettings settings)
+    {
+        var providers = settings.Providers ?? [];
+
+        return new AppSettings
+        {
+            RefreshIntervalSeconds = settings.RefreshIntervalSeconds,
+            CopilotAccounts = (settings.CopilotAccounts ?? []).ToList(),
+            OpenCodeGoWorkspaceId = string.IsNullOrWhiteSpace(settings.OpenCodeGoWorkspaceId) ? null : settings.OpenCodeGoWorkspaceId,
+            ZoomLevel = settings.ZoomLevel is > 0 and <= 5 ? settings.ZoomLevel : 1.0,
+            WindowWidth = settings.WindowWidth,
+            WindowHeight = settings.WindowHeight,
+            WindowLeft = settings.WindowLeft,
+            WindowTop = settings.WindowTop,
+            SessionSpendingBaselines = (settings.SessionSpendingBaselines ?? []).ToDictionary(kvp => kvp.Key, kvp => kvp.Value),
+            SessionSpendingResetTimes = (settings.SessionSpendingResetTimes ?? []).ToDictionary(kvp => kvp.Key, kvp => kvp.Value),
+            Providers = providers.ToDictionary(
+                kvp => kvp.Key,
+                kvp => new ProviderSettings
+                {
+                    Enabled = kvp.Value?.Enabled ?? true,
+                    ApiKey = string.IsNullOrWhiteSpace(kvp.Value?.ApiKey) ? null : kvp.Value.ApiKey
+                }),
+        };
     }
 
     public string? GetApiKey(ProviderId providerId)
