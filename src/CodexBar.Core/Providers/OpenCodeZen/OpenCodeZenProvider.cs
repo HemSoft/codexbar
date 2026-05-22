@@ -115,7 +115,7 @@ public sealed partial class OpenCodeZenProvider(
         {
             return ProviderUsageResult.Failure(
                 ProviderId.OpenCodeZen,
-                "Configure OPENCODE_ZEN_AUTH_COOKIE or OPENCODE_GO_AUTH_COOKIE (env var) or providers.OpenCodeGo.apiKey in settings.json.");
+                "Configure OPENCODE_ZEN_AUTH_COOKIE or OPENCODE_GO_AUTH_COOKIE (env var) or providers.OpenCodeZen.apiKey or providers.OpenCodeGo.apiKey in settings.json.");
         }
 
         return null;
