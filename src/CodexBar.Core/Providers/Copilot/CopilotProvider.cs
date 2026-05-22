@@ -458,104 +458,108 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
             return cached;
         }
 
-        if (this.TokenResolverOverride is not null)
+        if (this.TokenResolverOverride is { } resolver)
         {
-            var resolved = await this.TokenResolverOverride(username, ct);
-            if (!string.IsNullOrWhiteSpace(resolved))
-            {
-                this._tokenCache[username] = resolved;
-            }
-
-            return resolved;
+            return await this.ResolveTokenViaOverrideAsync(username, ct, resolver);
         }
 
+        return await this.ResolveTokenViaGhCliAsync(username, ct);
+    }
+
+    private async Task<string?> ResolveTokenViaOverrideAsync(
+        string username,
+        CancellationToken ct,
+        Func<string, CancellationToken, Task<string?>> resolver)
+    {
+        var resolved = await resolver(username, ct);
+        if (!string.IsNullOrWhiteSpace(resolved))
+        {
+            this._tokenCache[username] = resolved;
+        }
+
+        return resolved;
+    }
+
+    private async Task<string?> ResolveTokenViaGhCliAsync(string username, CancellationToken ct)
+    {
         try
         {
-            Process process;
-            if (this.GhTokenProcessOverride is not null)
+            using var process = this.CreateGhTokenProcess(username);
+            var timeout = this.TokenTimeoutOverride ?? TimeSpan.FromSeconds(5);
+            var (exitCode, stderr, stdout) = await WaitForGhProcessAsync(process, timeout, ct);
+
+            if (exitCode is null)
             {
-                process = this.GhTokenProcessOverride(username);
-            }
-            else
-            {
-                var psi = new ProcessStartInfo
-                {
-                    FileName = "gh",
-                    UseShellExecute = false,
-                    CreateNoWindow = true,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                };
-                psi.ArgumentList.Add("auth");
-                psi.ArgumentList.Add("token");
-                psi.ArgumentList.Add("--user");
-                psi.ArgumentList.Add(username);
-                psi.ArgumentList.Add("--hostname");
-                psi.ArgumentList.Add("github.com");
-                process = new Process { StartInfo = psi };
-            }
-
-            using var processDisposer = process;
-            process.Start();
-
-            var stdoutTask = process.StandardOutput.ReadToEndAsync();
-            var stderrTask = process.StandardError.ReadToEndAsync();
-
-            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            timeoutCts.CancelAfter(this.TokenTimeoutOverride ?? TimeSpan.FromSeconds(5));
-
-            try
-            {
-                await process.WaitForExitAsync(timeoutCts.Token);
-            }
-            catch (OperationCanceledException)
-            {
-                BestEffortKillAndDrain(process, stderrTask, stdoutTask);
-
-                if (ct.IsCancellationRequested)
-                {
-                    throw; // Propagate caller cancellation after cleanup
-                }
-
-                // Timeout only
                 this._logger.LogWarning("gh auth token --user {User} timed out", username);
                 return null;
             }
 
-            var stderrOutput = await stderrTask;
-
-            if (process.ExitCode != 0)
+            if (exitCode != 0)
             {
-                await stdoutTask; // drain stdout
-                var sanitizedStderr = string.IsNullOrWhiteSpace(stderrOutput)
-                    ? "(no stderr)"
-                    : stderrOutput.Trim().Length > 200
-                        ? stderrOutput.Trim()[..200] + "…"
-                        : stderrOutput.Trim();
-                this._logger.LogDebug(
-                    "gh auth token --user {User} exited {Code}: {Stderr}",
-                    username, process.ExitCode, sanitizedStderr);
+                this.LogNonZeroGhTokenExit(username, exitCode.Value, stderr);
                 return null;
             }
 
-            var token = (await stdoutTask).Trim();
-            if (!string.IsNullOrWhiteSpace(token))
-            {
-                this._tokenCache[username] = token;
-                this._logger.LogDebug("Resolved token for {User} ({Length} chars)", username, token.Length);
-                return token;
-            }
+            return this.CacheTokenIfValid(username, stdout);
         }
         catch (OperationCanceledException)
         {
-            throw; // Propagate cancellation
+            throw;
         }
         catch (Exception ex)
         {
             this._logger.LogDebug(ex, "Failed to get token for {User}", username);
+            return null;
+        }
+    }
+
+    private Process CreateGhTokenProcess(string username)
+    {
+        if (this.GhTokenProcessOverride is not null)
+        {
+            return this.GhTokenProcessOverride(username);
         }
 
-        return null;
+        var psi = new ProcessStartInfo
+        {
+            FileName = "gh",
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+        psi.ArgumentList.Add("auth");
+        psi.ArgumentList.Add("token");
+        psi.ArgumentList.Add("--user");
+        psi.ArgumentList.Add(username);
+        psi.ArgumentList.Add("--hostname");
+        psi.ArgumentList.Add("github.com");
+        return new Process { StartInfo = psi };
+    }
+
+    private void LogNonZeroGhTokenExit(string username, int exitCode, string stderrOutput)
+    {
+        var sanitizedStderr = string.IsNullOrWhiteSpace(stderrOutput)
+            ? "(no stderr)"
+            : stderrOutput.Trim().Length > 200
+                ? stderrOutput.Trim()[..200] + "…"
+                : stderrOutput.Trim();
+        this._logger.LogDebug(
+            "gh auth token --user {User} exited {Code}: {Stderr}",
+            username, exitCode, sanitizedStderr);
+    }
+
+    private string? CacheTokenIfValid(string username, string stdout)
+    {
+        var token = stdout.Trim();
+        if (string.IsNullOrWhiteSpace(token))
+        {
+            return null;
+        }
+
+        this._tokenCache[username] = token;
+        this._logger.LogDebug("Resolved token for {User} ({Length} chars)", username, token.Length);
+        return token;
     }
 
     private async Task InvalidateTokenForUserAsync(string username, CancellationToken ct = default)
