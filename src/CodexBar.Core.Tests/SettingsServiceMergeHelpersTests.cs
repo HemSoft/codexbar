@@ -4,7 +4,6 @@ namespace CodexBar.Core.Tests;
 
 using System.Text.Json;
 using CodexBar.Core.Configuration;
-using CodexBar.Core.Models;
 using Microsoft.Extensions.Logging.Abstractions;
 
 /// <summary>

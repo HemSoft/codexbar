@@ -38,6 +38,11 @@ public static class StartupManager
     /// </summary>
     public static void SetEnabled(bool enabled)
     {
+        if (!OperatingSystem.IsWindows() && TestStore is null)
+        {
+            return;
+        }
+
         if (enabled)
         {
             var exePath = TestStore is not null ? "test-exe" : GetExecutablePath();
