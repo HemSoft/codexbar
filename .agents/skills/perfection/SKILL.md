@@ -68,13 +68,17 @@ Default command. Run all quality gates and produce a consolidated report.
    ```powershell
    dotnet build                    # Build with zero warnings
    dotnet format --verify-no-changes  # Formatting
-   dotnet test --collect:"XPlat Code Coverage"  # Tests + coverage
+   dotnet test --collect:"XPlat Code Coverage" --settings src/CodexBar.Core.Tests/coverage.runsettings  # Tests + coverage
    dotnet list package --vulnerable   # Security audit
    ```
 
 2. For CRAP scores, after test coverage completes:
-   - Run ReportGenerator with JSON output
+   - Run ReportGenerator with JSON output and file filters to exclude generated code:
+     ```powershell
+     reportgenerator -reports:"**/coverage.cobertura.xml" -targetdir:CoverageReport -reporttypes:JsonSummary -filefilters:"-**/*.g.cs"
+     ```
    - Flag any method with CRAP > 30
+   - **Exclude** source-generated regex methods (see "Generated Code Exclusions" below)
    - Report average CRAP score
 
 3. Present consolidated report:
@@ -133,8 +137,36 @@ recent audit results if available, otherwise runs a fresh audit.
 - **scorecard**: Use `scorecard status` and `scorecard improve` for the scorecard gate (when configured)
 - **crap**: Use the `crap` skill for detailed CRAP score analysis if available
 
+## Generated Code Exclusions
+
+Source-generated code (e.g. `[GeneratedRegex]` methods) is **excluded** from CRAP analysis.
+These methods produce compiler-generated state machines with unreachable backtracking branches
+that cannot be meaningfully refactored or branch-covered.
+
+**Exclusion mechanisms (all must be applied together):**
+
+1. **Coverage collection** — `coverage.runsettings` excludes:
+   - Files matching `**/*.g.cs` or `**/GeneratedRegex*.cs`
+   - Methods decorated with `GeneratedCodeAttribute`, `CompilerGeneratedAttribute`,
+     or `ExcludeFromCodeCoverageAttribute`
+
+2. **ReportGenerator CRAP report** — pass file filters:
+   ```powershell
+   reportgenerator -reports:"**/coverage.cobertura.xml" -targetdir:CoverageReport \
+     -reporttypes:JsonSummary -filefilters:"-**/*.g.cs"
+   ```
+
+3. **Manual triage** — if a method with CRAP > 30 appears in the report and its
+   class name contains `RegexRunner` or `GeneratedRegex`, or it resides in a `*.g.cs`
+   file, it is source-generated and should be excluded from the CRAP gate count.
+
+**Decision rationale** (GitHub Issue #36): Generated regex runners (`TryMatchAtCurrentPosition`,
+CC ≈ 56) are produced by `System.Text.RegularExpressions.Generator`. Their complexity is
+inherent to optimized regex compilation and is not a maintenance risk.
+
 ## Notes
 
 - Coverage thresholds are enforced via coverlet.runsettings (configure when ready)
 - The `coverage:ratchet` approach auto-tightens coverage thresholds over time
 - Build warnings are treated as errors — fix root causes per AGENTS.md
+- Always pass `--settings src/CodexBar.Core.Tests/coverage.runsettings` when collecting coverage

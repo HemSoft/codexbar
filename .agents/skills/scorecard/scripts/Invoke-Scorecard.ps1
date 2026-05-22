@@ -103,8 +103,9 @@ Add-Rule 'Bronze' 'License defined' 5 $licenseExists $(
 
 # Coverage (run tests with coverage)
 $testProjectPath = Join-Path $RepoRoot 'src' 'CodexBar.Core.Tests' 'CodexBar.Core.Tests.csproj'
+$runsettingsPath = Join-Path $RepoRoot 'src' 'CodexBar.Core.Tests' 'coverage.runsettings'
 $coverageOutput = dotnet test $testProjectPath `
-    --collect:"XPlat Code Coverage" --verbosity minimal --no-build 2>&1 | Out-String
+    --collect:"XPlat Code Coverage" --settings $runsettingsPath --verbosity minimal --no-build 2>&1 | Out-String
 $coverageFile = Get-ChildItem -Path (Join-Path $RepoRoot 'src' 'CodexBar.Core.Tests' 'TestResults') -Recurse `
     -Filter "coverage.cobertura.xml" -ErrorAction SilentlyContinue |
     Sort-Object LastWriteTime -Descending | Select-Object -First 1

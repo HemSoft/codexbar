@@ -43,3 +43,20 @@ src/
 - Conventional commits: `feat:`, `fix:`, `refactor:`, `test:`, `docs:`
 - One logical change per commit
 - No merge conflict markers committed
+
+## CRAP Score Exclusions
+
+Source-generated code is excluded from CRAP analysis. Specifically:
+
+- **`[GeneratedRegex]` methods** — The regex source generator produces `TryMatchAtCurrentPosition`
+  runners with CC ≈ 56. These are optimized state machines with unreachable backtracking branches.
+  They cannot be refactored (they're auto-generated) and cannot be fully branch-covered.
+- **Any `*.g.cs` file** — All source-generator output is excluded from both coverage collection
+  and CRAP scoring.
+
+When running coverage or CRAP analysis, always use:
+
+```powershell
+dotnet test --collect:"XPlat Code Coverage" --settings src/CodexBar.Core.Tests/coverage.runsettings
+reportgenerator -reports:"**/coverage.cobertura.xml" -targetdir:CoverageReport -reporttypes:JsonSummary -filefilters:"-**/*.g.cs"
+```

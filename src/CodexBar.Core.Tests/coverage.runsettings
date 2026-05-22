@@ -4,8 +4,9 @@
     <DataCollectors>
       <DataCollector friendlyName="XPlat Code Coverage">
         <Configuration>
-          <ExcludeByAttribute>GeneratedCodeAttribute,ExcludeFromCodeCoverageAttribute</ExcludeByAttribute>
-          <ExcludeByFile>**/*.g.cs</ExcludeByFile>
+          <ExcludeByAttribute>GeneratedCodeAttribute,CompilerGeneratedAttribute,ExcludeFromCodeCoverageAttribute</ExcludeByAttribute>
+          <ExcludeByFile>**/*.g.cs,**/GeneratedRegex*.cs</ExcludeByFile>
+          <SkipAutoProps>true</SkipAutoProps>
         </Configuration>
       </DataCollector>
     </DataCollectors>
