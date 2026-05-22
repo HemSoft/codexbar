@@ -17,7 +17,7 @@ public class CopilotProviderBestEffortKillTests
     {
         // A Process object with no associated OS process throws
         // InvalidOperationException from Kill()
-        var process = new Process();
+        using var process = new Process();
 
         var stderrTask = Task.FromResult(string.Empty);
         var stdoutTask = Task.FromResult(string.Empty);
