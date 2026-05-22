@@ -75,7 +75,7 @@ Default command. Run all quality gates and produce a consolidated report.
 2. For CRAP scores, after test coverage completes:
    - Run ReportGenerator with JSON output and file filters to exclude generated code:
      ```powershell
-     reportgenerator -reports:"**/coverage.cobertura.xml" -targetdir:CoverageReport -reporttypes:JsonSummary -filefilters:"-**/*.g.cs"
+     reportgenerator -reports:"**/coverage.cobertura.xml" -targetdir:CoverageReport -reporttypes:JsonSummary -filefilters:"-**/*.g.cs;-**/GeneratedRegex*.cs"
      ```
    - Flag any method with CRAP > 30
    - **Exclude** source-generated regex methods (see "Generated Code Exclusions" below)
@@ -147,13 +147,13 @@ that cannot be meaningfully refactored or branch-covered.
 
 1. **Coverage collection** — `coverage.runsettings` excludes:
    - Files matching `**/*.g.cs` or `**/GeneratedRegex*.cs`
-   - Methods decorated with `GeneratedCodeAttribute`, `CompilerGeneratedAttribute`,
-     or `ExcludeFromCodeCoverageAttribute`
+   - Methods decorated with `GeneratedCodeAttribute` or `ExcludeFromCodeCoverageAttribute`
+   - Auto-property accessors (`SkipAutoProps`) — intentionally excluded as trivial code
 
 2. **ReportGenerator CRAP report** — pass file filters:
    ```powershell
    reportgenerator -reports:"**/coverage.cobertura.xml" -targetdir:CoverageReport \
-     -reporttypes:JsonSummary -filefilters:"-**/*.g.cs"
+     -reporttypes:JsonSummary -filefilters:"-**/*.g.cs;-**/GeneratedRegex*.cs"
    ```
 
 3. **Manual triage** — if a method with CRAP > 30 appears in the report and its
