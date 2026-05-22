@@ -593,15 +593,28 @@ public class BranchCoverageTests
     }
 
     /// <summary>
-    /// Exercises BuildCopilotApiRequest to verify authorization header construction.
+    /// Exercises BuildCopilotApiRequest to verify authorization and configured headers.
     /// </summary>
     [Fact]
-    public void BuildCopilotApiRequest_SetsAuthorizationHeader()
+    public void BuildCopilotApiRequest_SetsAuthorizationAndConfiguredHeaders()
     {
         var request = CopilotProvider.BuildCopilotApiRequest("test-token");
         Assert.NotNull(request);
         Assert.Equal("token", request.Headers.Authorization?.Scheme);
         Assert.Equal("test-token", request.Headers.Authorization?.Parameter);
+
+        // Verify Editor-Version header is present (sourced from CODEXBAR_COPILOT_EDITOR_VERSION or default)
+        Assert.True(request.Headers.Contains("Editor-Version"));
+        var editorVersion = request.Headers.GetValues("Editor-Version").First();
+        Assert.False(string.IsNullOrWhiteSpace(editorVersion));
+
+        // Verify Editor-Plugin-Version header is present
+        Assert.True(request.Headers.Contains("Editor-Plugin-Version"));
+        var pluginVersion = request.Headers.GetValues("Editor-Plugin-Version").First();
+        Assert.False(string.IsNullOrWhiteSpace(pluginVersion));
+
+        // Verify X-Github-Api-Version header is present
+        Assert.True(request.Headers.Contains("X-Github-Api-Version"));
     }
 
     /// <summary>
