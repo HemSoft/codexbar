@@ -68,3 +68,5 @@ node_modules/
 
 CoverageReport/
 
+# Local dotnet tools (tool-path installs)
+.tools/

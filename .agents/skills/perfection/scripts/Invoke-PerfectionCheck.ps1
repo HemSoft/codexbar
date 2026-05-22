@@ -116,7 +116,7 @@ if ($secPass) { $passCount++ }
 
 # 7. Markdown Lint
 Write-Host "`n=== Markdown Lint ===" -ForegroundColor Cyan
-$mdLintResult = npx markdownlint-cli2 "**/*.md" "#node_modules" 2>&1
+$mdLintResult = npx markdownlint-cli2 "**/*.md" "#node_modules" "#.tools" 2>&1
 $mdPass = $LASTEXITCODE -eq 0
 $mdDetail = if ($mdPass) { 'Clean' } else { 'Violations found' }
 Write-Gate -Name 'Markdown' -Pass $mdPass -Detail $mdDetail
