@@ -147,9 +147,26 @@ Add-Rule 'Silver' 'Markdown lint clean' 5 $mdPassed $(
 )
 
 # 11. CRAP score: 0 methods > 30
-# Do not award points when the metric is not evaluated
 $crapPassed = $false
-$crapDetail = 'Not evaluated (requires ReportGenerator run)'
+$crapDetail = 'Not evaluated (no coverage data)'
+if ($coverageFile) {
+    [xml]$crapXml = Get-Content $coverageFile.FullName
+    $crapMethods = $crapXml.SelectNodes("//method[@complexity]")
+    $overThirty = 0
+    foreach ($cm in $crapMethods) {
+        $cmCc = [int]$cm.complexity
+        $cmLines = $cm.SelectNodes(".//line")
+        if ($cmLines.Count -gt 0) {
+            $cmCovered = ($cmLines | Where-Object { [int]$_.hits -gt 0 }).Count
+            $cmCov = $cmCovered / $cmLines.Count
+        }
+        else { $cmCov = 1.0 }
+        $cmCrap = [math]::Pow($cmCc, 2) * [math]::Pow(1 - $cmCov, 3) + $cmCc
+        if ($cmCrap -ge 30) { $overThirty++ }
+    }
+    $crapPassed = $overThirty -eq 0
+    $crapDetail = if ($crapPassed) { '0 methods with CRAP >= 30' } else { "$overThirty methods with CRAP >= 30" }
+}
 Add-Rule 'Silver' 'CRAP score: 0 methods > 30' 10 $crapPassed $crapDetail
 
 # --- Gold Tier ---
