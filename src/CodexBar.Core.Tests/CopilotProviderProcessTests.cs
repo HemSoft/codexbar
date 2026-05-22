@@ -61,7 +61,7 @@ public class CopilotProviderProcessTests
         var result = await provider.FetchUsageAsync();
 
         Assert.NotNull(result);
-        Assert.False(result.Items[0].Success);
+        Assert.False(result.Items![0].Success);
     }
 
     [Fact]
@@ -77,7 +77,7 @@ public class CopilotProviderProcessTests
         Assert.NotNull(result);
 
         // Whitespace token should still be treated as missing - tests token caching behavior
-        Assert.False(result.Items[0].Success);
+        Assert.False(result.Items![0].Success);
     }
 
     [Fact]
@@ -137,7 +137,7 @@ public class CopilotProviderProcessTests
         var result = await provider.FetchUsageAsync();
 
         Assert.True(result.Success);
-        Assert.Contains("discovered-user", result.Items[0].DisplayName);
+        Assert.Contains("discovered-user", result.Items![0].DisplayName);
     }
 
     // --- GetAccountsToFetchAsync empty discovery caching ---
@@ -182,7 +182,7 @@ public class CopilotProviderProcessTests
 
         // First call gets 401, invalidates the cache
         var result = await provider.FetchUsageAsync();
-        Assert.False(result.Items[0].Success);
+        Assert.False(result.Items![0].Success);
 
         // Second call should resolve token again (cache was cleared)
         await provider.FetchUsageAsync();
@@ -219,7 +219,7 @@ public class CopilotProviderProcessTests
         var result = await provider.FetchUsageAsync();
 
         Assert.True(result.Success); // At least one account succeeded
-        Assert.Equal(2, result.Items.Count);
+        Assert.Equal(2, result.Items!.Count);
     }
 
     // --- Duplicate/whitespace account filtering ---
@@ -239,7 +239,7 @@ public class CopilotProviderProcessTests
         var result = await provider.FetchUsageAsync();
 
         // Should be deduplicated to just 1 account
-        Assert.Single(result.Items);
+        Assert.Single(result.Items!);
     }
 
     [Fact]
@@ -257,7 +257,7 @@ public class CopilotProviderProcessTests
 
         var result = await provider.FetchUsageAsync();
 
-        Assert.Single(result.Items);
+        Assert.Single(result.Items!);
     }
 
     // --- DiscoverGhAccountsAsync via AccountDiscoveryOverride ---
