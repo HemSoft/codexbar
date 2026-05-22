@@ -195,7 +195,7 @@ public sealed class SettingsService : ISettingsService
         lock (this._lock)
         {
             var settings = this.EnsureCached();
-            return settings.Providers.TryGetValue(providerId.ToString(), out var ps) ? ps?.ApiKey : null;
+            return settings.Providers.TryGetValue(providerId.ToString(), out var ps) ? ps.ApiKey : null;
         }
     }
 
@@ -346,14 +346,13 @@ public sealed class SettingsService : ISettingsService
         WindowTop = source.WindowTop,
         SessionSpendingBaselines = (source.SessionSpendingBaselines ?? []).ToDictionary(kvp => kvp.Key, kvp => kvp.Value),
         SessionSpendingResetTimes = (source.SessionSpendingResetTimes ?? []).ToDictionary(kvp => kvp.Key, kvp => kvp.Value),
-        Providers = (source.Providers ?? [])
-            .ToDictionary(
-                kvp => kvp.Key,
-                kvp => kvp.Value is null ? new ProviderSettings() : new ProviderSettings
-                {
-                    Enabled = kvp.Value.Enabled,
-                    ApiKey = kvp.Value.ApiKey
-                }),
+        Providers = source.Providers.ToDictionary(
+            kvp => kvp.Key,
+            kvp => new ProviderSettings
+            {
+                Enabled = kvp.Value.Enabled,
+                ApiKey = kvp.Value.ApiKey,
+            }),
     };
 
     /// <summary>
@@ -385,6 +384,7 @@ public sealed class SettingsService : ISettingsService
     /// On Windows: sets an explicit ACL granting FullControl only to the current user.
     /// On Unix: sets file mode to owner read/write (chmod 600).
     /// </summary>
+    [ExcludeFromCodeCoverage]
     private void RestrictFilePermissions(string filePath)
     {
         try
@@ -425,6 +425,7 @@ public sealed class SettingsService : ISettingsService
     /// On Windows: sets an explicit ACL granting FullControl only to the current user.
     /// On Unix: sets directory mode to owner-only (chmod 700).
     /// </summary>
+    [ExcludeFromCodeCoverage]
     private void RestrictDirectoryPermissions(string dirPath)
     {
         try
