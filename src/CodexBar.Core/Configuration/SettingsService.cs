@@ -7,6 +7,7 @@ using System.Security.AccessControl;
 using System.Security.Principal;
 #endif
 
+using System.Diagnostics.CodeAnalysis;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using CodexBar.Core.Models;
@@ -175,14 +176,7 @@ public sealed class SettingsService : ISettingsService
             }
             catch
             {
-                // Best-effort cleanup: remove the temp file so plaintext keys aren't left on disk
-                try
-                {
-                    File.Delete(tempPath);
-                }
-                catch
-                { /* swallow */
-                }
+                BestEffortDelete(tempPath);
                 throw;
             }
 
@@ -315,15 +309,7 @@ public sealed class SettingsService : ISettingsService
             this._cached.Providers ??= [];
             NormalizeProviders(this._cached.Providers);
 
-            try
-            {
-                this.RestrictDirectoryPermissions(this._settingsDir);
-                this.RestrictFilePermissions(this._settingsPath);
-            }
-            catch (Exception ex)
-            {
-                this._logger.LogWarning(ex, "Failed to restrict settings file permissions for {Path}", this._settingsPath);
-            }
+            this.SafeRestrictPermissions();
 
             this._logger.LogDebug("Settings loaded from {Path}", this._settingsPath);
         }
@@ -381,6 +367,19 @@ public sealed class SettingsService : ISettingsService
         }
     }
 
+    private void SafeRestrictPermissions()
+    {
+        try
+        {
+            this.RestrictDirectoryPermissions(this._settingsDir);
+            this.RestrictFilePermissions(this._settingsPath);
+        }
+        catch (Exception ex)
+        {
+            this._logger.LogWarning(ex, "Failed to restrict settings file permissions for {Path}", this._settingsPath);
+        }
+    }
+
     /// <summary>
     /// Restricts file permissions so only the current user can read/write.
     /// On Windows: sets an explicit ACL granting FullControl only to the current user.
@@ -412,7 +411,7 @@ public sealed class SettingsService : ISettingsService
 #endif
             if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
             {
-                File.SetUnixFileMode(filePath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+                SetUnixFilePermissions(filePath);
             }
         }
         catch (Exception ex)
@@ -453,14 +452,34 @@ public sealed class SettingsService : ISettingsService
 #endif
             if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
             {
-                File.SetUnixFileMode(
-                    dirPath,
-                    UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+                SetUnixDirectoryPermissions(dirPath);
             }
         }
         catch (Exception ex)
         {
             this._logger.LogDebug(ex, "Could not restrict directory permissions on {Path}", dirPath);
+        }
+    }
+
+    [ExcludeFromCodeCoverage]
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Interoperability", "CA1416:Validate platform compatibility", Justification = "Only called on non-Windows platforms")]
+    private static void SetUnixFilePermissions(string filePath) =>
+        File.SetUnixFileMode(filePath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+
+    [ExcludeFromCodeCoverage]
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Interoperability", "CA1416:Validate platform compatibility", Justification = "Only called on non-Windows platforms")]
+    private static void SetUnixDirectoryPermissions(string dirPath) =>
+        File.SetUnixFileMode(dirPath, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+
+    [ExcludeFromCodeCoverage]
+    private static void BestEffortDelete(string path)
+    {
+        try
+        {
+            File.Delete(path);
+        }
+        catch
+        { /* swallow — temp file removal is best-effort */
         }
     }
 }

@@ -16,6 +16,7 @@ using NSubstitute;
 /// Tests for ClaudeProvider: ParseRateLimitHeaders, NormalizeEpochToSeconds,
 /// and other coverage gap areas.
 /// </summary>
+[Collection("ClaudeProviderFileIo")]
 public class ClaudeProviderFetchTests
 {
     // --- ParseRateLimitHeaders ---

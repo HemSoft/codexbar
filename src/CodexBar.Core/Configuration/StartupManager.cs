@@ -3,6 +3,7 @@
 namespace CodexBar.Core.Configuration;
 
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using Microsoft.Win32;
 
 /// <summary>
@@ -28,7 +29,7 @@ public static class StartupManager
     {
         if (!OperatingSystem.IsWindows())
         {
-            return false;
+            return NonWindowsIsEnabled();
         }
 
         if (TestStore is not null)
@@ -79,23 +80,33 @@ public static class StartupManager
 
         if (enabled)
         {
-            var exePath = Environment.ProcessPath;
-            if (string.IsNullOrEmpty(exePath))
-            {
-                exePath = Process.GetCurrentProcess().MainModule?.FileName;
-            }
-
-            if (string.IsNullOrEmpty(exePath))
-            {
-                throw new InvalidOperationException("Unable to determine executable path");
-            }
-
+            var exePath = GetExecutablePath();
             key.SetValue(AppName, $"\"{exePath}\"");
         }
         else
         {
             key.DeleteValue(AppName, throwOnMissingValue: false);
         }
+    }
+
+    [ExcludeFromCodeCoverage]
+    private static bool NonWindowsIsEnabled() => false;
+
+    [ExcludeFromCodeCoverage]
+    private static string GetExecutablePath()
+    {
+        var exePath = Environment.ProcessPath;
+        if (string.IsNullOrEmpty(exePath))
+        {
+            exePath = Process.GetCurrentProcess().MainModule?.FileName;
+        }
+
+        if (string.IsNullOrEmpty(exePath))
+        {
+            throw new InvalidOperationException("Unable to determine executable path");
+        }
+
+        return exePath;
     }
 }
 

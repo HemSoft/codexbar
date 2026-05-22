@@ -7,6 +7,7 @@ using System.Security.AccessControl;
 using System.Security.Principal;
 #endif
 
+using System.Diagnostics.CodeAnalysis;
 using System.Runtime.InteropServices;
 
 /// <summary>
@@ -62,14 +63,19 @@ internal static class FileSecurityHelper
 #endif
         if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
         {
-            return new FileStream(filePath, new FileStreamOptions
-            {
-                Mode = FileMode.Create,
-                Access = FileAccess.Write,
-                UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite,
-            });
+            return CreateUnixRestrictedFileStream(filePath);
         }
 
         return new FileStream(filePath, FileMode.Create, FileAccess.Write);
     }
+
+    [ExcludeFromCodeCoverage]
+    [System.Diagnostics.CodeAnalysis.SuppressMessage("Interoperability", "CA1416:Validate platform compatibility", Justification = "Only called on non-Windows platforms")]
+    private static FileStream CreateUnixRestrictedFileStream(string filePath) =>
+        new(filePath, new FileStreamOptions
+        {
+            Mode = FileMode.Create,
+            Access = FileAccess.Write,
+            UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite,
+        });
 }

@@ -67,6 +67,28 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
     /// </summary>
     internal Func<CancellationToken, Task<List<string>>>? AccountDiscoveryOverride { get; set; }
 
+    /// <summary>
+    /// Gets or sets a factory that creates the <see cref="Process"/> for <c>gh auth status</c>.
+    /// When set, <see cref="DiscoverGhAccountsAsync"/> uses it instead of <see cref="StartGhAuthStatusProcess"/>.
+    /// </summary>
+    internal Func<Process>? GhStatusProcessOverride { get; set; }
+
+    /// <summary>
+    /// Gets or sets a factory that creates the <see cref="Process"/> for <c>gh auth token --user</c>.
+    /// When set, <see cref="ResolveTokenForUserAsync"/> uses it instead of building the standard PSI.
+    /// </summary>
+    internal Func<string, Process>? GhTokenProcessOverride { get; set; }
+
+    /// <summary>
+    /// Gets or sets an override for the token resolution timeout (default 5 s).
+    /// </summary>
+    internal TimeSpan? TokenTimeoutOverride { get; set; }
+
+    /// <summary>
+    /// Gets or sets an override for the discovery timeout (default 10 s).
+    /// </summary>
+    internal TimeSpan? DiscoveryTimeoutOverride { get; set; }
+
     public ProviderMetadata Metadata { get; } = new()
     {
         Id = ProviderId.Copilot,
@@ -195,8 +217,8 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
 
         try
         {
-            using var process = StartGhAuthStatusProcess();
-            var (exitCode, stderr, _) = await WaitForGhProcessAsync(process, TimeSpan.FromSeconds(10), ct);
+            using var process = this.GhStatusProcessOverride?.Invoke() ?? StartGhAuthStatusProcess();
+            var (exitCode, stderr, _) = await WaitForGhProcessAsync(process, this.DiscoveryTimeoutOverride ?? TimeSpan.FromSeconds(10), ct);
             if (exitCode is null)
             {
                 this._lastDiscoveryError = "GitHub CLI (gh) timed out. Ensure 'gh' is responsive.";
@@ -264,27 +286,7 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
         }
         catch (OperationCanceledException)
         {
-            try
-            {
-                process.Kill();
-            }
-            catch
-            {
-            }
-            try
-            {
-                await stderrTask;
-            }
-            catch
-            {
-            }
-            try
-            {
-                await stdoutTask;
-            }
-            catch
-            {
-            }
+            BestEffortKillAndDrain(process, stderrTask, stdoutTask);
 
             if (ct.IsCancellationRequested)
             {
@@ -292,6 +294,33 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
             }
 
             return (null, string.Empty, string.Empty);
+        }
+    }
+
+    private static void BestEffortKillAndDrain(Process process, Task<string> stderrTask, Task<string> stdoutTask)
+    {
+        try
+        {
+            process.Kill();
+        }
+        catch
+        {
+        }
+
+        try
+        {
+            stderrTask.GetAwaiter().GetResult();
+        }
+        catch
+        {
+        }
+
+        try
+        {
+            stdoutTask.GetAwaiter().GetResult();
+        }
+        catch
+        {
         }
     }
 
@@ -440,29 +469,38 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
 
         try
         {
-            var psi = new ProcessStartInfo
+            Process process;
+            if (this.GhTokenProcessOverride is not null)
             {
-                FileName = "gh",
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-            };
-            psi.ArgumentList.Add("auth");
-            psi.ArgumentList.Add("token");
-            psi.ArgumentList.Add("--user");
-            psi.ArgumentList.Add(username);
-            psi.ArgumentList.Add("--hostname");
-            psi.ArgumentList.Add("github.com");
+                process = this.GhTokenProcessOverride(username);
+            }
+            else
+            {
+                var psi = new ProcessStartInfo
+                {
+                    FileName = "gh",
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                };
+                psi.ArgumentList.Add("auth");
+                psi.ArgumentList.Add("token");
+                psi.ArgumentList.Add("--user");
+                psi.ArgumentList.Add(username);
+                psi.ArgumentList.Add("--hostname");
+                psi.ArgumentList.Add("github.com");
+                process = new Process { StartInfo = psi };
+            }
 
-            using var process = new Process { StartInfo = psi };
+            using var processDisposer = process;
             process.Start();
 
             var stdoutTask = process.StandardOutput.ReadToEndAsync();
             var stderrTask = process.StandardError.ReadToEndAsync();
 
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            timeoutCts.CancelAfter(TimeSpan.FromSeconds(5));
+            timeoutCts.CancelAfter(this.TokenTimeoutOverride ?? TimeSpan.FromSeconds(5));
 
             try
             {
@@ -470,27 +508,7 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
             }
             catch (OperationCanceledException)
             {
-                try
-                {
-                    process.Kill();
-                }
-                catch
-                { /* best-effort */
-                }
-                try
-                {
-                    await stdoutTask;
-                }
-                catch
-                { /* best-effort after kill */
-                }
-                try
-                {
-                    await stderrTask;
-                }
-                catch
-                { /* best-effort after kill */
-                }
+                BestEffortKillAndDrain(process, stderrTask, stdoutTask);
 
                 if (ct.IsCancellationRequested)
                 {
