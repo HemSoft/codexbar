@@ -5,6 +5,7 @@ namespace CodexBar.Core.Tests;
 using CodexBar.Core.Configuration;
 using Xunit;
 
+[Collection("StartupManager")]
 public class StartupManagerTests : IDisposable
 {
     private readonly InMemoryStartupStore _store = new();

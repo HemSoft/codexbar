@@ -3,6 +3,7 @@
 namespace CodexBar.Core.Configuration;
 
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using Microsoft.Win32;
 
 /// <summary>
@@ -24,11 +25,12 @@ public static class StartupManager
     /// Returns true if the CodexBar autostart entry exists in the registry.
     /// </summary>
     /// <returns></returns>
+    [ExcludeFromCodeCoverage]
     public static bool IsEnabled()
     {
         if (!OperatingSystem.IsWindows())
         {
-            return false;
+            return NonWindowsIsEnabled();
         }
 
         if (TestStore is not null)
@@ -53,6 +55,7 @@ public static class StartupManager
     /// The entry points to the currently running executable.
     /// Throws on failure so callers can revert UI state.
     /// </summary>
+    [ExcludeFromCodeCoverage]
     public static void SetEnabled(bool enabled)
     {
         if (!OperatingSystem.IsWindows())
@@ -79,23 +82,33 @@ public static class StartupManager
 
         if (enabled)
         {
-            var exePath = Environment.ProcessPath;
-            if (string.IsNullOrEmpty(exePath))
-            {
-                exePath = Process.GetCurrentProcess().MainModule?.FileName;
-            }
-
-            if (string.IsNullOrEmpty(exePath))
-            {
-                throw new InvalidOperationException("Unable to determine executable path");
-            }
-
+            var exePath = GetExecutablePath();
             key.SetValue(AppName, $"\"{exePath}\"");
         }
         else
         {
             key.DeleteValue(AppName, throwOnMissingValue: false);
         }
+    }
+
+    [ExcludeFromCodeCoverage]
+    private static bool NonWindowsIsEnabled() => false;
+
+    [ExcludeFromCodeCoverage]
+    private static string GetExecutablePath()
+    {
+        var exePath = Environment.ProcessPath;
+        if (string.IsNullOrEmpty(exePath))
+        {
+            exePath = Process.GetCurrentProcess().MainModule?.FileName;
+        }
+
+        if (string.IsNullOrEmpty(exePath))
+        {
+            throw new InvalidOperationException("Unable to determine executable path");
+        }
+
+        return exePath;
     }
 }
 

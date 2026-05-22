@@ -24,11 +24,26 @@ public sealed class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFa
     private static readonly string ClaudeDir =
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude");
 
-    private static readonly string CredentialsPath = Path.Combine(ClaudeDir, ".credentials.json");
-    private static readonly string StatsCachePath = Path.Combine(ClaudeDir, "stats-cache.json");
+    private static readonly string DefaultCredentialsPath = Path.Combine(ClaudeDir, ".credentials.json");
+    private static readonly string DefaultStatsCachePath = Path.Combine(ClaudeDir, "stats-cache.json");
 
-    private static readonly string ClaudeJsonPath =
+    private static readonly string DefaultClaudeJsonPath =
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude.json");
+
+    /// <summary>Gets or sets an override for the credentials file path (test hook).</summary>
+    internal static string? CredentialsPathOverride { get; set; }
+
+    /// <summary>Gets or sets an override for the stats cache file path (test hook).</summary>
+    internal static string? StatsCachePathOverride { get; set; }
+
+    /// <summary>Gets or sets an override for the claude.json file path (test hook).</summary>
+    internal static string? ClaudeJsonPathOverride { get; set; }
+
+    private static string CredentialsPath => CredentialsPathOverride ?? DefaultCredentialsPath;
+
+    private static string StatsCachePath => StatsCachePathOverride ?? DefaultStatsCachePath;
+
+    private static string ClaudeJsonPath => ClaudeJsonPathOverride ?? DefaultClaudeJsonPath;
 
     private static readonly TimeSpan ApiTimeout = TimeSpan.FromSeconds(15);
 
