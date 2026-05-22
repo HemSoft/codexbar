@@ -60,9 +60,6 @@ public static class StartupManager
     }
 
     [ExcludeFromCodeCoverage]
-    private static bool NonWindowsIsEnabled() => false;
-
-    [ExcludeFromCodeCoverage]
     private static bool IsEnabledFromSystem()
     {
         if (!OperatingSystem.IsWindows())

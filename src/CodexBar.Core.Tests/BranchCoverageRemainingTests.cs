@@ -796,20 +796,43 @@ public class StartupManagerSystemFallbackTests
     [Fact]
     public void IsEnabled_TestStoreNull_DoesNotThrow()
     {
-        StartupManager.TestStore = null;
-        var ex = Record.Exception(() => StartupManager.IsEnabled());
-        Assert.Null(ex);
+        var original = StartupManager.TestStore;
+        try
+        {
+            StartupManager.TestStore = null;
+            var ex = Record.Exception(() => StartupManager.IsEnabled());
+            Assert.Null(ex);
+        }
+        finally
+        {
+            StartupManager.TestStore = original;
+        }
     }
 
     /// <summary>
     /// When TestStore is null, SetEnabled falls through to SetEnabledFromSystem.
+    /// On non-Windows this is a no-op; on Windows it touches the registry so we skip.
     /// </summary>
     [Fact]
     public void SetEnabled_TestStoreNull_DoesNotThrow()
     {
-        StartupManager.TestStore = null;
-        var ex = Record.Exception(() => StartupManager.SetEnabled(false));
-        Assert.Null(ex);
+        if (OperatingSystem.IsWindows())
+        {
+            // Avoid touching the real Windows registry in tests
+            return;
+        }
+
+        var original = StartupManager.TestStore;
+        try
+        {
+            StartupManager.TestStore = null;
+            var ex = Record.Exception(() => StartupManager.SetEnabled(false));
+            Assert.Null(ex);
+        }
+        finally
+        {
+            StartupManager.TestStore = original;
+        }
     }
 }
 

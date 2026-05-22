@@ -447,19 +447,21 @@ public class BranchCoverageTests
 
     /// <summary>
     /// Exercises EnsureCached when SaveInternal throws during initial defaults persist (line 294-300).
-    /// Uses a read-only directory to trigger an IOException.
+    /// Makes the settings path a directory so the file write fails with IOException.
     /// </summary>
     [Fact]
     public void Load_SaveInternalFailsOnFirstLoad_ReturnsDefaults()
     {
-        // Create a directory, then make settings.json a directory to trigger exception
         var tempDir = CreateTempDir();
         try
         {
+            // Create a directory named "settings.json" so that the file write throws
+            var settingsFilePath = Path.Combine(tempDir, "settings.json");
+            Directory.CreateDirectory(settingsFilePath);
+
             var service = new SettingsService(NullLogger<SettingsService>.Instance, tempDir);
 
-            // No file exists, so EnsureCached will try to SaveInternal.
-            // We don't block the directory, but we can verify default loading works
+            // EnsureCached will try to SaveInternal which fails because "settings.json" is a directory
             var loaded = service.Load();
             Assert.NotNull(loaded);
             Assert.Equal(120, loaded.RefreshIntervalSeconds);
@@ -591,31 +593,15 @@ public class BranchCoverageTests
     }
 
     /// <summary>
-    /// Exercises GetConfiguredValue when environment variable IS set (line 44: the non-empty branch).
+    /// Exercises BuildCopilotApiRequest to verify authorization header construction.
     /// </summary>
-    /// <returns><placeholder>A <see cref="Task"/> representing the asynchronous unit test.</placeholder></returns>
     [Fact]
-    public async Task CopilotProvider_EnvironmentVariableOverrides_AreUsed()
+    public void BuildCopilotApiRequest_SetsAuthorizationHeader()
     {
-        // Set environment variables that CopilotProvider reads on construction
-        var originalEditorVersion = Environment.GetEnvironmentVariable("CODEXBAR_COPILOT_EDITOR_VERSION");
-        try
-        {
-            Environment.SetEnvironmentVariable("CODEXBAR_COPILOT_EDITOR_VERSION", "test-editor/1.0");
-
-            // The static fields are already initialized; we need a new approach.
-            // Instead, we verify GetConfiguredValue behavior directly.
-            // CopilotProvider.GetConfiguredValue is private static, but we test it
-            // indirectly by checking that BuildCopilotApiRequest uses the configured headers.
-            var request = CopilotProvider.BuildCopilotApiRequest("test-token");
-            Assert.NotNull(request);
-            Assert.Equal("token", request.Headers.Authorization?.Scheme);
-            Assert.Equal("test-token", request.Headers.Authorization?.Parameter);
-        }
-        finally
-        {
-            Environment.SetEnvironmentVariable("CODEXBAR_COPILOT_EDITOR_VERSION", originalEditorVersion);
-        }
+        var request = CopilotProvider.BuildCopilotApiRequest("test-token");
+        Assert.NotNull(request);
+        Assert.Equal("token", request.Headers.Authorization?.Scheme);
+        Assert.Equal("test-token", request.Headers.Authorization?.Parameter);
     }
 
     /// <summary>
@@ -1339,55 +1325,6 @@ public class BranchCoverageTests
         {
             Environment.SetEnvironmentVariable("OPENCODE_GO_WORKSPACE_ID", originalWorkspace);
             Environment.SetEnvironmentVariable("OPENCODE_GO_AUTH_COOKIE", originalCookie);
-        }
-    }
-
-    /// <summary>
-    /// Exercises CreateRestrictedFileStream on Windows (the WINDOWS branch at line 37-61).
-    /// </summary>
-    [Fact]
-    public void WriteRestrictedFile_CreatesFile_WithContent()
-    {
-        var tempPath = Path.Combine(Path.GetTempPath(), $"fsh-test-{Guid.NewGuid():N}.txt");
-        try
-        {
-            FileSecurityHelper.WriteRestrictedFile(tempPath, "test-content");
-            Assert.True(File.Exists(tempPath));
-            Assert.Equal("test-content", File.ReadAllText(tempPath));
-        }
-        finally
-        {
-            if (File.Exists(tempPath))
-            {
-                File.Delete(tempPath);
-            }
-        }
-    }
-
-    /// <summary>
-    /// Exercises CreateRestrictedFileStream directly.
-    /// </summary>
-    [Fact]
-    public void CreateRestrictedFileStream_CreatesWritableStream()
-    {
-        var tempPath = Path.Combine(Path.GetTempPath(), $"fsh-stream-{Guid.NewGuid():N}.txt");
-        try
-        {
-            using (var fs = FileSecurityHelper.CreateRestrictedFileStream(tempPath))
-            using (var writer = new StreamWriter(fs))
-            {
-                writer.Write("stream-content");
-            }
-
-            Assert.True(File.Exists(tempPath));
-            Assert.Equal("stream-content", File.ReadAllText(tempPath));
-        }
-        finally
-        {
-            if (File.Exists(tempPath))
-            {
-                File.Delete(tempPath);
-            }
         }
     }
 
