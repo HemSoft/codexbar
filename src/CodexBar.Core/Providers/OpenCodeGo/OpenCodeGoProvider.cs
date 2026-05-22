@@ -137,7 +137,7 @@ public sealed partial class OpenCodeGoProvider(
                 ResetsAt = primary.ResetsAt,
                 ResetDescription = primary.ResetDescription,
             },
-            Bars = bars.Count > 0 ? bars : null,
+            Bars = bars,
             Success = true,
         };
 

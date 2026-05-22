@@ -243,9 +243,7 @@ public sealed class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFa
 
         // Fallback: no API data available
         var fallbackLabel = FormatUsageLabel(subscriptionType, totalTokens, equivalentCost, accountInfo);
-        fallbackLabel = string.IsNullOrEmpty(fallbackLabel)
-            ? "Rate limits unavailable"
-            : fallbackLabel + " · Rate limits unavailable";
+        fallbackLabel += " · Rate limits unavailable";
 
         return new UsageSnapshot
         {

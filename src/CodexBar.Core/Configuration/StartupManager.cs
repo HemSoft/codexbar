@@ -27,14 +27,47 @@ public static class StartupManager
     /// <returns></returns>
     public static bool IsEnabled()
     {
-        if (!OperatingSystem.IsWindows())
-        {
-            return NonWindowsIsEnabled();
-        }
-
         if (TestStore is not null)
         {
             return TestStore.GetValue(AppName) is not null;
+        }
+
+        return IsEnabledFromSystem();
+    }
+
+    /// <summary>
+    /// Adds or removes the autostart registry entry.
+    /// The entry points to the currently running executable.
+    /// Throws on failure so callers can revert UI state.
+    /// </summary>
+    public static void SetEnabled(bool enabled)
+    {
+        if (TestStore is not null)
+        {
+            if (enabled)
+            {
+                TestStore.SetValue(AppName, "\"test-exe\"");
+            }
+            else
+            {
+                TestStore.DeleteValue(AppName);
+            }
+
+            return;
+        }
+
+        SetEnabledFromSystem(enabled);
+    }
+
+    [ExcludeFromCodeCoverage]
+    private static bool NonWindowsIsEnabled() => false;
+
+    [ExcludeFromCodeCoverage]
+    private static bool IsEnabledFromSystem()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return false;
         }
 
         try
@@ -49,29 +82,11 @@ public static class StartupManager
         }
     }
 
-    /// <summary>
-    /// Adds or removes the autostart registry entry.
-    /// The entry points to the currently running executable.
-    /// Throws on failure so callers can revert UI state.
-    /// </summary>
-    public static void SetEnabled(bool enabled)
+    [ExcludeFromCodeCoverage]
+    private static void SetEnabledFromSystem(bool enabled)
     {
         if (!OperatingSystem.IsWindows())
         {
-            return;
-        }
-
-        if (TestStore is not null)
-        {
-            if (enabled)
-            {
-                TestStore.SetValue(AppName, "\"test-exe\"");
-            }
-            else
-            {
-                TestStore.DeleteValue(AppName);
-            }
-
             return;
         }
 
@@ -88,9 +103,6 @@ public static class StartupManager
             key.DeleteValue(AppName, throwOnMissingValue: false);
         }
     }
-
-    [ExcludeFromCodeCoverage]
-    private static bool NonWindowsIsEnabled() => false;
 
     [ExcludeFromCodeCoverage]
     private static string GetExecutablePath()

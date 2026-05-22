@@ -5,6 +5,7 @@ namespace CodexBar.Core.Providers.Copilot;
 using System.Collections.Concurrent;
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using System.Net.Http.Headers;
 using System.Text.Json;
 using CodexBar.Core.Configuration;
@@ -38,6 +39,7 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
 
     private const decimal OverageCostPerRequest = 0.04m;
 
+    [ExcludeFromCodeCoverage]
     private static string GetConfiguredValue(string environmentVariableName, string fallbackValue)
     {
         var configuredValue = Environment.GetEnvironmentVariable(environmentVariableName);
