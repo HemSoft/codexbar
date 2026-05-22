@@ -4,8 +4,11 @@
     <DataCollectors>
       <DataCollector friendlyName="XPlat Code Coverage">
         <Configuration>
+          <!-- Exclude source-generator output (regex source gen, etc.) by attribute and file pattern -->
           <ExcludeByAttribute>GeneratedCodeAttribute,ExcludeFromCodeCoverageAttribute</ExcludeByAttribute>
-          <ExcludeByFile>**/*.g.cs</ExcludeByFile>
+          <ExcludeByFile>**/*.g.cs,**/GeneratedRegex*.cs</ExcludeByFile>
+          <!-- SkipAutoProps: auto-property accessors are trivial and excluded intentionally -->
+          <SkipAutoProps>true</SkipAutoProps>
         </Configuration>
       </DataCollector>
     </DataCollectors>
