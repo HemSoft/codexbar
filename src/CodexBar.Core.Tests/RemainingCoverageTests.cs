@@ -6,6 +6,7 @@ using System.Diagnostics;
 using System.Net;
 using System.Net.Http;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Text;
 using CodexBar.Core.Configuration;
 using CodexBar.Core.Models;
@@ -453,19 +454,56 @@ public sealed class RemainingCoverageCopilotProviderTests : IDisposable
         return settings;
     }
 
-    private static Process CreateCommandProcess(string arguments) =>
-        new()
+    private static Process CreateCommandProcess(string arguments)
+    {
+        string fileName;
+        string args;
+
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+        {
+            fileName = "cmd.exe";
+            args = arguments;
+        }
+        else
+        {
+            fileName = "/bin/sh";
+            args = $"-c {TranslateToShellCommand(arguments)}";
+        }
+
+        return new Process
         {
             StartInfo = new ProcessStartInfo
             {
-                FileName = "cmd.exe",
-                Arguments = arguments,
+                FileName = fileName,
+                Arguments = args,
                 UseShellExecute = false,
                 CreateNoWindow = true,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
             },
         };
+    }
+
+    private static string TranslateToShellCommand(string windowsArgs)
+    {
+        // Strip leading /c and translate to sh-compatible command
+        var cmd = windowsArgs.TrimStart();
+        if (cmd.StartsWith("/c ", StringComparison.OrdinalIgnoreCase))
+        {
+            cmd = cmd[3..];
+        }
+
+        // Translate Windows-specific syntax
+        cmd = cmd.Replace(">nul", ">/dev/null");
+        cmd = cmd.Replace(">&2", "1>&2");
+        cmd = cmd.Replace("echo.", "echo ''");
+
+        // Translate ping -n to ping -c
+        cmd = System.Text.RegularExpressions.Regex.Replace(
+            cmd, @"ping\s+127\.0\.0\.1\s+-n\s+(\d+)", "sleep $1");
+
+        return $"\"{cmd.Replace("\"", "\\\"")}\"";
+    }
 }
 
 [Collection("EnvironmentVariableTests")]

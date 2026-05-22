@@ -117,7 +117,7 @@ public class UsageRefreshServiceFullCoverageTests
     }
 
     [Fact]
-    public async Task NextRefreshChanged_SubscriberThrows_DoesNotCrashService()
+    public async Task NextRefreshChanged_WhenSubscriberThrows_DoesNotCrashService()
     {
         var provider = CreateMockProvider(ProviderId.OpenRouter);
 
@@ -126,16 +126,21 @@ public class UsageRefreshServiceFullCoverageTests
             NullLogger<UsageRefreshService>.Instance);
         service.RefreshInterval = TimeSpan.FromMilliseconds(50);
 
-        service.NextRefreshChanged += _ => throw new InvalidOperationException("subscriber error");
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        service.NextRefreshChanged += _ =>
+        {
+            started.TrySetResult();
+            throw new InvalidOperationException("subscriber error");
+        };
 
-        // Start and quickly stop — verifies the subscriber exception doesn't crash
+        // Start and wait for the NextRefreshChanged event to fire, then stop
         service.Start();
-        await Task.Delay(100);
+        await WaitUntilAsync(() => started.Task.IsCompleted, TimeSpan.FromSeconds(2));
         await service.StopAsync();
     }
 
     [Fact]
-    public async Task StartAndStop_SetsAndClearsNextRefresh()
+    public async Task StartAndStop_WhenStarted_SetsAndClearsNextRefresh()
     {
         var provider = CreateMockProvider(ProviderId.OpenRouter);
 
@@ -148,7 +153,7 @@ public class UsageRefreshServiceFullCoverageTests
         service.NextRefreshChanged += val => lastChanged = val;
 
         service.Start();
-        await Task.Delay(150);
+        await WaitUntilAsync(() => service.NextRefreshAtUtc is not null, TimeSpan.FromSeconds(2));
 
         Assert.NotNull(service.NextRefreshAtUtc);
 
@@ -211,7 +216,7 @@ public class UsageRefreshServiceFullCoverageTests
     }
 
     [Fact]
-    public async Task DisposeAsync_StopsService()
+    public async Task DisposeAsync_WhenStarted_StopsService()
     {
         var provider = CreateMockProvider(ProviderId.OpenRouter);
 
@@ -227,7 +232,7 @@ public class UsageRefreshServiceFullCoverageTests
     }
 
     [Fact]
-    public async Task RefreshLoop_ExecutesMultipleCycles()
+    public async Task RefreshLoop_WhenStarted_ExecutesMultipleCycles()
     {
         var callCount = 0;
         var provider = Substitute.For<IUsageProvider>();
@@ -245,10 +250,25 @@ public class UsageRefreshServiceFullCoverageTests
         service.RefreshInterval = TimeSpan.FromMilliseconds(50);
 
         service.Start();
-        await Task.Delay(200);
+        await WaitUntilAsync(() => callCount >= 2, TimeSpan.FromSeconds(2));
         await service.StopAsync();
 
         // Should have at least 2 fetches (initial + at least 1 loop)
         Assert.True(callCount >= 2, $"Expected >= 2 calls, got {callCount}");
+    }
+
+    private static async Task WaitUntilAsync(Func<bool> condition, TimeSpan timeout, TimeSpan? poll = null)
+    {
+        var interval = poll ?? TimeSpan.FromMilliseconds(10);
+        var start = DateTime.UtcNow;
+        while (!condition())
+        {
+            if (DateTime.UtcNow - start > timeout)
+            {
+                throw new TimeoutException("Condition was not met in time.");
+            }
+
+            await Task.Delay(interval);
+        }
     }
 }

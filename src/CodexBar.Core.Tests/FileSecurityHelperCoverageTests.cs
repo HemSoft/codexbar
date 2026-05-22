@@ -30,7 +30,7 @@ public class FileSecurityHelperCoverageTests : IDisposable
     }
 
     [Fact]
-    public void WriteRestrictedFile_CreatesFileWithContent()
+    public void WriteRestrictedFile_WhenNewPath_CreatesFileWithContent()
     {
         var path = Path.Combine(this._tempDir, "test-write.txt");
         FileSecurityHelper.WriteRestrictedFile(path, "hello world");
@@ -40,7 +40,7 @@ public class FileSecurityHelperCoverageTests : IDisposable
     }
 
     [Fact]
-    public void WriteRestrictedFile_OverwritesExistingFile()
+    public void WriteRestrictedFile_WhenFileExists_OverwritesContent()
     {
         var path = Path.Combine(this._tempDir, "test-overwrite.txt");
         File.WriteAllText(path, "original");
@@ -50,7 +50,7 @@ public class FileSecurityHelperCoverageTests : IDisposable
     }
 
     [Fact]
-    public void CreateRestrictedFileStream_ReturnsWritableStream()
+    public void CreateRestrictedFileStream_WhenCalled_ReturnsWritableStream()
     {
         var path = Path.Combine(this._tempDir, "test-stream.txt");
         using (var stream = FileSecurityHelper.CreateRestrictedFileStream(path))
@@ -64,7 +64,7 @@ public class FileSecurityHelperCoverageTests : IDisposable
     }
 
     [Fact]
-    public void CreateRestrictedFileStream_NewFile_CreatesIt()
+    public void CreateRestrictedFileStream_WhenNewFile_CreatesIt()
     {
         var path = Path.Combine(this._tempDir, "new-file.dat");
         Assert.False(File.Exists(path));
@@ -79,7 +79,7 @@ public class FileSecurityHelperCoverageTests : IDisposable
     }
 
     [Fact]
-    public void WriteRestrictedFile_EmptyContent_CreatesEmptyFile()
+    public void WriteRestrictedFile_WhenEmptyContent_CreatesEmptyFile()
     {
         var path = Path.Combine(this._tempDir, "empty.txt");
         FileSecurityHelper.WriteRestrictedFile(path, string.Empty);
@@ -89,7 +89,7 @@ public class FileSecurityHelperCoverageTests : IDisposable
     }
 
     [Fact]
-    public void WriteRestrictedFile_LargeContent_WritesCorrectly()
+    public void WriteRestrictedFile_WhenLargeContent_WritesCorrectly()
     {
         var path = Path.Combine(this._tempDir, "large.txt");
         var content = new string('A', 100_000);

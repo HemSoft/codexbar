@@ -260,21 +260,19 @@ public class CopilotProviderProcessTests
         Assert.Single(result.Items);
     }
 
-    // --- DiscoverGhAccountsAsync via real 'gh' if available ---
+    // --- DiscoverGhAccountsAsync via AccountDiscoveryOverride ---
     [Fact]
-    public async Task FetchUsageAsync_NoConfiguredAccounts_NoDiscoveryOverride_UsesRealGh()
+    public async Task FetchUsageAsync_NoConfiguredAccounts_WithDiscoveryOverride_ReturnsDeterministicResult()
     {
-        // This tests the actual DiscoverGhAccountsAsync path.
-        // On CI or systems without gh, it should still return a result (error or success).
         var settings = CreateSettings(); // No configured accounts
         var httpFactory = Substitute.For<IHttpClientFactory>();
         var provider = CreateProvider(settings, httpFactory);
 
-        // No overrides set — will actually try to run 'gh'
+        // Use the AccountDiscoveryOverride to avoid invoking the real gh CLI
+        provider.AccountDiscoveryOverride = _ => Task.FromResult(new List<string>());
+
         var result = await provider.FetchUsageAsync();
 
-        // The result could be success (if gh is configured) or failure (if not)
-        // but it should never throw
         Assert.NotNull(result);
         Assert.Equal(ProviderId.Copilot, result.Provider);
     }
