@@ -62,11 +62,16 @@ public sealed class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFa
             ["claude-opus-4-7"] = (5.0, 25.0, 6.25, 0.50),
             ["claude-opus-4-6"] = (5.0, 25.0, 6.25, 0.50),
             ["claude-opus-4-5"] = (5.0, 25.0, 6.25, 0.50),
+            ["claude-opus"] = (5.0, 25.0, 6.25, 0.50),
+            ["opus"] = (5.0, 25.0, 6.25, 0.50),
             ["claude-sonnet-4-6"] = (3.0, 15.0, 3.75, 0.30),
             ["claude-sonnet-4-5"] = (3.0, 15.0, 3.75, 0.30),
             ["claude-sonnet-4"] = (3.0, 15.0, 3.75, 0.30),
+            ["claude-sonnet"] = (3.0, 15.0, 3.75, 0.30),
             ["claude-haiku-4-5"] = (1.0, 5.0, 1.25, 0.10),
             ["claude-haiku-3-5"] = (0.80, 4.0, 1.0, 0.08),
+            ["claude-haiku"] = (1.0, 5.0, 1.25, 0.10),
+            ["haiku"] = (1.0, 5.0, 1.25, 0.10),
         };
 
     // Cache the last known rate-limit data so we don't probe the API on every refresh.
@@ -596,11 +601,7 @@ public sealed class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFa
 
             var json = await response.Content.ReadAsStringAsync(ct);
             using var doc = JsonDocument.Parse(json);
-            var root = doc.RootElement;
-
-            var newAccessToken = root.TryGetProperty("access_token", out var at) ? at.GetString() : null;
-            var newRefreshToken = root.TryGetProperty("refresh_token", out var rt) ? rt.GetString() : null;
-            var newExpiresAt = root.TryGetProperty("expires_at", out var ea) ? ea.GetInt64() : 0;
+            var (newAccessToken, newRefreshToken, newExpiresAt) = ParseTokenRefreshResponse(doc.RootElement);
 
             if (string.IsNullOrEmpty(newAccessToken))
             {
@@ -629,6 +630,11 @@ public sealed class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFa
             return null;
         }
     }
+
+    internal static (string? AccessToken, string? RefreshToken, long ExpiresAt) ParseTokenRefreshResponse(JsonElement root) =>
+        (root.TryGetProperty("access_token", out var at) ? at.GetString() : null,
+         root.TryGetProperty("refresh_token", out var rt) ? rt.GetString() : null,
+         root.TryGetProperty("expires_at", out var ea) ? ea.GetInt64() : 0);
 
     private void PersistCredentials(ClaudeCredentials credentials)
     {
@@ -904,7 +910,6 @@ public sealed class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFa
     /// <returns></returns>
     internal static (double InputPerMTok, double OutputPerMTok, double CacheWritePerMTok, double CacheReadPerMTok) ResolvePricing(string modelId)
     {
-        // Exact match first
         if (ModelPricing.TryGetValue(modelId, out var exactMatch))
         {
             return exactMatch;
@@ -922,12 +927,11 @@ public sealed class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFa
             }
         }
 
-        if (bestMatch is not null)
-        {
-            return bestMatch.Value;
-        }
+        return bestMatch ?? ResolvePricingByFamily(modelId);
+    }
 
-        // Fallback by model family
+    private static (double InputPerMTok, double OutputPerMTok, double CacheWritePerMTok, double CacheReadPerMTok) ResolvePricingByFamily(string modelId)
+    {
         if (modelId.Contains("opus", StringComparison.OrdinalIgnoreCase))
         {
             return ModelPricing["claude-opus-4-7"];
@@ -938,7 +942,6 @@ public sealed class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFa
             return ModelPricing["claude-haiku-4-5"];
         }
 
-        // Default to Sonnet pricing
         return ModelPricing["claude-sonnet-4-6"];
     }
 

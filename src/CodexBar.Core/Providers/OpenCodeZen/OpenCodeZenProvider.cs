@@ -226,35 +226,30 @@ public sealed partial class OpenCodeZenProvider(
     /// </summary>
     private (string? workspaceId, string? authCookie) ResolveCredentials()
     {
-        var workspaceId =
-            Environment.GetEnvironmentVariable("OPENCODE_GO_WORKSPACE_ID")
-            ?? this.settings.GetOpenCodeGoWorkspaceId();
+        var workspaceId = ResolveEnvOrSetting(
+            "OPENCODE_ZEN_WORKSPACE_ID",
+            "OPENCODE_GO_WORKSPACE_ID",
+            this.settings.GetOpenCodeGoWorkspaceId());
 
-        var authCookie =
-            Environment.GetEnvironmentVariable("OPENCODE_GO_AUTH_COOKIE")
-            ?? this.settings.GetApiKey(ProviderId.OpenCodeGo);
+        var authCookie = ResolveEnvOrSetting(
+            "OPENCODE_ZEN_AUTH_COOKIE",
+            "OPENCODE_GO_AUTH_COOKIE",
+            this.settings.GetApiKey(ProviderId.OpenCodeGo));
 
-        // Also check for Zen-specific overrides
+        // Also check for Zen-specific API key override
         var zenKey = this.settings.GetApiKey(ProviderId.OpenCodeZen);
         if (!string.IsNullOrWhiteSpace(zenKey))
         {
             authCookie = zenKey;
         }
 
-        var zenWorkspaceEnv = Environment.GetEnvironmentVariable("OPENCODE_ZEN_WORKSPACE_ID");
-        if (!string.IsNullOrWhiteSpace(zenWorkspaceEnv))
-        {
-            workspaceId = zenWorkspaceEnv;
-        }
-
-        var zenCookieEnv = Environment.GetEnvironmentVariable("OPENCODE_ZEN_AUTH_COOKIE");
-        if (!string.IsNullOrWhiteSpace(zenCookieEnv))
-        {
-            authCookie = zenCookieEnv;
-        }
-
         return (workspaceId, authCookie);
     }
+
+    private static string? ResolveEnvOrSetting(string primaryEnv, string fallbackEnv, string? settingValue) =>
+        Environment.GetEnvironmentVariable(primaryEnv)
+        ?? Environment.GetEnvironmentVariable(fallbackEnv)
+        ?? settingValue;
 
     [GeneratedRegex(@"balance:(\d+)", RegexOptions.Compiled)]
     private static partial Regex BalanceRegex();

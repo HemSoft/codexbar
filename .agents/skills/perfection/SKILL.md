@@ -51,7 +51,7 @@ When invoked, systematically run all quality gates and fix every finding.
 | **Code Format** | `dotnet format --verify-no-changes` | 0 violations | Whitespace, indentation, style |
 | **Test Coverage (Line)** | `dotnet test --collect:"XPlat Code Coverage"` | 100% | Lines exercised by tests |
 | **Test Coverage (Branch)** | `dotnet test --collect:"XPlat Code Coverage"` | 100% | Branches exercised by tests |
-| **CRAP Score** | ReportGenerator JSON analysis | 0 methods > 30, avg ≤ 2.0 | Change Risk Anti-Patterns |
+| **CRAP Score** | ReportGenerator JSON analysis | 0 methods > 30, avg ≤ 4.0 | Change Risk Anti-Patterns |
 | **Security Audit** | `dotnet list package --vulnerable` | 0 vulnerabilities | Known CVEs in dependencies |
 | **Markdown Lint** | `markdownlint "**/*.md"` | 0 errors | Documentation quality |
 

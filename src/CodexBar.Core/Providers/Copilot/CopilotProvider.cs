@@ -428,11 +428,7 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
             return CopilotAccountResult.Error(username, "Empty API response");
         }
 
-        logger?.LogDebug(
-            "Copilot {User} ({Plan}): premium remaining={Remaining}/{Entitlement}",
-            username, data.CopilotPlan ?? "unknown",
-            data.QuotaSnapshots?.PremiumInteractions?.Remaining ?? 0,
-            data.QuotaSnapshots?.PremiumInteractions?.Entitlement ?? 0);
+        LogQuotaDebug(logger, username, data);
 
         return new CopilotAccountResult
         {
@@ -444,6 +440,22 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
             QuotaResetDateUtc = data.QuotaResetDateUtc,
             Success = true,
         };
+    }
+
+    private static void LogQuotaDebug(ILogger? logger, string username, CopilotUserResponse data)
+    {
+        if (logger is null)
+        {
+            return;
+        }
+
+        var plan = data.CopilotPlan ?? "unknown";
+        var premium = data.QuotaSnapshots?.PremiumInteractions;
+        logger.LogDebug(
+            "Copilot {User} ({Plan}): premium remaining={Remaining}/{Entitlement}",
+            username, plan,
+            premium?.Remaining ?? 0,
+            premium?.Entitlement ?? 0);
     }
 
     /// <summary>
@@ -619,25 +631,30 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
         };
     }
 
+    private static readonly Dictionary<string, string> PlanLabels = new(StringComparer.Ordinal)
+    {
+        ["enterprise"] = "Ent",
+        ["individual_pro"] = "Pro",
+        ["business"] = "Biz",
+    };
+
     internal static string FormatDisplayName(string username, string? plan)
     {
-        var planLabel = plan switch
-        {
-            "enterprise" => "Ent",
-            "individual_pro" => "Pro",
-            "business" => "Biz",
-            _ => plan?.Replace("_", " "),
-        };
+        var planLabel = plan is not null && PlanLabels.TryGetValue(plan, out var label)
+            ? label
+            : plan?.Replace("_", " ");
 
         return planLabel is not null ? $"Copilot · {username} ({planLabel})" : $"Copilot · {username}";
     }
 
-    internal static string FormatQuotaLabel(string quotaLabel) => quotaLabel switch
+    private static readonly Dictionary<string, string> QuotaLabels = new(StringComparer.Ordinal)
     {
-        "premium" => "Premium interactions",
-        "chat" => "Chat",
-        _ => quotaLabel,
+        ["premium"] = "Premium interactions",
+        ["chat"] = "Chat",
     };
+
+    internal static string FormatQuotaLabel(string quotaLabel) =>
+        QuotaLabels.TryGetValue(quotaLabel, out var label) ? label : quotaLabel;
 
     private static UsageSnapshot BuildUsageSnapshot(CopilotQuotaSnapshot quota, string? resetDateUtc, string quotaLabel = "premium")
     {

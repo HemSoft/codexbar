@@ -113,14 +113,21 @@ public sealed class SettingsService : ISettingsService
         settings.Providers ??= [];
         foreach (var (key, diskProvider) in disk.Providers ?? [])
         {
-            if (!settings.Providers.TryGetValue(key, out var memProvider) || memProvider is null)
-            {
-                settings.Providers[key] = diskProvider ?? new ProviderSettings();
-            }
-            else if (diskProvider?.ApiKey is not null && string.IsNullOrWhiteSpace(memProvider.ApiKey))
-            {
-                memProvider.ApiKey = diskProvider.ApiKey;
-            }
+            MergeProviderEntry(settings.Providers, key, diskProvider);
+        }
+    }
+
+    private static void MergeProviderEntry(Dictionary<string, ProviderSettings> providers, string key, ProviderSettings? diskProvider)
+    {
+        if (!providers.TryGetValue(key, out var memProvider))
+        {
+            providers[key] = diskProvider ?? new ProviderSettings();
+            return;
+        }
+
+        if (diskProvider?.ApiKey is not null && string.IsNullOrWhiteSpace(memProvider.ApiKey))
+        {
+            memProvider.ApiKey = diskProvider.ApiKey;
         }
     }
 
@@ -196,29 +203,40 @@ public sealed class SettingsService : ISettingsService
 
     private static AppSettings SanitizeForPersistence(AppSettings settings)
     {
-        var providers = settings.Providers ?? [];
-
         return new AppSettings
         {
             RefreshIntervalSeconds = settings.RefreshIntervalSeconds,
             CopilotAccounts = (settings.CopilotAccounts ?? []).ToList(),
-            OpenCodeGoWorkspaceId = string.IsNullOrWhiteSpace(settings.OpenCodeGoWorkspaceId) ? null : settings.OpenCodeGoWorkspaceId,
-            ZoomLevel = settings.ZoomLevel is > 0 and <= 5 ? settings.ZoomLevel : 1.0,
+            OpenCodeGoWorkspaceId = NullIfWhitespace(settings.OpenCodeGoWorkspaceId),
+            ZoomLevel = NormalizeZoom(settings.ZoomLevel),
             WindowWidth = settings.WindowWidth,
             WindowHeight = settings.WindowHeight,
             WindowLeft = settings.WindowLeft,
             WindowTop = settings.WindowTop,
-            SessionSpendingBaselines = (settings.SessionSpendingBaselines ?? []).ToDictionary(kvp => kvp.Key, kvp => kvp.Value),
-            SessionSpendingResetTimes = (settings.SessionSpendingResetTimes ?? []).ToDictionary(kvp => kvp.Key, kvp => kvp.Value),
-            Providers = providers.ToDictionary(
-                kvp => kvp.Key,
-                kvp => new ProviderSettings
-                {
-                    Enabled = kvp.Value?.Enabled ?? true,
-                    ApiKey = string.IsNullOrWhiteSpace(kvp.Value?.ApiKey) ? null : kvp.Value.ApiKey
-                }),
+            SessionSpendingBaselines = CloneDictionary(settings.SessionSpendingBaselines),
+            SessionSpendingResetTimes = CloneDictionary(settings.SessionSpendingResetTimes),
+            Providers = SanitizeProviders(settings.Providers),
         };
     }
+
+    private static string? NullIfWhitespace(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? null : value;
+
+    private static double NormalizeZoom(double? value) =>
+        value is > 0 and <= 5 ? value.Value : 1.0;
+
+    private static Dictionary<TKey, TValue> CloneDictionary<TKey, TValue>(Dictionary<TKey, TValue>? source)
+        where TKey : notnull =>
+        (source ?? []).ToDictionary(kvp => kvp.Key, kvp => kvp.Value);
+
+    private static Dictionary<string, ProviderSettings> SanitizeProviders(Dictionary<string, ProviderSettings>? providers) =>
+        (providers ?? []).ToDictionary(
+            kvp => kvp.Key,
+            kvp => new ProviderSettings
+            {
+                Enabled = kvp.Value?.Enabled ?? true,
+                ApiKey = NullIfWhitespace(kvp.Value?.ApiKey),
+            });
 
     public string? GetApiKey(ProviderId providerId)
     {
