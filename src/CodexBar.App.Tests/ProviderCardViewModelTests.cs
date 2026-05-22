@@ -33,6 +33,18 @@ public sealed class ProviderCardViewModelTests
     }
 
     [Fact]
+    public void ShowSingleCreditsDisplay_WhenNotCreditsDisplay_ReturnsFalse()
+    {
+        var card = new ProviderCardViewModel
+        {
+            IsCreditsDisplay = false,
+            IsPairedCredits = false,
+        };
+
+        Assert.False(card.ShowSingleCreditsDisplay);
+    }
+
+    [Fact]
     public void ShowProgressBar_WhenCardIsPaired_ReturnsFalse()
     {
         var card = new ProviderCardViewModel

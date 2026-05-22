@@ -168,6 +168,25 @@ public class OpenCodeGoProviderMoreTests
     }
 
     [Fact]
+    public async Task FetchUsageAsync_OperationCanceledWithToken_Throws()
+    {
+        // When the caller's CancellationToken is cancelled, OperationCanceledException propagates
+        var settings = CreateSettings(enabled: true, workspaceId: "ws-123", apiKey: "cookie");
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+        var handler = new CancellationThrowingHandler(cts.Token);
+        var httpClientFactory = new MockHttpClientFactory(handler);
+
+        var provider = new OpenCodeGoProvider(
+            NullLogger<OpenCodeGoProvider>.Instance,
+            httpClientFactory,
+            settings);
+
+        await Assert.ThrowsAsync<OperationCanceledException>(
+            () => provider.FetchUsageAsync(cts.Token));
+    }
+
+    [Fact]
     public async Task FetchUsageAsync_AllThreeWindows_ReturnsThreeBars()
     {
         // Test that rolling + weekly + monthly produces three bars with correct labels and primary from rolling
@@ -321,5 +340,14 @@ public class OpenCodeGoProviderMoreTests
         public MockHttpClientFactory(HttpMessageHandler handler) => this.handler = handler;
 
         public HttpClient CreateClient(string name) => new(this.handler);
+    }
+
+    private sealed class CancellationThrowingHandler(CancellationToken token) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request, CancellationToken cancellationToken)
+        {
+            throw new OperationCanceledException(token);
+        }
     }
 }

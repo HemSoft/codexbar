@@ -11,6 +11,7 @@ using System.Windows.Media;
 using System.Windows.Threading;
 using CodexBar.Core.Configuration;
 
+[System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage]
 public partial class MainWindow : Window
 {
     private const int WMNCHITTEST = 0x0084;

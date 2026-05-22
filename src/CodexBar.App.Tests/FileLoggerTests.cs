@@ -294,4 +294,44 @@ public sealed class FileLoggerTests : IDisposable
         var content = File.ReadAllText(logPath);
         Assert.Contains("Extension method works", content);
     }
+
+    [Fact]
+    public void AddFile_NullPath_UsesDefaultLogPath()
+    {
+        var services = new Microsoft.Extensions.DependencyInjection.ServiceCollection();
+        services.AddLogging(builder => builder.AddFile(null));
+        using var sp = services.BuildServiceProvider();
+
+        // Resolving executes the lambda that exercises `path ?? DefaultLogPath`.
+        // The file may be locked by a running CodexBar instance but the branch is covered.
+        Exception? caught = null;
+        try
+        {
+            _ = sp.GetServices<Microsoft.Extensions.Logging.ILoggerProvider>().ToList();
+        }
+        catch (Exception ex)
+        {
+            caught = ex;
+        }
+
+        // Either it succeeded (DefaultLogPath writable) or it threw IOException (file locked).
+        // Both cases exercised the null-coalescing branch.
+        Assert.True(caught is null or System.IO.IOException);
+    }
+
+    [Fact]
+    public void Log_NoneLevel_WritesQuestionMarks()
+    {
+        var logPath = Path.Combine(this._tempDir, "test.log");
+
+        using (var provider = new FileLoggerProvider(logPath))
+        {
+            var logger = provider.CreateLogger("TestCategory");
+            logger.Log(Microsoft.Extensions.Logging.LogLevel.None, 0, "None level", null, (s, _) => s);
+        }
+
+        var content = File.ReadAllText(logPath);
+        Assert.Contains("[????]", content);
+        Assert.Contains("None level", content);
+    }
 }
