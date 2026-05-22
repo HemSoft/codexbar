@@ -3,6 +3,7 @@
 namespace CodexBar.Core.Tests;
 
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using CodexBar.Core.Providers.Copilot;
 
 /// <summary>
@@ -28,11 +29,12 @@ public class CopilotProviderBestEffortKillTests
     [Fact]
     public void BestEffortKillAndDrain_FaultedTasks_DoesNotThrow()
     {
-        // Start a process that exits immediately
-        var process = Process.Start(new ProcessStartInfo
+        // Start a short-lived process using a cross-platform shell
+        var (fileName, arguments) = GetShellCommand();
+        using var process = Process.Start(new ProcessStartInfo
         {
-            FileName = "cmd.exe",
-            Arguments = "/c exit 0",
+            FileName = fileName,
+            Arguments = arguments,
             UseShellExecute = false,
             CreateNoWindow = true,
             RedirectStandardOutput = true,
@@ -53,10 +55,11 @@ public class CopilotProviderBestEffortKillTests
     public void BestEffortKillAndDrain_AllThrow_DoesNotThrow()
     {
         // Start a process that exits immediately so Kill() throws
-        var process = Process.Start(new ProcessStartInfo
+        var (fileName, arguments) = GetShellCommand();
+        using var process = Process.Start(new ProcessStartInfo
         {
-            FileName = "cmd.exe",
-            Arguments = "/c exit 0",
+            FileName = fileName,
+            Arguments = arguments,
             UseShellExecute = false,
             CreateNoWindow = true,
             RedirectStandardOutput = true,
@@ -72,4 +75,9 @@ public class CopilotProviderBestEffortKillTests
 
         CopilotProvider.BestEffortKillAndDrain(process, faultedStderr, faultedStdout);
     }
+
+    private static (string FileName, string Arguments) GetShellCommand() =>
+        RuntimeInformation.IsOSPlatform(OSPlatform.Windows)
+            ? ("cmd.exe", "/c exit 0")
+            : ("/bin/sh", "-c \"exit 0\"");
 }
