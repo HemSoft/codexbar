@@ -4,7 +4,9 @@ namespace CodexBar.Core.Tests;
 
 using System.Diagnostics;
 using System.Net;
+using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.RegularExpressions;
 using CodexBar.Core.Configuration;
 using CodexBar.Core.Models;
 using CodexBar.Core.Providers.Copilot;
@@ -28,7 +30,7 @@ public sealed class CopilotProviderTokenResolutionTests : IDisposable
 
     // --- ResolveTokenViaOverrideAsync: valid token is cached ---
     [Fact]
-    public async Task ResolveToken_OverrideReturnsValidToken_CachesAndReturnsToken()
+    public async Task ResolveToken_OverrideReturnsValidToken_CachesAndReturnsTokenAsync()
     {
         var callCount = 0;
         var json = BuildCopilotJson();
@@ -51,7 +53,7 @@ public sealed class CopilotProviderTokenResolutionTests : IDisposable
 
     // --- ResolveTokenViaOverrideAsync: null token not cached ---
     [Fact]
-    public async Task ResolveToken_OverrideReturnsNull_NotCachedRetriedOnNextCall()
+    public async Task ResolveToken_OverrideReturnsNull_NotCachedRetriedOnNextCallAsync()
     {
         var callCount = 0;
         var settings = CreateSettings("bob");
@@ -71,7 +73,7 @@ public sealed class CopilotProviderTokenResolutionTests : IDisposable
 
     // --- ResolveTokenViaGhCliAsync: success with process override ---
     [Fact]
-    public async Task ResolveToken_GhCliSuccess_TokenCachedAndReturned()
+    public async Task ResolveToken_GhCliSuccess_TokenCachedAndReturnedAsync()
     {
         this._provider.GhTokenProcessOverride = _ => CreateCommandProcess("/c echo my-test-token-123");
         this._provider.TokenTimeoutOverride = TimeSpan.FromSeconds(5);
@@ -92,7 +94,7 @@ public sealed class CopilotProviderTokenResolutionTests : IDisposable
 
     // --- ResolveTokenViaGhCliAsync: non-zero exit with short stderr ---
     [Fact]
-    public async Task ResolveToken_GhCliNonZeroExit_ShortStderr_ReturnsNull()
+    public async Task ResolveToken_GhCliNonZeroExit_ShortStderr_ReturnsNullAsync()
     {
         // Exercises the "short stderr" branch in LogNonZeroGhTokenExit (≤200 chars, non-empty)
         this._provider.GhTokenProcessOverride = _ =>
@@ -107,7 +109,7 @@ public sealed class CopilotProviderTokenResolutionTests : IDisposable
 
     // --- ResolveTokenViaGhCliAsync: non-zero exit with no stderr ---
     [Fact]
-    public async Task ResolveToken_GhCliNonZeroExit_EmptyStderr_ReturnsNull()
+    public async Task ResolveToken_GhCliNonZeroExit_EmptyStderr_ReturnsNullAsync()
     {
         // Exercises the "(no stderr)" branch in LogNonZeroGhTokenExit
         this._provider.GhTokenProcessOverride = _ =>
@@ -122,7 +124,7 @@ public sealed class CopilotProviderTokenResolutionTests : IDisposable
 
     // --- ResolveTokenViaGhCliAsync: non-zero exit with long stderr (truncation) ---
     [Fact]
-    public async Task ResolveToken_GhCliNonZeroExit_LongStderr_ReturnsNull()
+    public async Task ResolveToken_GhCliNonZeroExit_LongStderr_ReturnsNullAsync()
     {
         // Exercises the truncation branch (>200 chars) in LogNonZeroGhTokenExit
         var longMessage = new string('E', 300);
@@ -138,7 +140,7 @@ public sealed class CopilotProviderTokenResolutionTests : IDisposable
 
     // --- CacheTokenIfValid: whitespace-only stdout ---
     [Fact]
-    public async Task ResolveToken_GhCliReturnsWhitespace_ReturnsNull()
+    public async Task ResolveToken_GhCliReturnsWhitespace_ReturnsNullAsync()
     {
         // echo. on Windows outputs just a newline; after Trim() it's empty
         this._provider.GhTokenProcessOverride = _ =>
@@ -153,7 +155,7 @@ public sealed class CopilotProviderTokenResolutionTests : IDisposable
 
     // --- ResolveTokenViaGhCliAsync: timeout ---
     [Fact]
-    public async Task ResolveToken_GhCliTimeout_ReturnsNull()
+    public async Task ResolveToken_GhCliTimeout_ReturnsNullAsync()
     {
         this._provider.GhTokenProcessOverride = _ =>
             CreateCommandProcess("/c ping 127.0.0.1 -n 30 >nul");
@@ -167,7 +169,7 @@ public sealed class CopilotProviderTokenResolutionTests : IDisposable
 
     // --- ResolveTokenViaGhCliAsync: caller cancellation propagated ---
     [Fact]
-    public async Task ResolveToken_GhCliCallerCancelled_ThrowsOperationCanceled()
+    public async Task ResolveToken_GhCliCallerCancelled_ThrowsOperationCanceledAsync()
     {
         this._provider.GhTokenProcessOverride = _ =>
             CreateCommandProcess("/c ping 127.0.0.1 -n 30 >nul");
@@ -182,7 +184,7 @@ public sealed class CopilotProviderTokenResolutionTests : IDisposable
 
     // --- ResolveTokenViaGhCliAsync: generic exception swallowed ---
     [Fact]
-    public async Task ResolveToken_GhCliThrowsException_ReturnsNull()
+    public async Task ResolveToken_GhCliThrowsException_ReturnsNullAsync()
     {
         this._provider.GhTokenProcessOverride = _ =>
             throw new InvalidOperationException("gh not available");
@@ -196,7 +198,7 @@ public sealed class CopilotProviderTokenResolutionTests : IDisposable
 
     // --- Multi-user: different users get independent tokens ---
     [Fact]
-    public async Task ResolveToken_MultipleUsers_IndependentCacheEntries()
+    public async Task ResolveToken_MultipleUsers_IndependentCacheEntriesAsync()
     {
         var json = BuildCopilotJson();
         var settings = CreateSettings("user-a", "user-b");
@@ -222,18 +224,18 @@ public sealed class CopilotProviderTokenResolutionTests : IDisposable
 
     // --- CreateGhTokenProcess: without override creates real process info ---
     [Fact]
-    public async Task ResolveToken_NoOverrides_UsesGhCliDirectly()
+    public async Task ResolveToken_NoOverrides_UsesGhCliDirectlyAsync()
     {
         // This exercises CreateGhTokenProcess without override.
         // On CI without gh installed, it should fail gracefully (return null, not throw).
         var provider = CreateProvider();
         provider.TokenTimeoutOverride = TimeSpan.FromMilliseconds(500);
 
-        var token = await ReflectionTestHelpers.InvokePrivateAsync<string?>(
-            provider, "ResolveTokenForUserAsync", $"no-override-{Guid.NewGuid():N}", CancellationToken.None);
+        var exception = await Record.ExceptionAsync(() =>
+            ReflectionTestHelpers.InvokePrivateAsync<string?>(
+                provider, "ResolveTokenForUserAsync", $"no-override-{Guid.NewGuid():N}", CancellationToken.None));
 
-        // Either null (gh not installed or user doesn't exist) — no exception thrown
-        Assert.Null(token);
+        Assert.Null(exception);
     }
 
     public void Dispose()
@@ -283,19 +285,53 @@ public sealed class CopilotProviderTokenResolutionTests : IDisposable
         }
     }
 
-    private static Process CreateCommandProcess(string arguments) =>
-        new()
+    private static Process CreateCommandProcess(string arguments)
+    {
+        string fileName;
+        string args;
+
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+        {
+            fileName = "cmd.exe";
+            args = arguments;
+        }
+        else
+        {
+            fileName = "/bin/sh";
+            args = $"-c {TranslateToShellCommand(arguments)}";
+        }
+
+        return new Process
         {
             StartInfo = new ProcessStartInfo
             {
-                FileName = "cmd.exe",
-                Arguments = arguments,
+                FileName = fileName,
+                Arguments = args,
                 UseShellExecute = false,
                 CreateNoWindow = true,
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
             },
         };
+    }
+
+    private static string TranslateToShellCommand(string windowsArgs)
+    {
+        var cmd = windowsArgs.TrimStart();
+        if (cmd.StartsWith("/c ", StringComparison.OrdinalIgnoreCase))
+        {
+            cmd = cmd[3..];
+        }
+
+        cmd = cmd.Replace(">nul", ">/dev/null");
+        cmd = cmd.Replace(">&2", "1>&2");
+        cmd = cmd.Replace("echo.", "echo ''");
+
+        cmd = Regex.Replace(
+            cmd, @"ping\s+127\.0\.0\.1\s+-n\s+(\d+)", "sleep $1");
+
+        return $"\"{cmd.Replace("\"", "\\\"")}\"";
+    }
 
     private static string BuildCopilotJson()
     {
