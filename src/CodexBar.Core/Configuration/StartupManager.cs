@@ -12,7 +12,6 @@ using Microsoft.Win32;
 /// </summary>
 public static class StartupManager
 {
-    private const string RunKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
     private const string AppName = "CodexBar";
 
     /// <summary>
@@ -21,18 +20,15 @@ public static class StartupManager
     /// </summary>
     internal static IStartupStore? TestStore { get; set; }
 
+    private static IStartupStore Store => TestStore ?? WindowsStartupStore.Instance;
+
     /// <summary>
     /// Returns true if the CodexBar autostart entry exists in the registry.
     /// </summary>
-    /// <returns></returns>
+    /// <returns>True if the CodexBar entry exists in the startup registry key.</returns>
     public static bool IsEnabled()
     {
-        if (TestStore is not null)
-        {
-            return TestStore.GetValue(AppName) is not null;
-        }
-
-        return IsEnabledFromSystem();
+        return Store.GetValue(AppName) is not null;
     }
 
     /// <summary>
@@ -42,62 +38,19 @@ public static class StartupManager
     /// </summary>
     public static void SetEnabled(bool enabled)
     {
-        if (TestStore is not null)
-        {
-            if (enabled)
-            {
-                TestStore.SetValue(AppName, "\"test-exe\"");
-            }
-            else
-            {
-                TestStore.DeleteValue(AppName);
-            }
-
-            return;
-        }
-
-        SetEnabledFromSystem(enabled);
-    }
-
-    [ExcludeFromCodeCoverage]
-    private static bool IsEnabledFromSystem()
-    {
-        if (!OperatingSystem.IsWindows())
-        {
-            return false;
-        }
-
-        try
-        {
-            using var key = Registry.CurrentUser.OpenSubKey(RunKeyPath, writable: false);
-            return key?.GetValue(AppName) is not null;
-        }
-        catch (Exception ex)
-        {
-            Debug.WriteLine($"[CodexBar] Failed to check startup state: {ex.Message}");
-            return false;
-        }
-    }
-
-    [ExcludeFromCodeCoverage]
-    private static void SetEnabledFromSystem(bool enabled)
-    {
-        if (!OperatingSystem.IsWindows())
+        if (!OperatingSystem.IsWindows() && TestStore is null)
         {
             return;
         }
-
-        using var key = Registry.CurrentUser.OpenSubKey(RunKeyPath, writable: true)
-            ?? throw new InvalidOperationException("Cannot open HKCU Run key");
 
         if (enabled)
         {
-            var exePath = GetExecutablePath();
-            key.SetValue(AppName, $"\"{exePath}\"");
+            var exePath = TestStore is not null ? "test-exe" : GetExecutablePath();
+            Store.SetValue(AppName, $"\"{exePath}\"");
         }
         else
         {
-            key.DeleteValue(AppName, throwOnMissingValue: false);
+            Store.DeleteValue(AppName);
         }
     }
 
@@ -129,4 +82,61 @@ internal interface IStartupStore
     void SetValue(string name, string value);
 
     void DeleteValue(string name);
+}
+
+/// <summary>
+/// Windows Registry implementation of <see cref="IStartupStore"/>.
+/// Wraps HKCU\Software\Microsoft\Windows\CurrentVersion\Run operations.
+/// </summary>
+[ExcludeFromCodeCoverage]
+internal sealed class WindowsStartupStore : IStartupStore
+{
+    private const string RunKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
+
+    internal static readonly WindowsStartupStore Instance = new();
+
+    public object? GetValue(string name)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return null;
+        }
+
+        try
+        {
+            using var key = Registry.CurrentUser.OpenSubKey(RunKeyPath, writable: false);
+            return key?.GetValue(name);
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"[CodexBar] Failed to check startup state: {ex.Message}");
+            return null;
+        }
+    }
+
+    public void SetValue(string name, string value)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var key = Registry.CurrentUser.OpenSubKey(RunKeyPath, writable: true)
+            ?? throw new InvalidOperationException("Cannot open HKCU Run key");
+
+        key.SetValue(name, value);
+    }
+
+    public void DeleteValue(string name)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using var key = Registry.CurrentUser.OpenSubKey(RunKeyPath, writable: true)
+            ?? throw new InvalidOperationException("Cannot open HKCU Run key");
+
+        key.DeleteValue(name, throwOnMissingValue: false);
+    }
 }
