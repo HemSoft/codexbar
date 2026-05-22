@@ -182,7 +182,7 @@ public sealed partial class OpenCodeZenProvider(
         {
             return ProviderUsageResult.Failure(
                 ProviderId.OpenCodeZen,
-                "Auth cookie rejected. Refresh OPENCODE_GO_AUTH_COOKIE.");
+                "Auth cookie rejected. Refresh OPENCODE_ZEN_AUTH_COOKIE or OPENCODE_GO_AUTH_COOKIE.");
         }
 
         if (!response.IsSuccessStatusCode)

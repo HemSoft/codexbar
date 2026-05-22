@@ -65,6 +65,10 @@ public sealed partial class OpenCodeGoProvider(
         {
             return await this.FetchFromDashboardAsync(workspaceId, authCookie, ct);
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
         catch (TaskCanceledException)
         {
             return ProviderUsageResult.Failure(ProviderId.OpenCodeGo, "Dashboard request timed out.");
