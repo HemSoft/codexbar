@@ -654,29 +654,7 @@ public sealed class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFa
                     if (prop.NameEquals("claudeAiOauth"))
                     {
                         writer.WritePropertyName("claudeAiOauth");
-                        writer.WriteStartObject();
-
-                        foreach (var oauthProp in prop.Value.EnumerateObject())
-                        {
-                            if (oauthProp.NameEquals("accessToken"))
-                            {
-                                writer.WriteString("accessToken", credentials.AccessToken);
-                            }
-                            else if (oauthProp.NameEquals("refreshToken") && credentials.RefreshToken is not null)
-                            {
-                                writer.WriteString("refreshToken", credentials.RefreshToken);
-                            }
-                            else if (oauthProp.NameEquals("expiresAt"))
-                            {
-                                writer.WriteNumber("expiresAt", credentials.ExpiresAt);
-                            }
-                            else
-                            {
-                                oauthProp.WriteTo(writer);
-                            }
-                        }
-
-                        writer.WriteEndObject();
+                        WriteOAuthSection(writer, prop.Value, credentials);
                     }
                     else
                     {
@@ -694,6 +672,33 @@ public sealed class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFa
         {
             this.logger.LogWarning(ex, "Failed to persist refreshed Claude credentials");
         }
+    }
+
+    internal static void WriteOAuthSection(Utf8JsonWriter writer, JsonElement oauthElement, ClaudeCredentials credentials)
+    {
+        writer.WriteStartObject();
+
+        foreach (var oauthProp in oauthElement.EnumerateObject())
+        {
+            if (oauthProp.NameEquals("accessToken"))
+            {
+                writer.WriteString("accessToken", credentials.AccessToken);
+            }
+            else if (oauthProp.NameEquals("refreshToken") && credentials.RefreshToken is not null)
+            {
+                writer.WriteString("refreshToken", credentials.RefreshToken);
+            }
+            else if (oauthProp.NameEquals("expiresAt"))
+            {
+                writer.WriteNumber("expiresAt", credentials.ExpiresAt);
+            }
+            else
+            {
+                oauthProp.WriteTo(writer);
+            }
+        }
+
+        writer.WriteEndObject();
     }
 
     internal static UnifiedRateLimits? ParseRateLimitHeaders(HttpResponseHeaders headers)
@@ -746,14 +751,7 @@ public sealed class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFa
                 return null;
             }
 
-            return new ClaudeCredentials
-            {
-                SubscriptionType = oauth.TryGetProperty("subscriptionType", out var st) ? st.GetString() : null,
-                RateLimitTier = oauth.TryGetProperty("rateLimitTier", out var rlt) ? rlt.GetString() : null,
-                ExpiresAt = oauth.TryGetProperty("expiresAt", out var ea) ? ea.GetInt64() : 0,
-                AccessToken = oauth.TryGetProperty("accessToken", out var at) ? at.GetString() : null,
-                RefreshToken = oauth.TryGetProperty("refreshToken", out var rt) ? rt.GetString() : null,
-            };
+            return ParseCredentials(oauth);
         }
         catch (Exception ex)
         {
@@ -761,6 +759,15 @@ public sealed class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFa
             return null;
         }
     }
+
+    internal static ClaudeCredentials ParseCredentials(JsonElement oauth) => new()
+    {
+        SubscriptionType = oauth.TryGetProperty("subscriptionType", out var st) ? st.GetString() : null,
+        RateLimitTier = oauth.TryGetProperty("rateLimitTier", out var rlt) ? rlt.GetString() : null,
+        ExpiresAt = oauth.TryGetProperty("expiresAt", out var ea) ? ea.GetInt64() : 0,
+        AccessToken = oauth.TryGetProperty("accessToken", out var at) ? at.GetString() : null,
+        RefreshToken = oauth.TryGetProperty("refreshToken", out var rt) ? rt.GetString() : null,
+    };
 
     private ClaudeAccountInfo? ReadAccountInfo()
     {
@@ -780,12 +787,7 @@ public sealed class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFa
                 return null;
             }
 
-            return new ClaudeAccountInfo
-            {
-                DisplayName = account.TryGetProperty("displayName", out var dn) ? dn.GetString() : null,
-                BillingType = account.TryGetProperty("billingType", out var bt) ? bt.GetString() : null,
-                HasExtraUsageEnabled = account.TryGetProperty("hasExtraUsageEnabled", out var eu) && eu.GetBoolean(),
-            };
+            return ParseAccountInfo(account);
         }
         catch (Exception ex)
         {
@@ -793,6 +795,13 @@ public sealed class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFa
             return null;
         }
     }
+
+    internal static ClaudeAccountInfo ParseAccountInfo(JsonElement account) => new()
+    {
+        DisplayName = account.TryGetProperty("displayName", out var dn) ? dn.GetString() : null,
+        BillingType = account.TryGetProperty("billingType", out var bt) ? bt.GetString() : null,
+        HasExtraUsageEnabled = account.TryGetProperty("hasExtraUsageEnabled", out var eu) && eu.GetBoolean(),
+    };
 
     private ClaudeStatsCache? ReadStatsCache()
     {
@@ -813,21 +822,9 @@ public sealed class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFa
                 TotalMessages = root.TryGetProperty("totalMessages", out var tm) ? tm.GetInt32() : 0,
             };
 
-            if (root.TryGetProperty("modelUsage", out var modelUsage) &&
-                modelUsage.ValueKind == JsonValueKind.Object)
+            if (root.TryGetProperty("modelUsage", out var modelUsage))
             {
-                foreach (var prop in modelUsage.EnumerateObject())
-                {
-                    var usage = new ClaudeModelUsage
-                    {
-                        ModelId = prop.Name,
-                        InputTokens = prop.Value.TryGetProperty("inputTokens", out var it) ? it.GetInt64() : 0,
-                        OutputTokens = prop.Value.TryGetProperty("outputTokens", out var ot) ? ot.GetInt64() : 0,
-                        CacheReadInputTokens = prop.Value.TryGetProperty("cacheReadInputTokens", out var crit) ? crit.GetInt64() : 0,
-                        CacheCreationInputTokens = prop.Value.TryGetProperty("cacheCreationInputTokens", out var ccit) ? ccit.GetInt64() : 0,
-                    };
-                    stats.ModelUsages.Add(usage);
-                }
+                stats.ModelUsages.AddRange(ParseModelUsages(modelUsage));
             }
 
             return stats;
@@ -837,6 +834,30 @@ public sealed class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFa
             this.logger.LogDebug(ex, "Failed to read Claude stats from {Path}", StatsCachePath);
             return null;
         }
+    }
+
+    internal static List<ClaudeModelUsage> ParseModelUsages(JsonElement modelUsage)
+    {
+        if (modelUsage.ValueKind != JsonValueKind.Object)
+        {
+            return [];
+        }
+
+        var usages = new List<ClaudeModelUsage>();
+
+        foreach (var prop in modelUsage.EnumerateObject())
+        {
+            usages.Add(new ClaudeModelUsage
+            {
+                ModelId = prop.Name,
+                InputTokens = prop.Value.TryGetProperty("inputTokens", out var it) ? it.GetInt64() : 0,
+                OutputTokens = prop.Value.TryGetProperty("outputTokens", out var ot) ? ot.GetInt64() : 0,
+                CacheReadInputTokens = prop.Value.TryGetProperty("cacheReadInputTokens", out var crit) ? crit.GetInt64() : 0,
+                CacheCreationInputTokens = prop.Value.TryGetProperty("cacheCreationInputTokens", out var ccit) ? ccit.GetInt64() : 0,
+            });
+        }
+
+        return usages;
     }
 
     internal static long CalculateTotalTokens(ClaudeStatsCache? stats)
@@ -936,7 +957,7 @@ public sealed class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFa
         public string SevenDayStatus { get; init; } = "unknown";
     }
 
-    private sealed record ClaudeCredentials
+    internal sealed record ClaudeCredentials
     {
         public string? SubscriptionType { get; init; }
 
