@@ -93,43 +93,69 @@ public sealed class SettingsService : ISettingsService
                 return;
             }
 
-            settings.Providers ??= [];
-            foreach (var (key, diskProvider) in disk.Providers ?? [])
-            {
-                if (!settings.Providers.TryGetValue(key, out var memProvider) || memProvider is null)
-                {
-                    // Entire provider entry missing from memory — bring it over
-                    settings.Providers[key] = diskProvider ?? new ProviderSettings();
-                }
-                else if (diskProvider?.ApiKey is not null && string.IsNullOrWhiteSpace(memProvider.ApiKey))
-                {
-                    // Provider exists in memory but its ApiKey is empty — preserve disk credential
-                    memProvider.ApiKey = diskProvider.ApiKey;
-                }
-            }
-
-            if (string.IsNullOrWhiteSpace(settings.OpenCodeGoWorkspaceId) && !string.IsNullOrWhiteSpace(disk.OpenCodeGoWorkspaceId))
-            {
-                settings.OpenCodeGoWorkspaceId = disk.OpenCodeGoWorkspaceId;
-            }
-
-            // Preserve session spending baselines from disk that are not in memory
-            settings.SessionSpendingBaselines ??= [];
-            foreach (var (key, diskBaseline) in disk.SessionSpendingBaselines ?? [])
-            {
-                settings.SessionSpendingBaselines.TryAdd(key, diskBaseline);
-            }
-
-            // Preserve session spending reset times from disk that are not in memory
-            settings.SessionSpendingResetTimes ??= [];
-            foreach (var (key, diskTime) in disk.SessionSpendingResetTimes ?? [])
-            {
-                settings.SessionSpendingResetTimes.TryAdd(key, diskTime);
-            }
+            MergeProviders(settings, disk);
+            MergeWorkspaceId(settings, disk);
+            MergeSessionBaselines(settings, disk);
+            MergeSessionResetTimes(settings, disk);
         }
         catch (Exception ex)
         {
             this._logger.LogDebug(ex, "MergeFromDisk skipped — could not read {Path}", this._settingsPath);
+        }
+    }
+
+    /// <summary>
+    /// Merges provider entries from disk into memory: preserves providers missing from
+    /// memory and restores API keys that were cleared in memory but exist on disk.
+    /// </summary>
+    private static void MergeProviders(AppSettings settings, AppSettings disk)
+    {
+        settings.Providers ??= [];
+        foreach (var (key, diskProvider) in disk.Providers ?? [])
+        {
+            if (!settings.Providers.TryGetValue(key, out var memProvider) || memProvider is null)
+            {
+                settings.Providers[key] = diskProvider ?? new ProviderSettings();
+            }
+            else if (diskProvider?.ApiKey is not null && string.IsNullOrWhiteSpace(memProvider.ApiKey))
+            {
+                memProvider.ApiKey = diskProvider.ApiKey;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Preserves the OpenCode Go workspace ID from disk when memory has none.
+    /// </summary>
+    private static void MergeWorkspaceId(AppSettings settings, AppSettings disk)
+    {
+        if (string.IsNullOrWhiteSpace(settings.OpenCodeGoWorkspaceId) && !string.IsNullOrWhiteSpace(disk.OpenCodeGoWorkspaceId))
+        {
+            settings.OpenCodeGoWorkspaceId = disk.OpenCodeGoWorkspaceId;
+        }
+    }
+
+    /// <summary>
+    /// Preserves session spending baselines from disk that are not in memory.
+    /// </summary>
+    private static void MergeSessionBaselines(AppSettings settings, AppSettings disk)
+    {
+        settings.SessionSpendingBaselines ??= [];
+        foreach (var (key, diskBaseline) in disk.SessionSpendingBaselines ?? [])
+        {
+            settings.SessionSpendingBaselines.TryAdd(key, diskBaseline);
+        }
+    }
+
+    /// <summary>
+    /// Preserves session spending reset times from disk that are not in memory.
+    /// </summary>
+    private static void MergeSessionResetTimes(AppSettings settings, AppSettings disk)
+    {
+        settings.SessionSpendingResetTimes ??= [];
+        foreach (var (key, diskTime) in disk.SessionSpendingResetTimes ?? [])
+        {
+            settings.SessionSpendingResetTimes.TryAdd(key, diskTime);
         }
     }
 
