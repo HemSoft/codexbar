@@ -65,3 +65,6 @@ bin_check_temp/
 # Node.js
 node_modules/
 
+
+CoverageReport/
+

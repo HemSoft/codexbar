@@ -299,7 +299,7 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
         }
     }
 
-    private static void BestEffortKillAndDrain(Process process, Task<string> stderrTask, Task<string> stdoutTask)
+    internal static void BestEffortKillAndDrain(Process process, Task<string> stderrTask, Task<string> stdoutTask)
     {
         try
         {

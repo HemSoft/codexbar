@@ -392,6 +392,12 @@ public sealed class SettingsService : ISettingsService
         }
     }
 
+    /// <summary>
+    /// Applies restrictive file-system permissions as a defense-in-depth measure.
+    /// Delegates to RestrictDirectoryPermissions/RestrictFilePermissions which each
+    /// have their own try/catch and are [ExcludeFromCodeCoverage].
+    /// </summary>
+    [ExcludeFromCodeCoverage]
     private void SafeRestrictPermissions()
     {
         try

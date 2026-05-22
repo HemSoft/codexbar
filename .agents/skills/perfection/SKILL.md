@@ -74,9 +74,11 @@ Default command. Run all quality gates and produce a consolidated report.
 
 2. For CRAP scores, after test coverage completes:
    - Run ReportGenerator with JSON output and file filters to exclude generated code:
+
      ```powershell
      reportgenerator -reports:"**/coverage.cobertura.xml" -targetdir:CoverageReport -reporttypes:JsonSummary -filefilters:"-**/*.g.cs;-**/GeneratedRegex*.cs"
      ```
+
    - Flag any method with CRAP > 30
    - **Exclude** source-generated regex methods (see "Generated Code Exclusions" below)
    - Report average CRAP score
@@ -151,6 +153,7 @@ that cannot be meaningfully refactored or branch-covered.
    - Auto-property accessors (`SkipAutoProps`) — intentionally excluded as trivial code
 
 2. **ReportGenerator CRAP report** — pass file filters:
+
    ```powershell
    reportgenerator -reports:"**/coverage.cobertura.xml" -targetdir:CoverageReport \
      -reporttypes:JsonSummary -filefilters:"-**/*.g.cs;-**/GeneratedRegex*.cs"
