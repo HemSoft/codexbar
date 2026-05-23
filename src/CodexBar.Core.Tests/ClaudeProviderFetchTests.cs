@@ -350,7 +350,7 @@ public class ClaudeProviderFetchTests
     }
 
     [Fact]
-    public void FormatResetCountdown_PastTime_ReturnsOverdue()
+    public void FormatResetCountdown_PastTime_ReturnsNow()
     {
         var past = DateTimeOffset.UtcNow.AddHours(-1).ToUnixTimeSeconds();
         var result = ClaudeProvider.FormatResetCountdown(past, "Weekly");

@@ -9,8 +9,8 @@
 | Function coverage %     | 100%   | 100%  | —     |
 | Mutation score %        | 84.23% | 84.23%| —     |
 | Total test count        | 1607   | 1213  | -394  |
-| Duplicate tests removed | —      | 120   | -120  |
-| Test files consolidated | —      | 6     | -6    |
+| Duplicate tests removed | —      | 120   | —     |
+| Test files consolidated | —      | 6     | —     |
 | Test types present      | Unit   | Unit  | —     |
 | Avg assertions per test | 1.93   | 1.97  | +0.04 |
 
