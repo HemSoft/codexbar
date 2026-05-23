@@ -145,13 +145,13 @@ public class BoundaryMutationKillingTests
     // Targets: lines 364, 368, 372 (>= 0 to > 0 mutations)
     // ==========================================================================
     [Fact]
-    public void ExtractUsername_SpaceAtIndexZero_StillExtractsName()
+    public void ExtractUsername_SpaceAtIndexZero_ReturnsEmpty()
     {
-        // "account user rest" — spaceIdx is 4 (>= 0), returns "user"
-        // If mutated to > 0, would still pass. Use a case where space IS at index 0
-        // after the split: "account  two_spaces" where first space is at index 0 of rest
-        var result = CopilotProvider.ExtractUsername("Logged in to github.com account user (keyring)");
-        Assert.Equal("user", result);
+        // "account " followed immediately by a space makes rest = " (keyring)"
+        // so spaceIdx == 0. With >= 0, returns rest[..0] = "".
+        // If mutated to > 0, condition is false → returns full rest " (keyring)".
+        var result = CopilotProvider.ExtractUsername("Logged in to github.com account  (keyring)");
+        Assert.Equal(string.Empty, result);
     }
 
     [Fact]

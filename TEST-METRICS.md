@@ -8,7 +8,7 @@
 | Branch coverage %       | 100%   | 100%  | —     |
 | Function coverage %     | 100%   | 100%  | —     |
 | Mutation score %        | 83.15% | 84.10%| +0.95 |
-| Total test count        | 1417   | 1500  | +83   |
+| Total test count        | 1417   | 1572  | +155  |
 | Test types present      | Unit   | Unit  | —     |
 | Avg assertions per test | 1.87   | 1.91  | +0.04 |
 

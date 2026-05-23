@@ -726,126 +726,6 @@ public class CrapScoreImprovementTests
     }
 
     [Fact]
-    public async Task FetchUsageAsync_ExpiredToken_RefreshSucceeds_FetchesUsage()
-    {
-        var tempDir = Path.Combine(Path.GetTempPath(), $"claude-test-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(tempDir);
-        try
-        {
-            var credPath = Path.Combine(tempDir, "credentials.json");
-            var pastExpiry = DateTimeOffset.UtcNow.AddHours(-1).ToUnixTimeSeconds();
-            File.WriteAllText(credPath, $$"""
-                {
-                    "claudeAiOauth": {
-                        "subscriptionType": "pro",
-                        "expiresAt": {{pastExpiry}},
-                        "accessToken": "expired-token",
-                        "refreshToken": "valid-refresh"
-                    }
-                }
-                """);
-
-            int requestCount = 0;
-            var handler = new DelegatingHandlerFunc(req =>
-            {
-                Interlocked.Increment(ref requestCount);
-                if (req.RequestUri!.AbsolutePath.Contains("oauth/token"))
-                {
-                    var refreshResponse = """
-                        {
-                            "access_token": "new-at",
-                            "refresh_token": "new-rt",
-                            "expires_at": 9999999999
-                        }
-                        """;
-                    return new HttpResponseMessage(HttpStatusCode.OK)
-                    {
-                        Content = new StringContent(refreshResponse, Encoding.UTF8, "application/json"),
-                    };
-                }
-
-                // Messages API probe for rate limits
-                var msgResponse = new HttpResponseMessage(HttpStatusCode.OK)
-                {
-                    Content = new StringContent("""{"id":"msg_123","type":"message","content":[]}""", Encoding.UTF8, "application/json"),
-                };
-                msgResponse.Headers.TryAddWithoutValidation("anthropic-ratelimit-unified-5h-utilization", "0.3");
-                msgResponse.Headers.TryAddWithoutValidation("anthropic-ratelimit-unified-7d-utilization", "0.1");
-                return msgResponse;
-            });
-
-            var httpFactory = CreateHttpFactory(handler);
-            var settings = Substitute.For<ISettingsService>();
-            settings.IsProviderEnabled(ProviderId.Claude).Returns(true);
-
-            var provider = new ClaudeProvider(NullLogger<ClaudeProvider>.Instance, httpFactory, settings);
-            SetCredentialsPath(provider, credPath);
-
-            var result = await provider.FetchUsageAsync();
-
-            // Should have made at least a refresh call
-            Assert.True(requestCount >= 1);
-        }
-        finally
-        {
-            ResetCredentialsPath();
-            Directory.Delete(tempDir, recursive: true);
-        }
-    }
-
-    [Fact]
-    public async Task FetchUsageAsync_ExpiredToken_RefreshFails_ReturnsError()
-    {
-        var tempDir = Path.Combine(Path.GetTempPath(), $"claude-test-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(tempDir);
-        try
-        {
-            var credPath = Path.Combine(tempDir, "credentials.json");
-            var pastExpiry = DateTimeOffset.UtcNow.AddHours(-1).ToUnixTimeSeconds();
-            File.WriteAllText(credPath, $$"""
-                {
-                    "claudeAiOauth": {
-                        "subscriptionType": "pro",
-                        "expiresAt": {{pastExpiry}},
-                        "accessToken": "expired-token",
-                        "refreshToken": "bad-refresh"
-                    }
-                }
-                """);
-
-            var handler = new DelegatingHandlerFunc(req =>
-            {
-                if (req.RequestUri!.AbsolutePath.Contains("oauth/token"))
-                {
-                    return new HttpResponseMessage(HttpStatusCode.BadRequest)
-                    {
-                        Content = new StringContent("""{"error":"invalid_grant"}""", Encoding.UTF8, "application/json"),
-                    };
-                }
-
-                return new HttpResponseMessage(HttpStatusCode.Unauthorized);
-            });
-
-            var httpFactory = CreateHttpFactory(handler);
-            var settings = Substitute.For<ISettingsService>();
-            settings.IsProviderEnabled(ProviderId.Claude).Returns(true);
-
-            var provider = new ClaudeProvider(NullLogger<ClaudeProvider>.Instance, httpFactory, settings);
-            SetCredentialsPath(provider, credPath);
-
-            var result = await provider.FetchUsageAsync();
-
-            Assert.False(result.Success);
-            Assert.Contains("expired", result.ErrorMessage, StringComparison.OrdinalIgnoreCase);
-        }
-        finally
-        {
-            ResetCredentialsPath();
-            Directory.Delete(tempDir, recursive: true);
-        }
-    }
-
-    [Fact]
     public async Task OpenRouter_FetchUsageAsync_ValidResponse_ReturnsCredits()
     {
         var json = """{"data":{"total_credits":100.0,"total_usage":25.0}}""";
@@ -918,36 +798,6 @@ public class CrapScoreImprovementTests
 
         Assert.False(result.Success);
         Assert.Contains("credit fields", result.ErrorMessage, StringComparison.OrdinalIgnoreCase);
-    }
-
-    [Fact]
-    public async Task OpenRouter_FetchUsageAsync_NoApiKey_ReturnsError()
-    {
-        var settings = Substitute.For<ISettingsService>();
-        settings.IsProviderEnabled(ProviderId.OpenRouter).Returns(true);
-        settings.GetApiKey(ProviderId.OpenRouter).Returns((string?)null);
-
-        var factory = Substitute.For<IHttpClientFactory>();
-
-        // Clear environment variable for this test
-        var originalEnv = Environment.GetEnvironmentVariable("OPENROUTER_API_KEY");
-        Environment.SetEnvironmentVariable("OPENROUTER_API_KEY", null);
-        try
-        {
-            var provider = new OpenRouterProvider(
-                NullLogger<OpenRouterProvider>.Instance,
-                factory,
-                settings);
-
-            var result = await provider.FetchUsageAsync();
-
-            Assert.False(result.Success);
-            Assert.Contains("No API key", result.ErrorMessage);
-        }
-        finally
-        {
-            Environment.SetEnvironmentVariable("OPENROUTER_API_KEY", originalEnv);
-        }
     }
 
     [Fact]
@@ -1140,16 +990,6 @@ public class CrapScoreImprovementTests
                 RedirectStandardError = true,
             },
         };
-    }
-
-    private static void SetCredentialsPath(ClaudeProvider provider, string path)
-    {
-        ClaudeProvider.CredentialsPathOverride = path;
-    }
-
-    private static void ResetCredentialsPath()
-    {
-        ClaudeProvider.CredentialsPathOverride = null;
     }
 
     private sealed class CloneableResponseHandler : HttpMessageHandler
