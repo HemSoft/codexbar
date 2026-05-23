@@ -17,8 +17,7 @@ using NSubstitute;
 /// - SettingsService null-coalescing merge operations (lines 114, 151, 162, 163)
 /// - SettingsService.IsProviderEnabled logical mutation (line 255)
 /// - OpenCodeZenProvider cache logical mutation (line 126)
-/// - OpenRouterProvider totalCredits boundary mutations (line 86)
-/// - UsageRefreshService refreshLoop null guard (lines 78, 210).
+/// - OpenRouterProvider totalCredits boundary mutations (line 86).
 /// </summary>
 public class MutationKillingRound3Tests
 {
@@ -239,23 +238,13 @@ public class MutationKillingRound3Tests
             }
         }
     }
-
-    private sealed class DelegatingTestHandler(Func<HttpResponseMessage> responseFactory)
-        : HttpMessageHandler
-    {
-        protected override Task<HttpResponseMessage> SendAsync(
-            HttpRequestMessage request, CancellationToken cancellationToken)
-        {
-            return Task.FromResult(responseFactory());
-        }
-    }
 }
 
 /// <summary>
 /// OpenCodeZen cache mutation tests (requires env var isolation).
 /// Kills: L126 logical mutation (&&→||) on workspace check.
 /// </summary>
-[Collection("OpenCodeZenEnvVars")]
+[Collection("EnvironmentVariableTests")]
 public class OpenCodeZenCacheMutationTests : IDisposable
 {
     public OpenCodeZenCacheMutationTests()

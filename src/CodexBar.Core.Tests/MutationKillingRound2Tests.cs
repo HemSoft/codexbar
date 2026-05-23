@@ -132,19 +132,16 @@ public class MutationKillingRound2Tests
         // that produces empty stderr
         provider.GhTokenProcessOverride = username =>
         {
-            var process = new System.Diagnostics.Process
+            var psi = new System.Diagnostics.ProcessStartInfo
             {
-                StartInfo = new System.Diagnostics.ProcessStartInfo
-                {
-                    FileName = "cmd",
-                    Arguments = "/c exit 1",
-                    UseShellExecute = false,
-                    CreateNoWindow = true,
-                    RedirectStandardOutput = true,
-                    RedirectStandardError = true,
-                },
+                FileName = RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "cmd" : "sh",
+                Arguments = RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? "/c exit 1" : "-c \"exit 1\"",
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
             };
-            return process;
+            return new System.Diagnostics.Process { StartInfo = psi };
         };
         provider.TokenResolverOverride = null;
         provider.TokenTimeoutOverride = TimeSpan.FromSeconds(5);
@@ -153,8 +150,15 @@ public class MutationKillingRound2Tests
         var result = await provider.FetchUsageAsync();
 
         // The result should fail (no token resolved since process exits 1)
-        // We verify the method was called — the key assertion is no crash
         Assert.NotNull(result);
+
+        // Verify LogNonZeroGhTokenExit was invoked with the "(no stderr)" placeholder
+        logger.Received().Log(
+            LogLevel.Debug,
+            Arg.Any<EventId>(),
+            Arg.Is<object>(v => v.ToString()!.Contains("(no stderr)")),
+            Arg.Any<Exception?>(),
+            Arg.Any<Func<object, Exception?, string>>());
     }
 
     [Fact]
@@ -201,6 +205,14 @@ public class MutationKillingRound2Tests
 
         // Token resolution fails, so result will have error
         Assert.NotNull(result);
+
+        // Verify LogNonZeroGhTokenExit logged a truncated stderr ending with "…"
+        logger.Received().Log(
+            LogLevel.Debug,
+            Arg.Any<EventId>(),
+            Arg.Is<object>(v => v.ToString()!.Contains("…") && !v.ToString()!.Contains(longStderr)),
+            Arg.Any<Exception?>(),
+            Arg.Any<Func<object, Exception?, string>>());
     }
 
     // ==========================================================================
@@ -208,29 +220,28 @@ public class MutationKillingRound2Tests
     // Kills: firstSuccess requiring BOTH Success && PremiumInteractions not null
     // ==========================================================================
     [Fact]
-    public void BuildFetchResult_AllFailed_ReturnsFailureWithJoinedErrors()
+    public async Task BuildFetchResult_AllFailed_ReturnsFailureWithJoinedErrors()
     {
-        // All accounts failed — tests that ErrorMessage is joined from all
-        var results = new List<CopilotAccountResult>
-        {
-            CopilotAccountResult.Error("user1", "timeout"),
-            CopilotAccountResult.Error("user2", "unauthorized"),
-        };
+        // All accounts fail token resolution — tests that ErrorMessage is joined from all
+        var factory = Substitute.For<IHttpClientFactory>();
+        var settings = Substitute.For<ISettingsService>();
+        settings.IsProviderEnabled(ProviderId.Copilot).Returns(true);
+        settings.GetCopilotAccounts().Returns(new List<string> { "user1", "user2" });
 
-        var items = results.Select(r => new UsageItem { Key = r.Username, DisplayName = r.Username, Success = false }).ToList();
+        var provider = new CopilotProvider(NullLogger<CopilotProvider>.Instance, factory, settings);
 
-        // Use reflection or test the public interface
-        var provider = CreateCopilotProviderWithAccounts(["user1", "user2"]);
-        provider.TokenResolverOverride = (_, _) => Task.FromResult<string?>("token");
+        // Make token resolution fail for all accounts by returning null
+        provider.TokenResolverOverride = (_, _) => Task.FromResult<string?>(null);
+        provider.TokenTimeoutOverride = TimeSpan.FromSeconds(1);
 
-        // We test via the public API using mocked HTTP responses
-        // Instead, let's test BuildFetchResult indirectly through ParseCopilotApiResponse
-        var emptyResponse = """{"copilot_plan": "pro"}""";
-        var parsed = CopilotProvider.ParseCopilotApiResponse(emptyResponse, "user1");
+        var result = await provider.FetchUsageAsync();
 
-        // PremiumInteractions is null in this response, so Success is true but no session snapshot
-        Assert.True(parsed.Success);
-        Assert.Null(parsed.PremiumInteractions);
+        // All accounts failed — Success should be false and ErrorMessage should join both
+        Assert.NotNull(result);
+        Assert.False(result.Success);
+        Assert.NotNull(result.ErrorMessage);
+        Assert.Contains("user1", result.ErrorMessage);
+        Assert.Contains("user2", result.ErrorMessage);
     }
 
     [Fact]
@@ -460,7 +471,7 @@ public class MutationKillingRound2Tests
     }
 
     [Fact]
-    public void Start_SetsNextRefreshAtUtc()
+    public async Task Start_SetsNextRefreshAtUtc()
     {
         var provider = CreateMockProvider(ProviderId.Copilot, true);
         var service = new UsageRefreshService(
@@ -470,13 +481,13 @@ public class MutationKillingRound2Tests
             RefreshInterval = TimeSpan.FromMinutes(5),
         };
 
-        DateTimeOffset? receivedNext = null;
-        service.NextRefreshChanged += next => receivedNext = next;
+        var tcs = new TaskCompletionSource<DateTimeOffset?>();
+        service.NextRefreshChanged += next => tcs.TrySetResult(next);
 
         service.Start();
 
-        // Give the initial refresh a moment to complete
-        Thread.Sleep(200);
+        // Wait deterministically for the NextRefreshChanged event
+        var receivedNext = await tcs.Task.WaitAsync(TimeSpan.FromSeconds(5));
 
         // NextRefreshAtUtc should be set after initial refresh
         Assert.NotNull(service.NextRefreshAtUtc);
@@ -486,7 +497,7 @@ public class MutationKillingRound2Tests
     }
 
     [Fact]
-    public void Dispose_ClearsNextRefreshAtUtc_RaisesEvent()
+    public async Task Dispose_ClearsNextRefreshAtUtc_RaisesEvent()
     {
         var provider = CreateMockProvider(ProviderId.Copilot, true);
         var service = new UsageRefreshService(
@@ -496,8 +507,11 @@ public class MutationKillingRound2Tests
             RefreshInterval = TimeSpan.FromMinutes(5),
         };
 
+        var startedTcs = new TaskCompletionSource<DateTimeOffset?>();
+        service.NextRefreshChanged += next => startedTcs.TrySetResult(next);
+
         service.Start();
-        Thread.Sleep(200);
+        await startedTcs.Task.WaitAsync(TimeSpan.FromSeconds(5));
         Assert.NotNull(service.NextRefreshAtUtc);
 
         DateTimeOffset? lastNext = DateTimeOffset.UtcNow;
@@ -520,8 +534,11 @@ public class MutationKillingRound2Tests
             RefreshInterval = TimeSpan.FromMinutes(5),
         };
 
+        var startedTcs = new TaskCompletionSource<DateTimeOffset?>();
+        service.NextRefreshChanged += next => startedTcs.TrySetResult(next);
+
         service.Start();
-        await Task.Delay(200);
+        await startedTcs.Task.WaitAsync(TimeSpan.FromSeconds(5));
         Assert.NotNull(service.NextRefreshAtUtc);
 
         DateTimeOffset? lastNext = DateTimeOffset.UtcNow;
@@ -787,9 +804,49 @@ public class MutationKillingRound2Tests
     }
 
     // ==========================================================================
-    // ClaudeProvider.TryGetFreshCachedLimits — L501-503 logical/equality mutations
-    // Kills: Mutations on the three-part AND condition
+    // Helpers
     // ==========================================================================
+    private static CopilotProvider CreateCopilotProviderWithAccounts(List<string> accounts)
+    {
+        var factory = Substitute.For<IHttpClientFactory>();
+        var settings = Substitute.For<ISettingsService>();
+        settings.IsProviderEnabled(ProviderId.Copilot).Returns(true);
+        settings.GetCopilotAccounts().Returns(accounts);
+        return new CopilotProvider(NullLogger<CopilotProvider>.Instance, factory, settings);
+    }
+
+    private static IUsageProvider CreateMockProvider(ProviderId id, bool available)
+    {
+        var provider = Substitute.For<IUsageProvider>();
+        provider.Metadata.Returns(new ProviderMetadata { Id = id, DisplayName = id.ToString(), Description = $"{id} provider" });
+        provider.IsAvailableAsync(Arg.Any<CancellationToken>()).Returns(available);
+        provider.FetchUsageAsync(Arg.Any<CancellationToken>()).Returns(new ProviderUsageResult
+        {
+            Provider = id,
+            Success = true,
+        });
+        return provider;
+    }
+
+    private sealed class FakeHttpHandler(HttpResponseMessage response) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+            => Task.FromResult(response);
+    }
+
+    private sealed class DelegatingFakeHandler(Func<HttpRequestMessage, HttpResponseMessage> handler) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+            => Task.FromResult(handler(request));
+    }
+}
+
+/// <summary>
+/// Claude provider cache tests that require file I/O isolation (CredentialsPathOverride).
+/// </summary>
+[Collection("ClaudeProviderFileIo")]
+public class MutationKillingRound2ClaudeCacheTests
+{
     [Fact]
     public async Task FetchRateLimits_CachesResult_SecondCallUsesCache()
     {
@@ -839,7 +896,6 @@ public class MutationKillingRound2Tests
             var result2 = await provider.FetchUsageAsync();
 
             // Only one actual HTTP call to the rate limit API should have been made
-            // (the probe is the rate limit fetch)
             Assert.Equal(firstCallCount, callCount);
         }
         finally
@@ -847,37 +903,6 @@ public class MutationKillingRound2Tests
             ClaudeProvider.CredentialsPathOverride = null;
             Directory.Delete(tempDir, true);
         }
-    }
-
-    // ==========================================================================
-    // Helpers
-    // ==========================================================================
-    private static CopilotProvider CreateCopilotProviderWithAccounts(List<string> accounts)
-    {
-        var factory = Substitute.For<IHttpClientFactory>();
-        var settings = Substitute.For<ISettingsService>();
-        settings.IsProviderEnabled(ProviderId.Copilot).Returns(true);
-        settings.GetCopilotAccounts().Returns(accounts);
-        return new CopilotProvider(NullLogger<CopilotProvider>.Instance, factory, settings);
-    }
-
-    private static IUsageProvider CreateMockProvider(ProviderId id, bool available)
-    {
-        var provider = Substitute.For<IUsageProvider>();
-        provider.Metadata.Returns(new ProviderMetadata { Id = id, DisplayName = id.ToString(), Description = $"{id} provider" });
-        provider.IsAvailableAsync(Arg.Any<CancellationToken>()).Returns(available);
-        provider.FetchUsageAsync(Arg.Any<CancellationToken>()).Returns(new ProviderUsageResult
-        {
-            Provider = id,
-            Success = true,
-        });
-        return provider;
-    }
-
-    private sealed class FakeHttpHandler(HttpResponseMessage response) : HttpMessageHandler
-    {
-        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
-            => Task.FromResult(response);
     }
 
     private sealed class DelegatingFakeHandler(Func<HttpRequestMessage, HttpResponseMessage> handler) : HttpMessageHandler
