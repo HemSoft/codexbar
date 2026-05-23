@@ -76,6 +76,7 @@
 **Mutation score**: 83.15% → 84.10% (+7 mutants killed, 118→remaining survivors)
 
 Remaining survivors are predominantly:
+
 - Equivalent mutants in logging/catch blocks (statement removal has no observable effect)
 - Time-dependent boundary mutations (methods use `DateTimeOffset.UtcNow` internally)
 - Object initializer mutations on ProcessStartInfo (tested via integration, not property-by-property)
