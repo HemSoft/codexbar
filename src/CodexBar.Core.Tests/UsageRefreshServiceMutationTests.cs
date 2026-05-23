@@ -308,7 +308,7 @@ public class UsageRefreshServiceMutationTests : IAsyncDisposable
 
     // === StopAsync awaits refresh loop ===
     [Fact]
-    public async Task StopAsync_AwaitsRefreshLoop_DoesNotThrow()
+    public async Task StopAsync_AwaitsRefreshLoop_ClearsNextRefresh()
     {
         // Use a slow provider to ensure the loop is active
         this._provider1.FetchUsageAsync(Arg.Any<CancellationToken>())

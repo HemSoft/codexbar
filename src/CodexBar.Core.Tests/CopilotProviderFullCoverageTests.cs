@@ -395,7 +395,7 @@ public class CopilotProviderFullCoverageTests
     }
 
     [Fact]
-    public void ParseCopilotApiResponse_NullLogger_DoesNotThrow()
+    public void ParseCopilotApiResponse_NullLogger_ReturnsSuccess()
     {
         var json = """{"copilot_plan":"pro"}""";
         var result = CopilotProvider.ParseCopilotApiResponse(json, "bob", null);

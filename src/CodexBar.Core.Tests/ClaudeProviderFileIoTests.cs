@@ -265,7 +265,7 @@ public class ClaudeProviderFileIoTests : IDisposable
 
     // --- PersistCredentials ---
     [Fact]
-    public void PersistCredentials_FileDoesNotExist_DoesNothing()
+    public void PersistCredentials_FileDoesNotExist_SilentlySkips()
     {
         ClaudeProvider.CredentialsPathOverride = Path.Combine(this._tempDir, "nonexistent.json");
         var provider = CreateProvider();
@@ -275,8 +275,8 @@ public class ClaudeProviderFileIoTests : IDisposable
         credType.GetProperty("RefreshToken")!.SetValue(cred, "new-refresh");
         credType.GetProperty("ExpiresAt")!.SetValue(cred, 1800000000L);
 
-        // Should not throw
-        InvokePrivateMethod(provider, "PersistCredentials", cred);
+        var ex = Record.Exception(() => InvokePrivateMethod(provider, "PersistCredentials", cred));
+        Assert.Null(ex);
     }
 
     [Fact]
@@ -313,7 +313,7 @@ public class ClaudeProviderFileIoTests : IDisposable
     }
 
     [Fact]
-    public void PersistCredentials_InvalidJson_DoesNotThrow()
+    public void PersistCredentials_InvalidJson_SwallowsParseError()
     {
         File.WriteAllText(this._credentialsPath, "not json");
         var provider = CreateProvider();
@@ -323,8 +323,8 @@ public class ClaudeProviderFileIoTests : IDisposable
         credType.GetProperty("RefreshToken")!.SetValue(cred, "refresh");
         credType.GetProperty("ExpiresAt")!.SetValue(cred, 1800000000L);
 
-        // Should not throw — just logs a warning
-        InvokePrivateMethod(provider, "PersistCredentials", cred);
+        var ex = Record.Exception(() => InvokePrivateMethod(provider, "PersistCredentials", cred));
+        Assert.Null(ex);
     }
 
     // --- EnsureTokenFreshAsync ---

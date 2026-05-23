@@ -117,7 +117,7 @@ public class MutationKillingRound3Tests
     // Kills: disk.Providers ?? [] → disk.Providers (if null, foreach crashes)
     // ==========================================================================
     [Fact]
-    public void Save_DiskHasExplicitNullProviders_MergeDoesNotThrow()
+    public void Save_DiskHasExplicitNullProviders_MergesSuccessfully()
     {
         using var fixture = new SettingsFixture();
 
@@ -146,7 +146,7 @@ public class MutationKillingRound3Tests
     // Kills: disk.SessionSpendingBaselines ?? [] → disk.SessionSpendingBaselines
     // ==========================================================================
     [Fact]
-    public void Save_DiskHasExplicitNullBaselines_MergeDoesNotThrow()
+    public void Save_DiskHasExplicitNullBaselines_MergesSuccessfully()
     {
         using var fixture = new SettingsFixture();
 
@@ -172,7 +172,7 @@ public class MutationKillingRound3Tests
     // Kills: disk.SessionSpendingResetTimes ?? [] → disk.SessionSpendingResetTimes
     // ==========================================================================
     [Fact]
-    public void Save_DiskHasExplicitNullResetTimes_MergeDoesNotThrow()
+    public void Save_DiskHasExplicitNullResetTimes_MergesSuccessfully()
     {
         using var fixture = new SettingsFixture();
 

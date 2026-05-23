@@ -236,7 +236,7 @@ public class SettingsServiceFullCoverageTests : IDisposable
     }
 
     [Fact]
-    public void Save_MergeFromDisk_CorruptDiskFile_DoesNotThrow()
+    public void Save_MergeFromDisk_CorruptDiskFile_SavesNewSettings()
     {
         File.WriteAllText(Path.Combine(this._tempDir, "settings.json"), "corrupt json!!");
 

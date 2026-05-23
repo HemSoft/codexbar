@@ -795,7 +795,7 @@ public class StartupManagerSystemFallbackTests
     /// On Windows, this reads the real registry — just verify no exception.
     /// </summary>
     [Fact]
-    public void IsEnabled_TestStoreNull_DoesNotThrow()
+    public void IsEnabled_TestStoreNull_CompletesWithoutError()
     {
         var original = StartupManager.TestStore;
         try
@@ -815,7 +815,7 @@ public class StartupManagerSystemFallbackTests
     /// On non-Windows this is a no-op; on Windows it touches the registry so we skip.
     /// </summary>
     [Fact]
-    public void SetEnabled_TestStoreNull_DoesNotThrow()
+    public void SetEnabled_TestStoreNull_CompletesWithoutError()
     {
         if (OperatingSystem.IsWindows())
         {

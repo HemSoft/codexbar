@@ -144,14 +144,6 @@ public class CrapScoreImprovementTests
     }
 
     [Fact]
-    public void ParseCopilotApiResponse_WithNullLogger_DoesNotThrow()
-    {
-        var json = BuildCopilotJson();
-        var result = CopilotProvider.ParseCopilotApiResponse(json, "user1", null);
-        Assert.True(result.Success);
-    }
-
-    [Fact]
     public void ParseCopilotApiResponse_NoPremiumQuota_SucceedsWithNullPremium()
     {
         var json = """{"login":"user","copilot_plan":"free","quota_snapshots":{}}""";

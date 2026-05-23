@@ -91,7 +91,7 @@ public class BranchCoverageTests
     /// (covers disk.SessionSpendingBaselines ?? [] at line 118).
     /// </summary>
     [Fact]
-    public void Save_DiskHasNullBaselines_DoesNotThrow()
+    public void Save_DiskHasNullBaselines_MergesSuccessfully()
     {
         var tempDir = CreateTempDir();
         try
@@ -575,31 +575,6 @@ public class BranchCoverageTests
         var result = CopilotProvider.ParseCopilotApiResponse(json, "testuser", NullLogger<CopilotProvider>.Instance);
         Assert.True(result.Success);
         Assert.Null(result.Plan);
-    }
-
-    /// <summary>
-    /// Exercises ParseCopilotApiResponse with null logger (line 429: logger?.LogDebug branch where logger is null).
-    /// </summary>
-    [Fact]
-    public void ParseCopilotApiResponse_NullLogger_DoesNotThrow()
-    {
-        var json = """
-        {
-            "copilot_plan": "individual_pro",
-            "quota_snapshots": {
-                "premium_interactions": {
-                    "remaining": 50,
-                    "entitlement": 100,
-                    "overage_count": 0,
-                    "overage_permitted": false,
-                    "unlimited": false
-                }
-            }
-        }
-        """;
-
-        var result = CopilotProvider.ParseCopilotApiResponse(json, "testuser", null);
-        Assert.True(result.Success);
     }
 
     /// <summary>

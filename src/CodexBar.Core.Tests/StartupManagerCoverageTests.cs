@@ -32,7 +32,7 @@ public class StartupManagerCoverageTests : IDisposable
     }
 
     [Fact]
-    public void SetEnabled_False_WhenNotSet_DoesNotThrow()
+    public void SetEnabled_False_WhenNotSet_ReturnsFalse()
     {
         // Delete on a key that doesn't exist should not throw
         StartupManager.SetEnabled(false);
@@ -82,7 +82,7 @@ public class StartupManagerCoverageTests : IDisposable
     /// Skips gracefully on environments where HKCU Run key is not writable (e.g., CI runners).
     /// </summary>
     [Fact]
-    public void SetEnabled_WithoutTestStore_EnableThenDisable_DoesNotThrow()
+    public void SetEnabled_WithoutTestStore_EnableThenDisable_RestoresDisabledState()
     {
         StartupManager.TestStore = null;
 

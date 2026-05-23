@@ -166,7 +166,7 @@ public class CopilotProviderRefactoredTests
     }
 
     [Fact]
-    public void ParseCopilotApiResponse_WithLogger_DoesNotThrow()
+    public void ParseCopilotApiResponse_WithLogger_ReturnsSuccess()
     {
         var json = BuildFullJson();
         var logger = NullLogger<CopilotProvider>.Instance;

@@ -33,7 +33,7 @@ public sealed class RemainingCoverageSettingsServiceTests : IDisposable
     }
 
     [Fact]
-    public void SettingsService_PublicConstructor_DoesNotThrow()
+    public void SettingsService_PublicConstructor_CreatesInstance()
     {
         var exception = Record.Exception(() => _ = new SettingsService(NullLogger<SettingsService>.Instance));
 
@@ -104,7 +104,7 @@ public sealed class RemainingCoverageSettingsServiceTests : IDisposable
     }
 
     [Fact]
-    public void RestrictFilePermissions_PathDoesNotExist_DoesNotThrow()
+    public void RestrictFilePermissions_PathDoesNotExist_CompletesWithoutError()
     {
         var service = new SettingsService(NullLogger<SettingsService>.Instance, this.CreateDirectory("restrict-file"));
 
@@ -117,7 +117,7 @@ public sealed class RemainingCoverageSettingsServiceTests : IDisposable
     }
 
     [Fact]
-    public void RestrictDirectoryPermissions_PathDoesNotExist_DoesNotThrow()
+    public void RestrictDirectoryPermissions_PathDoesNotExist_CompletesWithoutError()
     {
         var service = new SettingsService(NullLogger<SettingsService>.Instance, this.CreateDirectory("restrict-directory"));
 
@@ -619,7 +619,7 @@ public sealed class RemainingCoverageClaudeProviderTests
 public sealed class RemainingCoverageUsageRefreshServiceTests
 {
     [Fact]
-    public void Dispose_RefreshLoopThrowsAggregateException_DoesNotThrow()
+    public void Dispose_RefreshLoopThrowsAggregateException_SwallowsException()
     {
         var service = new UsageRefreshService([], NullLogger<UsageRefreshService>.Instance);
         ReflectionTestHelpers.SetPrivateField(service, "_cts", new CancellationTokenSource());

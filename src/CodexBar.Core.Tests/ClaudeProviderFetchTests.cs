@@ -420,7 +420,7 @@ public class ClaudeProviderFetchTests
 
     // --- IsAvailableAsync ---
     [Fact]
-    public async Task IsAvailableAsync_Enabled_DoesNotThrow()
+    public async Task IsAvailableAsync_Enabled_CompletesSuccessfully()
     {
         var settings = Substitute.For<ISettingsService>();
         settings.IsProviderEnabled(ProviderId.Claude).Returns(true);
@@ -430,11 +430,9 @@ public class ClaudeProviderFetchTests
             Substitute.For<IHttpClientFactory>(),
             settings);
 
-        // Result depends on whether .claude/.credentials.json exists on disk.
-        // We verify the method completes without exception in both cases.
-        var result = await provider.IsAvailableAsync();
+        var ex = await Record.ExceptionAsync(() => provider.IsAvailableAsync());
 
-        Assert.IsType<bool>(result);
+        Assert.Null(ex);
     }
 
     [Fact]
