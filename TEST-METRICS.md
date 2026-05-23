@@ -7,12 +7,52 @@
 | Line coverage %         | 100%   | 100%  | —     |
 | Branch coverage %       | 100%   | 100%  | —     |
 | Function coverage %     | 100%   | 100%  | —     |
-| Mutation score %        | 83.15% | 84.10%| +0.95 |
-| Total test count        | 1417   | 1572  | +155  |
+| Mutation score %        | 84.10% | 84.23%| +0.13 |
+| Total test count        | 1572   | 1607  | +35   |
 | Test types present      | Unit   | Unit  | —     |
-| Avg assertions per test | 1.87   | 1.91  | +0.04 |
+| Avg assertions per test | 1.91   | 1.93  | +0.02 |
 
 ## Improvements Made
+
+### Phase 2c — Mutation Killing Round 2
+
+**Added boundary and behavioral tests** (`MutationKillingRound2Tests`):
+
+35 tests targeting surviving mutants and improving test resilience:
+
+- **CopilotProvider.ParseReset** (8 tests): Boundary tests for all switch expression
+  arms (`< 0`, `< 1`, `< 2`, `>= 2`) — kills equality mutations on time comparisons
+- **CopilotProvider.BuildFetchResult** (3 tests): Verifies the `&&` condition requiring
+  both `Success` AND `PremiumInteractions is not null` — kills logical mutations
+- **CopilotProvider.DiscoverAccounts cache** (1 test): Verifies 5-minute empty discovery
+  cache prevents repeated calls — kills equality mutation on time comparison
+- **CopilotProvider.InvalidateTokenForUserAsync** (1 test): Verifies 401 response
+  invalidates token cache and forces re-resolution on next fetch
+- **CopilotProvider.LogNonZeroGhTokenExit** (2 tests): Exercises stderr truncation
+  at >200 chars and empty stderr placeholder
+- **SettingsService.IsProviderEnabled** (3 tests): Tests the three-part OR chain
+  (`!TryGetValue || ps is null || ps.Enabled`) — kills logical mutation `||` to `&&`
+- **SettingsService merge operations** (2 tests): Verifies MergeProviders preserves
+  API keys and MergeSessionBaselines preserves disk baselines during save
+- **ClaudeProvider.ResolvePricing** (5 tests): Exact match, prefix match, family
+  fallback (opus/haiku/sonnet) — kills equality mutations on `prefix.Length > bestLength`
+- **ClaudeProvider.ParseRateLimitHeaders** (3 tests): No headers → null, partial
+  headers → defaults, full headers → all values parsed correctly
+- **ClaudeProvider.TryGetFreshCachedLimits** (1 test): Verifies cache prevents
+  redundant HTTP calls within TTL window
+- **UsageRefreshService lifecycle** (4 tests): Verifies UsageUpdated events fire
+  for each provider, unavailable providers notify with failure, Start/Stop/Dispose
+  properly set and clear NextRefreshAtUtc and fire NextRefreshChanged events
+- **StartupManager.SetEnabled** (2 tests): Verifies TestStore conditional (L43)
+  — writes "test-exe" when TestStore is set, deletes entry on disable
+- **OpenRouter zero credits** (1 test): Boundary test for `totalCredits > 0` ternary
+
+Remaining survivors (117) are predominantly equivalent mutants:
+
+- Statement removal in logging/catch blocks (no observable effect)
+- `ProcessStartInfo` object initializer mutations (tested via process override, not per-property)
+- Time-dependent boundary mutations using `DateTimeOffset.UtcNow` internally
+- Block removal of error-recovery catch blocks that just log and return stale cache
 
 ### Phase 2 — Test Quality
 
