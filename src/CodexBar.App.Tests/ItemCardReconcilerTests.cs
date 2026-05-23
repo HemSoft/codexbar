@@ -1204,6 +1204,7 @@ public sealed class ItemCardReconcilerTests
         var card = this._sut.GetOrCreateItemCard(ProviderId.Copilot, item);
 
         Assert.NotNull(card.ResetSessionSpendingCommand);
+        Assert.True(card.ResetSessionSpendingCommand.CanExecute(null));
     }
 
     [Fact]

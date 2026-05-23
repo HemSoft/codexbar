@@ -80,16 +80,6 @@ public class MutationKillingRound2Tests
     }
 
     [Fact]
-    public void ParseReset_Between1And2Days_ReturnsTomorrow()
-    {
-        // 1.5 days from now — remaining.TotalDays >= 1 and < 2
-        var future = DateTimeOffset.UtcNow.AddHours(36).ToString("o");
-        var (resetsAt, description) = CopilotProvider.ParseReset(future);
-        Assert.NotNull(resetsAt);
-        Assert.Equal("Resets tomorrow", description);
-    }
-
-    [Fact]
     public void ParseReset_MoreThan2Days_ReturnsDaysCount()
     {
         // 5 days from now — remaining.TotalDays >= 2
@@ -427,25 +417,6 @@ public class MutationKillingRound2Tests
     // Kills: Statement mutations on SetNextRefreshAtUtc and RaiseUsageUpdated calls
     // ==========================================================================
     [Fact]
-    public async Task RefreshAllAsync_RaisesUsageUpdatedForEachProvider()
-    {
-        var provider1 = CreateMockProvider(ProviderId.Copilot, true);
-        var provider2 = CreateMockProvider(ProviderId.Claude, true);
-
-        var service = new UsageRefreshService(
-            [provider1, provider2],
-            NullLogger<UsageRefreshService>.Instance);
-
-        var updatedProviders = new List<ProviderId>();
-        service.UsageUpdated += (id, _) => updatedProviders.Add(id);
-
-        await service.RefreshAllAsync();
-
-        Assert.Contains(ProviderId.Copilot, updatedProviders);
-        Assert.Contains(ProviderId.Claude, updatedProviders);
-    }
-
-    [Fact]
     public async Task RefreshAllAsync_UnavailableProvider_RemovesAndNotifies()
     {
         var provider = CreateMockProvider(ProviderId.Copilot, true);
@@ -468,32 +439,6 @@ public class MutationKillingRound2Tests
         // Should have raised UsageUpdated with failure
         Assert.Single(updatedResults);
         Assert.False(updatedResults[0].Success);
-    }
-
-    [Fact]
-    public async Task Start_SetsNextRefreshAtUtc()
-    {
-        var provider = CreateMockProvider(ProviderId.Copilot, true);
-        var service = new UsageRefreshService(
-            [provider],
-            NullLogger<UsageRefreshService>.Instance)
-        {
-            RefreshInterval = TimeSpan.FromMinutes(5),
-        };
-
-        var tcs = new TaskCompletionSource<DateTimeOffset?>();
-        service.NextRefreshChanged += next => tcs.TrySetResult(next);
-
-        service.Start();
-
-        // Wait deterministically for the NextRefreshChanged event
-        var receivedNext = await tcs.Task.WaitAsync(TimeSpan.FromSeconds(5));
-
-        // NextRefreshAtUtc should be set after initial refresh
-        Assert.NotNull(service.NextRefreshAtUtc);
-        Assert.NotNull(receivedNext);
-
-        service.Dispose();
     }
 
     [Fact]
@@ -603,32 +548,6 @@ public class MutationKillingRound2Tests
         }
     }
 
-    [Fact]
-    public void IsProviderEnabled_ExplicitlyDisabled_ReturnsFalse()
-    {
-        var tempDir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString());
-        Directory.CreateDirectory(tempDir);
-        try
-        {
-            var settingsJson = """
-            {
-                "providers": {
-                    "Claude": { "enabled": false }
-                }
-            }
-            """;
-            File.WriteAllText(Path.Combine(tempDir, "settings.json"), settingsJson);
-
-            var service = new SettingsService(NullLogger<SettingsService>.Instance, tempDir);
-            var result = service.IsProviderEnabled(ProviderId.Claude);
-            Assert.False(result);
-        }
-        finally
-        {
-            Directory.Delete(tempDir, true);
-        }
-    }
-
     // ==========================================================================
     // SettingsService.MergeFromDisk / MergeProviders / MergeSessionBaselines
     // Kills: Statement mutations in merge operations, null coalescing
@@ -706,15 +625,6 @@ public class MutationKillingRound2Tests
     // ClaudeProvider.ResolvePricing — L935 equality mutations on StartsWith prefix matching
     // Kills: Mutations on prefix.Length > bestLength comparison
     // ==========================================================================
-    [Fact]
-    public void ResolvePricing_ExactMatch_ReturnsExactPricing()
-    {
-        // "claude-haiku-4-5" is an exact key in ModelPricing
-        var pricing = ClaudeProvider.ResolvePricing("claude-haiku-4-5");
-        Assert.Equal(1.0, pricing.InputPerMTok);
-        Assert.Equal(5.0, pricing.OutputPerMTok);
-    }
-
     [Fact]
     public void ResolvePricing_PrefixMatch_ReturnsLongestPrefix()
     {

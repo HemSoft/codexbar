@@ -13,23 +13,21 @@ using CodexBar.Core.Providers.Copilot;
 public class CopilotProviderBestEffortKillTests
 {
     [Fact]
-    public void BestEffortKillAndDrain_ProcessNotStarted_DoesNotThrow()
+    public void BestEffortKillAndDrain_ProcessNotStarted_SwallowsKillException()
     {
-        // A Process object with no associated OS process throws
-        // InvalidOperationException from Kill()
         using var process = new Process();
 
         var stderrTask = Task.FromResult(string.Empty);
         var stdoutTask = Task.FromResult(string.Empty);
 
-        // This should not throw - the Kill() exception is swallowed
-        CopilotProvider.BestEffortKillAndDrain(process, stderrTask, stdoutTask);
+        var ex = Record.Exception(() =>
+            CopilotProvider.BestEffortKillAndDrain(process, stderrTask, stdoutTask));
+        Assert.Null(ex);
     }
 
     [Fact]
-    public void BestEffortKillAndDrain_FaultedTasks_DoesNotThrow()
+    public void BestEffortKillAndDrain_FaultedTasks_SwallowsTaskExceptions()
     {
-        // Start a short-lived process using a cross-platform shell
         var (fileName, arguments) = GetShellCommand();
         using var process = Process.Start(new ProcessStartInfo
         {
@@ -43,18 +41,17 @@ public class CopilotProviderBestEffortKillTests
 
         process.WaitForExit();
 
-        // Create faulted tasks that will throw when GetAwaiter().GetResult() is called
         var faultedStderr = Task.FromException<string>(new InvalidOperationException("stderr fault"));
         var faultedStdout = Task.FromException<string>(new InvalidOperationException("stdout fault"));
 
-        // This should not throw - all catches are swallowed
-        CopilotProvider.BestEffortKillAndDrain(process, faultedStderr, faultedStdout);
+        var ex = Record.Exception(() =>
+            CopilotProvider.BestEffortKillAndDrain(process, faultedStderr, faultedStdout));
+        Assert.Null(ex);
     }
 
     [Fact]
-    public void BestEffortKillAndDrain_AllThrow_DoesNotThrow()
+    public void BestEffortKillAndDrain_AllThrow_SwallowsAllExceptions()
     {
-        // Start a process that exits immediately so Kill() throws
         var (fileName, arguments) = GetShellCommand();
         using var process = Process.Start(new ProcessStartInfo
         {
@@ -68,12 +65,12 @@ public class CopilotProviderBestEffortKillTests
 
         process.WaitForExit();
 
-        // All three operations will throw: Kill() because process exited,
-        // and both tasks because they're faulted
         var faultedStderr = Task.FromException<string>(new InvalidOperationException("stderr"));
         var faultedStdout = Task.FromException<string>(new InvalidOperationException("stdout"));
 
-        CopilotProvider.BestEffortKillAndDrain(process, faultedStderr, faultedStdout);
+        var ex = Record.Exception(() =>
+            CopilotProvider.BestEffortKillAndDrain(process, faultedStderr, faultedStdout));
+        Assert.Null(ex);
     }
 
     private static (string FileName, string Arguments) GetShellCommand() =>

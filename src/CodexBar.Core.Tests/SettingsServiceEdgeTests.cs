@@ -117,7 +117,7 @@ public class SettingsServiceEdgeTests : IDisposable
 
     // --- SaveInternal: null collections ---
     [Fact]
-    public void Save_NullCopilotAccounts_DoesNotThrow()
+    public void Save_NullCopilotAccounts_SavesSuccessfully()
     {
         var service = this.CreateService();
         var settings = service.Load();
@@ -131,7 +131,7 @@ public class SettingsServiceEdgeTests : IDisposable
     }
 
     [Fact]
-    public void Save_NullSessionSpendingBaselines_DoesNotThrow()
+    public void Save_NullSessionSpendingBaselines_SavesSuccessfully()
     {
         var service = this.CreateService();
         var settings = service.Load();

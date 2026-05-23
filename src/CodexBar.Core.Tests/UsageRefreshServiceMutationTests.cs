@@ -73,18 +73,6 @@ public class UsageRefreshServiceMutationTests : IAsyncDisposable
         Assert.True(results.ContainsKey(ProviderId.Claude));
     }
 
-    [Fact]
-    public async Task RefreshAllAsync_RaisesUsageUpdatedForEachProvider()
-    {
-        var updated = new List<ProviderId>();
-        this._sut.UsageUpdated += (id, _) => updated.Add(id);
-
-        await this._sut.RefreshAllAsync();
-
-        Assert.Contains(ProviderId.Copilot, updated);
-        Assert.Contains(ProviderId.Claude, updated);
-    }
-
     // === FetchSafe: unavailable provider ===
     [Fact]
     public async Task RefreshAllAsync_UnavailableProvider_SkipsAndDoesNotStore()
@@ -118,20 +106,6 @@ public class UsageRefreshServiceMutationTests : IAsyncDisposable
     }
 
     // === FetchSafe: exception handling ===
-    [Fact]
-    public async Task RefreshAllAsync_ProviderThrows_StoresFailure()
-    {
-        this._provider1.FetchUsageAsync(Arg.Any<CancellationToken>())
-            .Throws(new InvalidOperationException("test error"));
-
-        await this._sut.RefreshAllAsync();
-
-        var results = this._sut.LatestResults;
-        Assert.True(results.ContainsKey(ProviderId.Copilot));
-        Assert.False(results[ProviderId.Copilot].Success);
-        Assert.Contains("test error", results[ProviderId.Copilot].ErrorMessage);
-    }
-
     [Fact]
     public async Task RefreshAllAsync_ProviderThrows_RaisesUsageUpdatedWithFailure()
     {
@@ -188,10 +162,14 @@ public class UsageRefreshServiceMutationTests : IAsyncDisposable
     }
 
     [Fact]
-    public void Start_CalledTwice_DoesNotThrow()
+    public async Task Start_CalledTwice_IsIdempotent()
     {
         this._sut.Start();
         this._sut.Start();
+
+        await this.WaitForNextRefreshSetAsync();
+        Assert.NotNull(this._sut.NextRefreshAtUtc);
+        this._sut.Dispose();
     }
 
     [Fact]
@@ -202,12 +180,6 @@ public class UsageRefreshServiceMutationTests : IAsyncDisposable
         await this._sut.StopAsync();
 
         Assert.Null(this._sut.NextRefreshAtUtc);
-    }
-
-    [Fact]
-    public async Task StopAsync_WhenNotStarted_DoesNotThrow()
-    {
-        await this._sut.StopAsync();
     }
 
     // === NextRefreshChanged event ===
@@ -258,12 +230,13 @@ public class UsageRefreshServiceMutationTests : IAsyncDisposable
 
     // === UsageUpdated event handler throws ===
     [Fact]
-    public async Task RefreshAllAsync_UsageUpdatedHandlerThrows_DoesNotCrash()
+    public async Task RefreshAllAsync_UsageUpdatedHandlerThrows_StillUpdatesLatestResults()
     {
         this._sut.UsageUpdated += (_, _) => throw new InvalidOperationException("handler boom");
 
-        // Should not throw
-        await this._sut.RefreshAllAsync();
+        var ex = await Record.ExceptionAsync(() => this._sut.RefreshAllAsync());
+        Assert.Null(ex);
+        Assert.NotEmpty(this._sut.LatestResults);
     }
 
     // === Dispose ===
@@ -277,11 +250,13 @@ public class UsageRefreshServiceMutationTests : IAsyncDisposable
     }
 
     [Fact]
-    public void Dispose_CalledTwice_DoesNotThrow()
+    public void Dispose_CalledTwice_IsIdempotent()
     {
         this._sut.Start();
         this._sut.Dispose();
         this._sut.Dispose();
+
+        Assert.Null(this._sut.NextRefreshAtUtc);
     }
 
     // === Start triggers initial RefreshAll ===
@@ -298,7 +273,7 @@ public class UsageRefreshServiceMutationTests : IAsyncDisposable
 
     // === StopAsync awaits refresh loop ===
     [Fact]
-    public async Task StopAsync_AwaitsRefreshLoop_DoesNotThrow()
+    public async Task StopAsync_AwaitsRefreshLoop_ClearsNextRefresh()
     {
         // Use a slow provider to ensure the loop is active
         this._provider1.FetchUsageAsync(Arg.Any<CancellationToken>())

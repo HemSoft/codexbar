@@ -21,14 +21,6 @@ public class ClaudeProviderFetchTests
 {
     // --- ParseRateLimitHeaders ---
     [Fact]
-    public void ParseRateLimitHeaders_NoHeaders_ReturnsNull()
-    {
-        var response = new HttpResponseMessage(HttpStatusCode.OK);
-        var result = ClaudeProvider.ParseRateLimitHeaders(response.Headers);
-        Assert.Null(result);
-    }
-
-    [Fact]
     public void ParseRateLimitHeaders_OnlyFiveHour_ParsesCorrectly()
     {
         var response = new HttpResponseMessage(HttpStatusCode.OK);
@@ -139,13 +131,6 @@ public class ClaudeProviderFetchTests
 
     // --- BuildWeeklySnapshot ---
     [Fact]
-    public void BuildWeeklySnapshot_NullLimits_ReturnsNull()
-    {
-        var result = ClaudeProvider.BuildWeeklySnapshot(null);
-        Assert.Null(result);
-    }
-
-    [Fact]
     public void BuildWeeklySnapshot_WithLimits_SetsUsedPercentFromSevenDay()
     {
         var limits = new ClaudeProvider.UnifiedRateLimits
@@ -179,41 +164,8 @@ public class ClaudeProviderFetchTests
     }
 
     // --- BuildUsageBars ---
-    [Fact]
-    public void BuildUsageBars_NullLimits_ReturnsEmptyList()
-    {
-        var result = ClaudeProvider.BuildUsageBars(null);
-        Assert.Empty(result);
-    }
-
-    [Fact]
-    public void BuildUsageBars_WithLimits_ReturnsTwoBars()
-    {
-        var limits = new ClaudeProvider.UnifiedRateLimits
-        {
-            FiveHourUtilization = 0.40,
-            FiveHourReset = DateTimeOffset.UtcNow.AddHours(3).ToUnixTimeSeconds(),
-            FiveHourStatus = "active",
-            SevenDayUtilization = 0.70,
-            SevenDayReset = DateTimeOffset.UtcNow.AddDays(5).ToUnixTimeSeconds(),
-            SevenDayStatus = "active",
-        };
-
-        var result = ClaudeProvider.BuildUsageBars(limits);
-
-        Assert.Equal(2, result.Count);
-        Assert.Contains(result, b => b.Label.Contains("5"));
-        Assert.Contains(result, b => b.Label.Contains("Week"));
-    }
 
     // --- CalculateEquivalentCost ---
-    [Fact]
-    public void CalculateEquivalentCost_NullStats_ReturnsZero()
-    {
-        var result = ClaudeProvider.CalculateEquivalentCost(null);
-        Assert.Equal(0.0, result);
-    }
-
     [Fact]
     public void CalculateEquivalentCost_KnownModel_CalculatesCost()
     {
@@ -271,12 +223,6 @@ public class ClaudeProviderFetchTests
     }
 
     // --- CalculateTotalTokens ---
-    [Fact]
-    public void CalculateTotalTokens_NullStats_ReturnsZero()
-    {
-        Assert.Equal(0L, ClaudeProvider.CalculateTotalTokens(null));
-    }
-
     [Fact]
     public void CalculateTotalTokens_SumsAllTokenTypes()
     {
@@ -404,23 +350,23 @@ public class ClaudeProviderFetchTests
     }
 
     [Fact]
-    public void FormatResetCountdown_PastTime_ReturnsOverdue()
+    public void FormatResetCountdown_PastTime_ReturnsNow()
     {
         var past = DateTimeOffset.UtcNow.AddHours(-1).ToUnixTimeSeconds();
         var result = ClaudeProvider.FormatResetCountdown(past, "Weekly");
-        Assert.NotNull(result);
+        Assert.Equal("Weekly resets now", result);
     }
 
     [Fact]
     public void FormatResetCountdown_ZeroEpoch_HandlesGracefully()
     {
         var result = ClaudeProvider.FormatResetCountdown(0, "test");
-        Assert.NotNull(result);
+        Assert.Equal("test resets now", result);
     }
 
     // --- IsAvailableAsync ---
     [Fact]
-    public async Task IsAvailableAsync_Enabled_DoesNotThrow()
+    public async Task IsAvailableAsync_Enabled_CompletesSuccessfully()
     {
         var settings = Substitute.For<ISettingsService>();
         settings.IsProviderEnabled(ProviderId.Claude).Returns(true);
@@ -430,24 +376,9 @@ public class ClaudeProviderFetchTests
             Substitute.For<IHttpClientFactory>(),
             settings);
 
-        // Result depends on whether .claude/.credentials.json exists on disk.
-        // We verify the method completes without exception in both cases.
-        var result = await provider.IsAvailableAsync();
+        var ex = await Record.ExceptionAsync(() => provider.IsAvailableAsync());
 
-        Assert.IsType<bool>(result);
-    }
-
-    [Fact]
-    public async Task IsAvailableAsync_Disabled_ReturnsFalse()
-    {
-        var settings = Substitute.For<ISettingsService>();
-        settings.IsProviderEnabled(ProviderId.Claude).Returns(false);
-        var provider = new ClaudeProvider(
-            NullLogger<ClaudeProvider>.Instance,
-            Substitute.For<IHttpClientFactory>(),
-            settings);
-
-        Assert.False(await provider.IsAvailableAsync());
+        Assert.Null(ex);
     }
 
     // --- FetchUsageAsync error paths ---

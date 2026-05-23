@@ -232,13 +232,6 @@ public class ClaudeProviderMutationTests
 
     // === BuildWeeklySnapshot ===
     [Fact]
-    public void BuildWeeklySnapshot_NullLimits_ReturnsNull()
-    {
-        var result = ClaudeProvider.BuildWeeklySnapshot(null);
-        Assert.Null(result);
-    }
-
-    [Fact]
     public void BuildWeeklySnapshot_WithLimits_ReturnsCorrectSnapshot()
     {
         var limits = new ClaudeProvider.UnifiedRateLimits
@@ -272,34 +265,6 @@ public class ClaudeProviderMutationTests
     }
 
     // === BuildUsageBars ===
-    [Fact]
-    public void BuildUsageBars_NullLimits_ReturnsEmpty()
-    {
-        var result = ClaudeProvider.BuildUsageBars(null);
-        Assert.Empty(result);
-    }
-
-    [Fact]
-    public void BuildUsageBars_WithLimits_ReturnsTwoBars()
-    {
-        var limits = new ClaudeProvider.UnifiedRateLimits
-        {
-            FiveHourUtilization = 0.3,
-            FiveHourReset = DateTimeOffset.UtcNow.AddHours(2).ToUnixTimeSeconds(),
-            SevenDayUtilization = 0.5,
-            SevenDayReset = DateTimeOffset.UtcNow.AddDays(3).ToUnixTimeSeconds(),
-        };
-        var result = ClaudeProvider.BuildUsageBars(limits);
-
-        Assert.Equal(2, result.Count);
-        Assert.Equal("5-hour limit", result[0].Label);
-        Assert.Equal(0.3, result[0].UsedPercent);
-        Assert.NotNull(result[0].ResetDescription);
-        Assert.NotNull(result[0].ResetsAt);
-        Assert.Equal("Weekly · all models", result[1].Label);
-        Assert.Equal(0.5, result[1].UsedPercent);
-    }
-
     [Fact]
     public void BuildUsageBars_ZeroResets_NullResetInfo()
     {
@@ -372,56 +337,13 @@ public class ClaudeProviderMutationTests
 
     // === CalculateTotalTokens ===
     [Fact]
-    public void CalculateTotalTokens_NullStats_ReturnsZero()
-    {
-        Assert.Equal(0, ClaudeProvider.CalculateTotalTokens(null));
-    }
-
-    [Fact]
     public void CalculateTotalTokens_EmptyModelUsages_ReturnsZero()
     {
         var stats = new ClaudeProvider.ClaudeStatsCache();
         Assert.Equal(0, ClaudeProvider.CalculateTotalTokens(stats));
     }
 
-    [Fact]
-    public void CalculateTotalTokens_SumsAllTokenTypes()
-    {
-        var stats = new ClaudeProvider.ClaudeStatsCache();
-        stats.ModelUsages.Add(new ClaudeProvider.ClaudeModelUsage
-        {
-            ModelId = "claude-sonnet-4-6",
-            InputTokens = 100,
-            OutputTokens = 200,
-            CacheReadInputTokens = 50,
-            CacheCreationInputTokens = 30,
-        });
-        stats.ModelUsages.Add(new ClaudeProvider.ClaudeModelUsage
-        {
-            ModelId = "claude-haiku-4-5",
-            InputTokens = 10,
-            OutputTokens = 20,
-            CacheReadInputTokens = 5,
-            CacheCreationInputTokens = 3,
-        });
-
-        Assert.Equal(418, ClaudeProvider.CalculateTotalTokens(stats));
-    }
-
     // === CalculateEquivalentCost ===
-    [Fact]
-    public void CalculateEquivalentCost_NullStats_ReturnsZero()
-    {
-        Assert.Equal(0, ClaudeProvider.CalculateEquivalentCost(null));
-    }
-
-    [Fact]
-    public void CalculateEquivalentCost_EmptyModelUsages_ReturnsZero()
-    {
-        var stats = new ClaudeProvider.ClaudeStatsCache();
-        Assert.Equal(0, ClaudeProvider.CalculateEquivalentCost(stats));
-    }
-
     [Fact]
     public void CalculateEquivalentCost_CalculatesCorrectCost()
     {

@@ -117,7 +117,7 @@ public class UsageRefreshServiceFullCoverageTests
     }
 
     [Fact]
-    public async Task NextRefreshChanged_WhenSubscriberThrows_DoesNotCrashService()
+    public async Task NextRefreshChanged_WhenSubscriberThrows_ServiceContinuesRunning()
     {
         var provider = CreateMockProvider(ProviderId.OpenRouter);
 
@@ -133,9 +133,12 @@ public class UsageRefreshServiceFullCoverageTests
             throw new InvalidOperationException("subscriber error");
         };
 
-        // Start and wait for the NextRefreshChanged event to fire, then stop
         service.Start();
         await WaitUntilAsync(() => started.Task.IsCompleted, TimeSpan.FromSeconds(2));
+
+        Assert.True(started.Task.IsCompleted);
+        Assert.NotNull(service.NextRefreshAtUtc);
+
         await service.StopAsync();
     }
 
@@ -176,17 +179,22 @@ public class UsageRefreshServiceFullCoverageTests
         service.Start();
         service.Start(); // should no-op
 
+        Assert.NotNull(service.NextRefreshAtUtc);
         service.Dispose();
+        Assert.Null(service.NextRefreshAtUtc);
     }
 
     [Fact]
-    public async Task StopAsync_WhenNotStarted_DoesNotThrow()
+    public async Task StopAsync_WhenNotStarted_LeavesNextRefreshNull()
     {
         var service = new UsageRefreshService(
             [],
             NullLogger<UsageRefreshService>.Instance);
 
-        await service.StopAsync(); // Should not throw
+        await service.StopAsync();
+
+        Assert.Null(service.NextRefreshAtUtc);
+        Assert.Empty(service.LatestResults);
     }
 
     [Fact]
@@ -206,13 +214,16 @@ public class UsageRefreshServiceFullCoverageTests
     }
 
     [Fact]
-    public void Dispose_WhenNotStarted_DoesNotThrow()
+    public void Dispose_WhenNotStarted_LeavesNextRefreshNull()
     {
         var service = new UsageRefreshService(
             [],
             NullLogger<UsageRefreshService>.Instance);
 
-        service.Dispose(); // Should not throw
+        service.Dispose();
+
+        Assert.Null(service.NextRefreshAtUtc);
+        Assert.Empty(service.LatestResults);
     }
 
     [Fact]

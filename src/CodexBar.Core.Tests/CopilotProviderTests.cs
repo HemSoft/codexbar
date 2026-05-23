@@ -2,7 +2,11 @@
 
 namespace CodexBar.Core.Tests;
 
+using CodexBar.Core.Configuration;
+using CodexBar.Core.Models;
 using CodexBar.Core.Providers.Copilot;
+using Microsoft.Extensions.Logging.Abstractions;
+using NSubstitute;
 using Xunit;
 
 public class CopilotProviderTests
@@ -149,5 +153,75 @@ public class CopilotProviderTests
         };
         var (_, label, _) = CopilotProvider.ComputeUsageMetrics(quota, "premium");
         Assert.Equal("110 / 100 (over limit)", label);
+    }
+
+    [Fact]
+    public void ExtractUsernamesFromGhStatus_EmptyInput_ReturnsEmpty()
+    {
+        var names = CopilotProvider.ExtractUsernamesFromGhStatus(string.Empty);
+        Assert.Empty(names);
+    }
+
+    [Fact]
+    public void ExtractUsername_ValidParenthesizedLine_ExtractsName()
+    {
+        var line = "  ✓ Logged in to github.com account (testuser)";
+        var name = CopilotProvider.ExtractUsername(line);
+        Assert.Equal("(testuser)", name);
+    }
+
+    [Fact]
+    public void ExtractUsername_NoMatch_ReturnsNull()
+    {
+        var line = "  X Could not authenticate";
+        var name = CopilotProvider.ExtractUsername(line);
+        Assert.Null(name);
+    }
+
+    [Fact]
+    public void ExtractUsername_NullOrEmpty_ReturnsNull()
+    {
+        Assert.Null(CopilotProvider.ExtractUsername(null));
+        Assert.Null(CopilotProvider.ExtractUsername(string.Empty));
+    }
+
+    [Fact]
+    public void ComputeUsageMetrics_LargeEntitlement_FormatsWithCommas()
+    {
+        var quota = new CopilotQuotaSnapshot
+        {
+            Entitlement = 2000,
+            Remaining = 500,
+            OverageCount = 0,
+            OveragePermitted = false,
+            Unlimited = false,
+        };
+
+        var (usedPercent, usageLabel, isUnlimited) = CopilotProvider.ComputeUsageMetrics(quota, "premium");
+        Assert.False(isUnlimited);
+        Assert.Equal(0.75, usedPercent, 2);
+        Assert.Equal("1,500 / 2,000", usageLabel);
+    }
+
+    [Fact]
+    public void ParseReset_InvalidString_ReturnsNulls()
+    {
+        var (resetsAt, resetDescription) = CopilotProvider.ParseReset("not-a-date");
+        Assert.Null(resetsAt);
+        Assert.Null(resetDescription);
+    }
+
+    [Fact]
+    public void Metadata_WhenProviderIsConstructed_ReturnsExpectedMetadata()
+    {
+        var settings = Substitute.For<ISettingsService>();
+        settings.IsProviderEnabled(ProviderId.Copilot).Returns(true);
+        var provider = new CopilotProvider(
+            NullLogger<CopilotProvider>.Instance,
+            Substitute.For<IHttpClientFactory>(),
+            settings);
+
+        Assert.Equal(ProviderId.Copilot, provider.Metadata.Id);
+        Assert.Equal("Copilot", provider.Metadata.DisplayName);
     }
 }

@@ -158,16 +158,26 @@ public class OpenRouterProviderTests
     public async Task FetchUsageAsync_NoApiKey_ReturnsFailure()
     {
         var settings = Substitute.For<ISettingsService>();
+        settings.IsProviderEnabled(ProviderId.OpenRouter).Returns(true);
         settings.GetApiKey(ProviderId.OpenRouter).Returns((string?)null);
 
-        var provider = CreateProvider(settingsService: settings);
+        // Clear environment variable to ensure deterministic result
+        var originalEnv = Environment.GetEnvironmentVariable("OPENROUTER_API_KEY");
+        Environment.SetEnvironmentVariable("OPENROUTER_API_KEY", null);
+        try
+        {
+            var provider = CreateProvider(settingsService: settings);
 
-        var result = await provider.FetchUsageAsync();
+            var result = await provider.FetchUsageAsync();
 
-        Assert.False(result.Success);
-        Assert.Equal(ProviderId.OpenRouter, result.Provider);
-        Assert.NotNull(result.ErrorMessage);
-        Assert.NotEmpty(result.ErrorMessage);
+            Assert.False(result.Success);
+            Assert.Equal(ProviderId.OpenRouter, result.Provider);
+            Assert.Contains("No API key", result.ErrorMessage);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("OPENROUTER_API_KEY", originalEnv);
+        }
     }
 
     [Fact]

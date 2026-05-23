@@ -141,4 +141,63 @@ public class ClaudeProviderTests
         var pricing = ClaudeProvider.ResolvePricing("unknown-model");
         Assert.Equal(3.0, pricing.InputPerMTok);
     }
+
+    [Fact]
+    public void FormatResetCountdown_FutureHours_ReturnsHours()
+    {
+        var future = DateTimeOffset.UtcNow.AddHours(3).AddMinutes(25).ToUnixTimeSeconds();
+        var result = ClaudeProvider.FormatResetCountdown(future, "5-hour limit");
+        Assert.StartsWith("5-hour limit resets in 3h", result);
+    }
+
+    [Fact]
+    public void CalculateEquivalentCost_WithMultipleModels_SumsCorrectly()
+    {
+        var stats = new ClaudeProvider.ClaudeStatsCache();
+        stats.ModelUsages.Add(new ClaudeProvider.ClaudeModelUsage
+        {
+            ModelId = "claude-sonnet-4-5",
+            InputTokens = 1_000_000,
+            OutputTokens = 500_000,
+            CacheReadInputTokens = 100_000,
+            CacheCreationInputTokens = 50_000,
+        });
+        stats.ModelUsages.Add(new ClaudeProvider.ClaudeModelUsage
+        {
+            ModelId = "claude-haiku-4-5",
+            InputTokens = 500_000,
+            OutputTokens = 200_000,
+            CacheReadInputTokens = 0,
+            CacheCreationInputTokens = 0,
+        });
+
+        var cost = ClaudeProvider.CalculateEquivalentCost(stats);
+        Assert.True(cost > 10);
+        Assert.True(cost < 15);
+    }
+
+    [Fact]
+    public void CalculateTotalTokens_MultipleModels_SumsAll()
+    {
+        var stats = new ClaudeProvider.ClaudeStatsCache();
+        stats.ModelUsages.Add(new ClaudeProvider.ClaudeModelUsage
+        {
+            ModelId = "claude-sonnet-4-5",
+            InputTokens = 100,
+            OutputTokens = 200,
+            CacheReadInputTokens = 50,
+            CacheCreationInputTokens = 25,
+        });
+        stats.ModelUsages.Add(new ClaudeProvider.ClaudeModelUsage
+        {
+            ModelId = "claude-haiku-4-5",
+            InputTokens = 300,
+            OutputTokens = 400,
+            CacheReadInputTokens = 0,
+            CacheCreationInputTokens = 0,
+        });
+
+        var total = ClaudeProvider.CalculateTotalTokens(stats);
+        Assert.Equal(1075, total);
+    }
 }

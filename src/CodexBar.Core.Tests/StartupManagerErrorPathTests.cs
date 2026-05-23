@@ -67,7 +67,7 @@ public class StartupManagerErrorPathTests : IDisposable
     }
 
     [Fact]
-    public void SetEnabled_False_WhenAlreadyDisabled_DoesNotThrow()
+    public void SetEnabled_False_WhenAlreadyDisabled_RemainsDisabled()
     {
         Assert.False(StartupManager.IsEnabled());
 

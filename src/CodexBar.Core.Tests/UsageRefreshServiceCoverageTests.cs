@@ -15,7 +15,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 public class UsageRefreshServiceCoverageTests
 {
     [Fact]
-    public void Dispose_WhileRunning_DoesNotThrow()
+    public void Dispose_WhileRunning_CompletesWithoutError()
     {
         var slow = new SlowProvider();
         var service = new UsageRefreshService([slow], NullLogger<UsageRefreshService>.Instance)
@@ -34,7 +34,7 @@ public class UsageRefreshServiceCoverageTests
     }
 
     [Fact]
-    public async Task Dispose_AfterStop_DoesNotThrow()
+    public async Task Dispose_AfterStop_CompletesWithoutError()
     {
         var provider = new ControllableProvider(available: true, result: ProviderUsageResult.EmptySuccess(ProviderId.Claude));
         var service = new UsageRefreshService([provider], NullLogger<UsageRefreshService>.Instance)
@@ -49,7 +49,7 @@ public class UsageRefreshServiceCoverageTests
     }
 
     [Fact]
-    public void Dispose_NotStarted_DoesNotThrow()
+    public void Dispose_NotStarted_CompletesWithoutError()
     {
         var service = new UsageRefreshService([], NullLogger<UsageRefreshService>.Instance);
         var ex = Record.Exception(() => service.Dispose());

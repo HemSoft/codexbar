@@ -55,16 +55,6 @@ public class UsageRefreshServiceMoreTests
     }
 
     [Fact]
-    public void Dispose_WhenNotStarted_LeavesNextRefreshNull()
-    {
-        var provider = new TestUsageProvider(ProviderId.OpenRouter, "OpenRouter");
-        var service = CreateService(provider);
-        service.Dispose();
-
-        Assert.Null(service.NextRefreshAtUtc);
-    }
-
-    [Fact]
     public async Task DisposeAsync_WhenStarted_ClearsNextRefreshAtUtc()
     {
         var provider = new TestUsageProvider(ProviderId.OpenRouter, "OpenRouter");

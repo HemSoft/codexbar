@@ -105,22 +105,6 @@ public class CopilotProviderFullCoverageTests
     }
 
     [Fact]
-    public void ComputeUsageMetrics_Unlimited_ReturnsUnlimited()
-    {
-        var quota = new CopilotQuotaSnapshot
-        {
-            Entitlement = 0,
-            Remaining = 0,
-            Unlimited = true,
-        };
-        var (usedPercent, label, isUnlimited) = CopilotProvider.ComputeUsageMetrics(quota, "premium");
-
-        Assert.Equal(0, usedPercent);
-        Assert.Equal("Unlimited", label);
-        Assert.True(isUnlimited);
-    }
-
-    [Fact]
     public void ComputeUsageMetrics_NoQuota_ReturnsNoQuota()
     {
         var quota = new CopilotQuotaSnapshot
@@ -309,13 +293,6 @@ public class CopilotProviderFullCoverageTests
         Assert.Empty(result);
     }
 
-    [Fact]
-    public void ExtractUsernamesFromGhStatus_EmptyString_ReturnsEmpty()
-    {
-        var result = CopilotProvider.ExtractUsernamesFromGhStatus(string.Empty);
-        Assert.Empty(result);
-    }
-
     // --- ParseCopilotApiResponse ---
     [Fact]
     public void ParseCopilotApiResponse_FullResponse_ParsesAllFields()
@@ -395,7 +372,7 @@ public class CopilotProviderFullCoverageTests
     }
 
     [Fact]
-    public void ParseCopilotApiResponse_NullLogger_DoesNotThrow()
+    public void ParseCopilotApiResponse_NullLogger_ReturnsSuccess()
     {
         var json = """{"copilot_plan":"pro"}""";
         var result = CopilotProvider.ParseCopilotApiResponse(json, "bob", null);
@@ -855,7 +832,7 @@ public class CopilotProviderFullCoverageTests
 
     // --- BestEffortKillAndDrain ---
     [Fact]
-    public void BestEffortKillAndDrain_ProcessAlreadyExited_DoesNotThrow()
+    public void BestEffortKillAndDrain_ProcessAlreadyExited_SwallowsKillException()
     {
         using var process = CreateFakeProcess("stdout", "stderr", 0);
         process.Start();
@@ -864,47 +841,12 @@ public class CopilotProviderFullCoverageTests
         var stderrTask = Task.FromResult("stderr data");
         var stdoutTask = Task.FromResult("stdout data");
 
-        // Should not throw even though process already exited
-        CopilotProvider.BestEffortKillAndDrain(process, stderrTask, stdoutTask);
-    }
-
-    [Fact]
-    public void BestEffortKillAndDrain_FaultedTasks_DoesNotThrow()
-    {
-        using var process = CreateFakeProcess(string.Empty, string.Empty, 0);
-        process.Start();
-        process.WaitForExit();
-
-        var stderrTask = Task.FromException<string>(new InvalidOperationException("err"));
-        var stdoutTask = Task.FromException<string>(new InvalidOperationException("err"));
-
-        CopilotProvider.BestEffortKillAndDrain(process, stderrTask, stdoutTask);
+        var ex = Record.Exception(() =>
+            CopilotProvider.BestEffortKillAndDrain(process, stderrTask, stdoutTask));
+        Assert.Null(ex);
     }
 
     // --- IsAvailableAsync ---
-    [Fact]
-    public async Task IsAvailableAsync_Enabled_ReturnsTrue()
-    {
-        var settings = Substitute.For<ISettingsService>();
-        settings.IsProviderEnabled(ProviderId.Copilot).Returns(true);
-        var provider = new CopilotProvider(
-            NullLogger<CopilotProvider>.Instance,
-            Substitute.For<IHttpClientFactory>(), settings);
-
-        Assert.True(await provider.IsAvailableAsync());
-    }
-
-    [Fact]
-    public async Task IsAvailableAsync_Disabled_ReturnsFalse()
-    {
-        var settings = Substitute.For<ISettingsService>();
-        settings.IsProviderEnabled(ProviderId.Copilot).Returns(false);
-        var provider = new CopilotProvider(
-            NullLogger<CopilotProvider>.Instance,
-            Substitute.For<IHttpClientFactory>(), settings);
-
-        Assert.False(await provider.IsAvailableAsync());
-    }
 
     // --- Helpers ---
     private static CopilotProvider CreateProvider(ISettingsService settings, IHttpClientFactory factory)

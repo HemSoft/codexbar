@@ -132,14 +132,6 @@ public class ClaudeProviderFullCoverageTests : IDisposable
         Assert.EndsWith("m", result);
     }
 
-    [Fact]
-    public void FormatBarReset_PastTime_ReturnsResetsNow()
-    {
-        var epoch = DateTimeOffset.UtcNow.AddMinutes(-5).ToUnixTimeSeconds();
-        var result = ClaudeProvider.FormatBarReset(epoch);
-        Assert.Equal("Resets now", result);
-    }
-
     // --- FormatResetCountdown ---
     [Fact]
     public void FormatResetCountdown_FutureMoreThanOneDay_FormatsDaysAndHours()
@@ -287,45 +279,7 @@ public class ClaudeProviderFullCoverageTests : IDisposable
         Assert.Contains("Pro plan", result.UsageLabel);
     }
 
-    [Fact]
-    public void BuildSessionSnapshot_WithLimits_DelegatesToFromLimits()
-    {
-        var limits = new ClaudeProvider.UnifiedRateLimits
-        {
-            FiveHourUtilization = 0.5,
-            FiveHourReset = DateTimeOffset.UtcNow.AddHours(1).ToUnixTimeSeconds(),
-        };
-        var result = ClaudeProvider.BuildSessionSnapshot(limits, "Pro", 1000, 5.0, null);
-
-        Assert.False(result.IsUnlimited);
-        Assert.Equal(0.5, result.UsedPercent);
-    }
-
     // --- BuildWeeklySnapshot ---
-    [Fact]
-    public void BuildWeeklySnapshot_NullLimits_ReturnsNull()
-    {
-        var result = ClaudeProvider.BuildWeeklySnapshot(null);
-        Assert.Null(result);
-    }
-
-    [Fact]
-    public void BuildWeeklySnapshot_WithReset_IncludesResetDescription()
-    {
-        var resetEpoch = DateTimeOffset.UtcNow.AddDays(3).ToUnixTimeSeconds();
-        var limits = new ClaudeProvider.UnifiedRateLimits
-        {
-            SevenDayUtilization = 0.6,
-            SevenDayReset = resetEpoch,
-        };
-        var result = ClaudeProvider.BuildWeeklySnapshot(limits);
-
-        Assert.NotNull(result);
-        Assert.Equal(0.6, result!.UsedPercent);
-        Assert.NotNull(result.ResetDescription);
-        Assert.Contains("Weekly resets in", result.ResetDescription);
-    }
-
     [Fact]
     public void BuildWeeklySnapshot_NoReset_NullResetDescription()
     {
@@ -342,13 +296,6 @@ public class ClaudeProviderFullCoverageTests : IDisposable
     }
 
     // --- BuildUsageBars ---
-    [Fact]
-    public void BuildUsageBars_NullLimits_ReturnsEmpty()
-    {
-        var result = ClaudeProvider.BuildUsageBars(null);
-        Assert.Empty(result);
-    }
-
     [Fact]
     public void BuildUsageBars_WithBothResets_ReturnsTwoBarsWithResetDescriptions()
     {
@@ -618,13 +565,6 @@ public class ClaudeProviderFullCoverageTests : IDisposable
 
     // --- CalculateEquivalentCost ---
     [Fact]
-    public void CalculateEquivalentCost_NullStats_ReturnsZero()
-    {
-        var result = ClaudeProvider.CalculateEquivalentCost(null);
-        Assert.Equal(0, result);
-    }
-
-    [Fact]
     public void CalculateEquivalentCost_WithModelUsages_CalculatesCorrectly()
     {
         var stats = new ClaudeProvider.ClaudeStatsCache();
@@ -646,22 +586,7 @@ public class ClaudeProviderFullCoverageTests : IDisposable
         Assert.True(result < 12.0);
     }
 
-    [Fact]
-    public void CalculateEquivalentCost_EmptyModelUsages_ReturnsZero()
-    {
-        var stats = new ClaudeProvider.ClaudeStatsCache();
-        var result = ClaudeProvider.CalculateEquivalentCost(stats);
-        Assert.Equal(0, result);
-    }
-
     // --- CalculateTotalTokens ---
-    [Fact]
-    public void CalculateTotalTokens_NullStats_ReturnsZero()
-    {
-        var result = ClaudeProvider.CalculateTotalTokens(null);
-        Assert.Equal(0, result);
-    }
-
     [Fact]
     public void CalculateTotalTokens_WithMultipleModels_SumsAll()
     {
@@ -1369,14 +1294,6 @@ public class ClaudeProviderFullCoverageTests : IDisposable
         // Should succeed but with fallback (no limits)
         Assert.True(result.Success);
         Assert.Contains("Rate limits unavailable", result.SessionUsage!.UsageLabel);
-    }
-
-    [Fact]
-    public void NormalizeEpochToSeconds_MillisecondValue_DividesBy1000()
-    {
-        var ms = 1_750_000_000_000L;
-        var result = ClaudeProvider.NormalizeEpochToSeconds(ms);
-        Assert.Equal(1_750_000_000L, result);
     }
 
     [Fact]
