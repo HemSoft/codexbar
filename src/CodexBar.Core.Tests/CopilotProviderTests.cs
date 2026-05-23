@@ -181,8 +181,8 @@ public class CopilotProviderTests
     [Fact]
     public void ExtractUsername_NullOrEmpty_ReturnsNull()
     {
-        var name = CopilotProvider.ExtractUsername(string.Empty);
-        Assert.Null(name);
+        Assert.Null(CopilotProvider.ExtractUsername(null));
+        Assert.Null(CopilotProvider.ExtractUsername(string.Empty));
     }
 
     [Fact]
@@ -212,7 +212,7 @@ public class CopilotProviderTests
     }
 
     [Fact]
-    public void Metadata_IsCorrect()
+    public void Metadata_WhenProviderIsConstructed_ReturnsExpectedMetadata()
     {
         var settings = Substitute.For<ISettingsService>();
         settings.IsProviderEnabled(ProviderId.Copilot).Returns(true);

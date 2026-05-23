@@ -354,8 +354,13 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
         return accounts;
     }
 
-    internal static string? ExtractUsername(string line)
+    internal static string? ExtractUsername(string? line)
     {
+        if (string.IsNullOrEmpty(line))
+        {
+            return null;
+        }
+
         var accountIdx = line.IndexOf("account ", StringComparison.OrdinalIgnoreCase);
         if (accountIdx >= 0)
         {
