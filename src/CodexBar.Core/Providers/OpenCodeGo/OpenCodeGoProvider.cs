@@ -253,24 +253,28 @@ public sealed partial class OpenCodeGoProvider(
     private static WindowData? TryParseWindow(
         string html, Regex pctFirst, Regex resetFirst, int pctGroup, int secGroup)
     {
-        var m = pctFirst.Match(html);
-        if (m.Success
-            && int.TryParse(m.Groups[pctGroup].Value, out var pct1)
-            && int.TryParse(m.Groups[secGroup].Value, out var sec1))
+        return TryMatchAndParse(pctFirst.Match(html), pctGroup, secGroup)
+            ?? TryMatchAndParse(resetFirst.Match(html), pctGroup: 2, secGroup: 1);
+    }
+
+    private static WindowData? TryMatchAndParse(Match m, int pctGroup, int secGroup)
+    {
+        if (!m.Success)
         {
-            return MakeWindow(pct1, sec1);
+            return null;
         }
 
-        // Try alternate ordering (resetInSec comes before usagePercent)
-        m = resetFirst.Match(html);
-        if (m.Success
-            && int.TryParse(m.Groups[2].Value, out var pct2)
-            && int.TryParse(m.Groups[1].Value, out var sec2))
+        if (!int.TryParse(m.Groups[pctGroup].Value, out var pct))
         {
-            return MakeWindow(pct2, sec2);
+            return null;
         }
 
-        return null;
+        if (!int.TryParse(m.Groups[secGroup].Value, out var sec))
+        {
+            return null;
+        }
+
+        return MakeWindow(pct, sec);
     }
 
     private static WindowData MakeWindow(int usagePercent, int resetInSec)

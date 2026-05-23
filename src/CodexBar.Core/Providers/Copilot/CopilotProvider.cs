@@ -192,26 +192,41 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
 
     private async Task<List<string>> DiscoverAccountsUnderLockAsync(CancellationToken ct)
     {
-        if (this._cachedAccounts is null or { Count: 0 })
+        if (!this.ShouldDiscoverAccounts())
         {
-            if (DateTime.UtcNow < this._emptyDiscoveryCachedUntil)
-            {
-                return [];
-            }
-
-            var discoveryOverride = this.AccountDiscoveryOverride;
-            this._cachedAccounts = discoveryOverride is not null
-                ? await discoveryOverride(ct)
-                : await this.DiscoverGhAccountsAsync(ct);
+            return this._cachedAccounts ?? [];
         }
 
-        if (this._cachedAccounts is { Count: 0 })
-        {
-            this._emptyDiscoveryCachedUntil = DateTime.UtcNow.AddMinutes(5);
-            this._cachedAccounts = null;
-        }
+        var discoveryTask = this.AccountDiscoveryOverride is { } overrideFn
+            ? overrideFn(ct)
+            : this.DiscoverGhAccountsAsync(ct);
+
+        this._cachedAccounts = await discoveryTask;
+
+        this.UpdateEmptyCacheWindow();
 
         return this._cachedAccounts ?? [];
+    }
+
+    private bool ShouldDiscoverAccounts()
+    {
+        if (this._cachedAccounts is { Count: > 0 })
+        {
+            return false;
+        }
+
+        return DateTime.UtcNow >= this._emptyDiscoveryCachedUntil;
+    }
+
+    private void UpdateEmptyCacheWindow()
+    {
+        if (this._cachedAccounts is not { Count: 0 })
+        {
+            return;
+        }
+
+        this._emptyDiscoveryCachedUntil = DateTime.UtcNow.AddMinutes(5);
+        this._cachedAccounts = null;
     }
 
     /// <summary>

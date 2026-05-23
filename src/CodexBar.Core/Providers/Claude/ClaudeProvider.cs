@@ -588,18 +588,7 @@ public sealed class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFa
             using var httpClient = this.httpClientFactory.CreateClient();
             httpClient.Timeout = TimeSpan.FromSeconds(15);
 
-            var body = JsonSerializer.Serialize(new
-            {
-                grant_type = "refresh_token",
-                refresh_token = credentials.RefreshToken,
-            });
-
-            using var request = new HttpRequestMessage(HttpMethod.Post, "https://api.anthropic.com/v1/oauth/token")
-            {
-                Content = new StringContent(body, Encoding.UTF8, "application/json"),
-            };
-            request.Headers.TryAddWithoutValidation("anthropic-version", "2023-06-01");
-
+            using var request = BuildTokenRefreshRequest(credentials.RefreshToken);
             using var response = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
 
             if (!response.IsSuccessStatusCode)
@@ -610,35 +599,56 @@ public sealed class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFa
             }
 
             var json = await response.Content.ReadAsStringAsync(ct);
-            using var doc = JsonDocument.Parse(json);
-            var (newAccessToken, newRefreshToken, newExpiresAt) = ParseTokenRefreshResponse(doc.RootElement);
-
-            if (string.IsNullOrEmpty(newAccessToken))
-            {
-                this.logger.LogWarning("Claude token refresh response missing access_token");
-                return null;
-            }
-
-            var updatedCreds = credentials with
-            {
-                AccessToken = newAccessToken,
-                RefreshToken = newRefreshToken ?? credentials.RefreshToken,
-                ExpiresAt = newExpiresAt,
-            };
-
-            this.PersistCredentials(updatedCreds);
-
-            this.logger.LogInformation(
-                "Claude OAuth token refreshed successfully, valid until {Expiry}",
-                newExpiresAt > 0 ? DateTimeOffset.FromUnixTimeSeconds(NormalizeEpochToSeconds(newExpiresAt)).ToString("o") : "unknown");
-
-            return updatedCreds;
+            return this.ApplyRefreshedToken(credentials, json);
         }
         catch (Exception ex)
         {
             this.logger.LogWarning(ex, "Claude token refresh failed: {Message}", ex.Message);
             return null;
         }
+    }
+
+    private static HttpRequestMessage BuildTokenRefreshRequest(string refreshToken)
+    {
+        var body = JsonSerializer.Serialize(new
+        {
+            grant_type = "refresh_token",
+            refresh_token = refreshToken,
+        });
+
+        var request = new HttpRequestMessage(HttpMethod.Post, "https://api.anthropic.com/v1/oauth/token")
+        {
+            Content = new StringContent(body, Encoding.UTF8, "application/json"),
+        };
+        request.Headers.TryAddWithoutValidation("anthropic-version", "2023-06-01");
+        return request;
+    }
+
+    private ClaudeCredentials? ApplyRefreshedToken(ClaudeCredentials credentials, string json)
+    {
+        using var doc = JsonDocument.Parse(json);
+        var (newAccessToken, newRefreshToken, newExpiresAt) = ParseTokenRefreshResponse(doc.RootElement);
+
+        if (string.IsNullOrEmpty(newAccessToken))
+        {
+            this.logger.LogWarning("Claude token refresh response missing access_token");
+            return null;
+        }
+
+        var updatedCreds = credentials with
+        {
+            AccessToken = newAccessToken,
+            RefreshToken = newRefreshToken ?? credentials.RefreshToken,
+            ExpiresAt = newExpiresAt,
+        };
+
+        this.PersistCredentials(updatedCreds);
+
+        this.logger.LogInformation(
+            "Claude OAuth token refreshed successfully, valid until {Expiry}",
+            newExpiresAt > 0 ? DateTimeOffset.FromUnixTimeSeconds(NormalizeEpochToSeconds(newExpiresAt)).ToString("o") : "unknown");
+
+        return updatedCreds;
     }
 
     internal static (string? AccessToken, string? RefreshToken, long ExpiresAt) ParseTokenRefreshResponse(JsonElement root) =>
