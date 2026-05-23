@@ -324,14 +324,6 @@ public class ClaudeProviderEdgeTests
 
     // --- CalculateEquivalentCost with mixed models ---
     [Fact]
-    public void CalculateEquivalentCost_EmptyModelUsages_ReturnsZero()
-    {
-        var stats = new ClaudeProvider.ClaudeStatsCache();
-        var result = ClaudeProvider.CalculateEquivalentCost(stats);
-        Assert.Equal(0, result);
-    }
-
-    [Fact]
     public void CalculateEquivalentCost_SingleModel_CalculatesCorrectly()
     {
         var stats = new ClaudeProvider.ClaudeStatsCache();

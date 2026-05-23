@@ -384,40 +384,6 @@ public class BranchCoverageTests
     }
 
     /// <summary>
-    /// Exercises MergeFromDisk when the memory provider has a non-empty ApiKey
-    /// and disk also has an ApiKey — memory value should be preserved (the else-if at line 104 is false).
-    /// </summary>
-    [Fact]
-    public void Save_MemoryHasApiKey_DiskApiKeyNotOverwritten()
-    {
-        var tempDir = CreateTempDir();
-        try
-        {
-            var service = new SettingsService(NullLogger<SettingsService>.Instance, tempDir);
-            var filePath = Path.Combine(tempDir, "settings.json");
-
-            File.WriteAllText(filePath, """{"providers":{"OpenRouter":{"enabled":true,"apiKey":"old-disk-key"}}}""");
-
-            var memSettings = new AppSettings
-            {
-                RefreshIntervalSeconds = 30,
-                Providers = new Dictionary<string, ProviderSettings>
-                {
-                    ["OpenRouter"] = new() { Enabled = true, ApiKey = "new-memory-key" },
-                },
-            };
-
-            service.Save(memSettings);
-            var loaded = service.Load();
-            Assert.Equal("new-memory-key", loaded.Providers["OpenRouter"].ApiKey);
-        }
-        finally
-        {
-            CleanupTempDir(tempDir);
-        }
-    }
-
-    /// <summary>
     /// Exercises SaveInternal with null OpenCodeGoWorkspaceId (line 147).
     /// </summary>
     [Fact]
@@ -679,27 +645,6 @@ public class BranchCoverageTests
     }
 
     /// <summary>
-    /// Exercises ComputeUsageMetrics with unlimited quota (line 661-663).
-    /// </summary>
-    [Fact]
-    public void ComputeUsageMetrics_Unlimited_ReturnsZeroPercentUnlimited()
-    {
-        var quota = new CopilotQuotaSnapshot
-        {
-            Remaining = 0,
-            Entitlement = 0,
-            Unlimited = true,
-            OverageCount = 0,
-            OveragePermitted = false,
-        };
-
-        var (usedPercent, label, isUnlimited) = CopilotProvider.ComputeUsageMetrics(quota, "premium");
-        Assert.Equal(0, usedPercent);
-        Assert.Equal("Unlimited", label);
-        Assert.True(isUnlimited);
-    }
-
-    /// <summary>
     /// Exercises ComputeUsageMetrics with zero entitlement and not unlimited (line 666).
     /// </summary>
     [Fact]
@@ -770,28 +715,6 @@ public class BranchCoverageTests
     }
 
     /// <summary>
-    /// Exercises ParseReset with invalid date string.
-    /// </summary>
-    [Fact]
-    public void ParseReset_InvalidDate_ReturnsNulls()
-    {
-        var (resetsAt, description) = CopilotProvider.ParseReset("not-a-date");
-        Assert.Null(resetsAt);
-        Assert.Null(description);
-    }
-
-    /// <summary>
-    /// Exercises ParseReset with past date (line 702: "Reset overdue").
-    /// </summary>
-    [Fact]
-    public void ParseReset_PastDate_ReturnsOverdue()
-    {
-        var pastDate = DateTimeOffset.UtcNow.AddDays(-1).ToString("o");
-        var (_, description) = CopilotProvider.ParseReset(pastDate);
-        Assert.Equal("Reset overdue", description);
-    }
-
-    /// <summary>
     /// Exercises ParseReset with date 3+ days in future (line 705: "Resets in Xd").
     /// </summary>
     [Fact]
@@ -801,17 +724,6 @@ public class BranchCoverageTests
         var (_, description) = CopilotProvider.ParseReset(futureDate);
         Assert.Contains("Resets in", description);
         Assert.Contains("d", description);
-    }
-
-    /// <summary>
-    /// Exercises BuildSessionSnapshot with null limits (line 244-256: fallback path).
-    /// </summary>
-    [Fact]
-    public void BuildSessionSnapshot_NullLimits_ReturnsFallbackLabel()
-    {
-        var result = ClaudeProvider.BuildSessionSnapshot(null, "Pro", 0, 0, null);
-        Assert.True(result.IsUnlimited);
-        Assert.Contains("Rate limits unavailable", result.UsageLabel);
     }
 
     /// <summary>
@@ -856,30 +768,6 @@ public class BranchCoverageTests
         var result = ClaudeProvider.BuildSessionSnapshotFromLimits(limits, "Pro", 50000, 1.5, accountInfo);
         Assert.DoesNotContain("extra usage on", result.UsageLabel);
         Assert.Contains("Pro plan", result.UsageLabel);
-    }
-
-    /// <summary>
-    /// Exercises BuildSessionSnapshotFromLimits with extra usage enabled (line 277-279).
-    /// </summary>
-    [Fact]
-    public void BuildSessionSnapshotFromLimits_ExtraUsageEnabled_IncludesLabel()
-    {
-        var limits = new ClaudeProvider.UnifiedRateLimits
-        {
-            FiveHourUtilization = 0.5,
-            FiveHourReset = DateTimeOffset.UtcNow.AddHours(2).ToUnixTimeSeconds(),
-            SevenDayUtilization = 0.3,
-            SevenDayReset = DateTimeOffset.UtcNow.AddDays(3).ToUnixTimeSeconds(),
-        };
-
-        var accountInfo = new ClaudeProvider.ClaudeAccountInfo
-        {
-            DisplayName = "TestUser",
-            HasExtraUsageEnabled = true,
-        };
-
-        var result = ClaudeProvider.BuildSessionSnapshotFromLimits(limits, "Pro", 50000, 1.5, accountInfo);
-        Assert.Contains("extra usage on", result.UsageLabel);
     }
 
     /// <summary>
@@ -983,43 +871,6 @@ public class BranchCoverageTests
     }
 
     /// <summary>
-    /// Exercises CalculateEquivalentCost with null stats.
-    /// </summary>
-    [Fact]
-    public void CalculateEquivalentCost_NullStats_ReturnsZero()
-    {
-        Assert.Equal(0, ClaudeProvider.CalculateEquivalentCost(null));
-    }
-
-    /// <summary>
-    /// Exercises CalculateTotalTokens with null stats.
-    /// </summary>
-    [Fact]
-    public void CalculateTotalTokens_NullStats_ReturnsZero()
-    {
-        Assert.Equal(0, ClaudeProvider.CalculateTotalTokens(null));
-    }
-
-    /// <summary>
-    /// Exercises BuildWeeklySnapshot with null limits.
-    /// </summary>
-    [Fact]
-    public void BuildWeeklySnapshot_NullLimits_ReturnsNull()
-    {
-        Assert.Null(ClaudeProvider.BuildWeeklySnapshot(null));
-    }
-
-    /// <summary>
-    /// Exercises BuildUsageBars with null limits.
-    /// </summary>
-    [Fact]
-    public void BuildUsageBars_NullLimits_ReturnsEmptyList()
-    {
-        var result = ClaudeProvider.BuildUsageBars(null);
-        Assert.Empty(result);
-    }
-
-    /// <summary>
     /// Exercises FormatBarReset for each time bracket.
     /// </summary>
     [Fact]
@@ -1056,17 +907,6 @@ public class BranchCoverageTests
         Assert.Contains("d", result);
     }
 
-    /// <summary>
-    /// Exercises FormatResetCountdown for various time ranges.
-    /// </summary>
-    [Fact]
-    public void FormatResetCountdown_Past_ReturnsNow()
-    {
-        var pastEpoch = DateTimeOffset.UtcNow.AddMinutes(-5).ToUnixTimeSeconds();
-        var result = ClaudeProvider.FormatResetCountdown(pastEpoch, "5-hour limit");
-        Assert.Contains("resets now", result);
-    }
-
     [Fact]
     public void FormatResetCountdown_Minutes_ReturnsMinutes()
     {
@@ -1095,16 +935,6 @@ public class BranchCoverageTests
     }
 
     /// <summary>
-    /// Exercises ResolvePricing with unknown model (falls back to Sonnet pricing).
-    /// </summary>
-    [Fact]
-    public void ResolvePricing_UnknownModel_FallsBackToSonnet()
-    {
-        var pricing = ClaudeProvider.ResolvePricing("completely-unknown-model");
-        Assert.Equal(3.0, pricing.InputPerMTok); // Sonnet pricing
-    }
-
-    /// <summary>
     /// Exercises ResolvePricing with model containing "opus" (family fallback).
     /// </summary>
     [Fact]
@@ -1122,17 +952,6 @@ public class BranchCoverageTests
     {
         var pricing = ClaudeProvider.ResolvePricing("some-haiku-variant");
         Assert.Equal(1.0, pricing.InputPerMTok); // Haiku pricing
-    }
-
-    /// <summary>
-    /// Exercises ParseRateLimitHeaders when no utilization headers are present (returns null).
-    /// </summary>
-    [Fact]
-    public void ParseRateLimitHeaders_NoHeaders_ReturnsNull()
-    {
-        var response = new HttpResponseMessage(HttpStatusCode.OK);
-        var result = ClaudeProvider.ParseRateLimitHeaders(response.Headers);
-        Assert.Null(result);
     }
 
     /// <summary>

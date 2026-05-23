@@ -29,34 +29,11 @@ public class MoreClaudeProviderTests
     }
 
     [Fact]
-    public async Task IsAvailableAsync_Disabled_ReturnsFalse()
-    {
-        var settings = CreateSettingsService(enabled: false);
-        var provider = CreateProvider(settings);
-        Assert.False(await provider.IsAvailableAsync());
-    }
-
-    [Fact]
-    public async Task IsAvailableAsync_Enabled_ReturnsTrue()
-    {
-        var provider = CreateProvider();
-        Assert.True(await provider.IsAvailableAsync());
-    }
-
-    [Fact]
     public void FormatResetCountdown_FutureHours_ReturnsHours()
     {
         var future = DateTimeOffset.UtcNow.AddHours(3).AddMinutes(25).ToUnixTimeSeconds();
         var result = ClaudeProvider.FormatResetCountdown(future, "5-hour limit");
         Assert.StartsWith("5-hour limit resets in 3h", result);
-    }
-
-    [Fact]
-    public void FormatResetCountdown_FutureDays_ReturnsDays()
-    {
-        var future = DateTimeOffset.UtcNow.AddDays(5).AddHours(2).ToUnixTimeSeconds();
-        var result = ClaudeProvider.FormatResetCountdown(future, "Weekly");
-        Assert.StartsWith("Weekly resets in 5d", result);
     }
 
     [Fact]
@@ -103,14 +80,6 @@ public class MoreClaudeProviderTests
     }
 
     [Fact]
-    public void ResolvePricing_HaikuModel_ReturnsHaikuPricing()
-    {
-        var pricing = ClaudeProvider.ResolvePricing("claude-haiku-3-5");
-        Assert.Equal(0.80, pricing.InputPerMTok);
-        Assert.Equal(4.0, pricing.OutputPerMTok);
-    }
-
-    [Fact]
     public void ResolvePricing_OpusPrefix_ReturnsOpusPricing()
     {
         var pricing = ClaudeProvider.ResolvePricing("claude-opus-4-7-something-extra");
@@ -145,39 +114,11 @@ public class MoreClaudeProviderTests
     }
 
     [Fact]
-    public void CalculateTotalTokens_NullStats_ReturnsZero()
-    {
-        var total = ClaudeProvider.CalculateTotalTokens(null);
-        Assert.Equal(0, total);
-    }
-
-    [Fact]
     public void FormatBarReset_FutureReset_ReturnsFormatted()
     {
         var future = DateTimeOffset.UtcNow.AddDays(2).AddHours(3).ToUnixTimeSeconds();
         var result = ClaudeProvider.FormatBarReset(future);
         Assert.Contains("2d", result);
-    }
-
-    [Fact]
-    public void BuildWeeklySnapshot_WithLimits_ReturnsSnapshot()
-    {
-        var limits = new ClaudeProvider.UnifiedRateLimits
-        {
-            SevenDayUtilization = 0.75,
-            SevenDayReset = DateTimeOffset.UtcNow.AddDays(6).ToUnixTimeSeconds(),
-        };
-        var snapshot = ClaudeProvider.BuildWeeklySnapshot(limits);
-        Assert.NotNull(snapshot);
-        Assert.Equal(0.75, snapshot.UsedPercent);
-        Assert.Contains("Weekly", snapshot.UsageLabel);
-    }
-
-    [Fact]
-    public void BuildWeeklySnapshot_NullLimits_ReturnsNull()
-    {
-        var snapshot = ClaudeProvider.BuildWeeklySnapshot(null);
-        Assert.Null(snapshot);
     }
 
     [Fact]

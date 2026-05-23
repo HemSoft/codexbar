@@ -105,22 +105,6 @@ public class CopilotProviderFullCoverageTests
     }
 
     [Fact]
-    public void ComputeUsageMetrics_Unlimited_ReturnsUnlimited()
-    {
-        var quota = new CopilotQuotaSnapshot
-        {
-            Entitlement = 0,
-            Remaining = 0,
-            Unlimited = true,
-        };
-        var (usedPercent, label, isUnlimited) = CopilotProvider.ComputeUsageMetrics(quota, "premium");
-
-        Assert.Equal(0, usedPercent);
-        Assert.Equal("Unlimited", label);
-        Assert.True(isUnlimited);
-    }
-
-    [Fact]
     public void ComputeUsageMetrics_NoQuota_ReturnsNoQuota()
     {
         var quota = new CopilotQuotaSnapshot
@@ -306,13 +290,6 @@ public class CopilotProviderFullCoverageTests
     {
         var stderr = "No accounts found\nSome other output";
         var result = CopilotProvider.ExtractUsernamesFromGhStatus(stderr);
-        Assert.Empty(result);
-    }
-
-    [Fact]
-    public void ExtractUsernamesFromGhStatus_EmptyString_ReturnsEmpty()
-    {
-        var result = CopilotProvider.ExtractUsernamesFromGhStatus(string.Empty);
         Assert.Empty(result);
     }
 
@@ -870,29 +847,6 @@ public class CopilotProviderFullCoverageTests
     }
 
     // --- IsAvailableAsync ---
-    [Fact]
-    public async Task IsAvailableAsync_Enabled_ReturnsTrue()
-    {
-        var settings = Substitute.For<ISettingsService>();
-        settings.IsProviderEnabled(ProviderId.Copilot).Returns(true);
-        var provider = new CopilotProvider(
-            NullLogger<CopilotProvider>.Instance,
-            Substitute.For<IHttpClientFactory>(), settings);
-
-        Assert.True(await provider.IsAvailableAsync());
-    }
-
-    [Fact]
-    public async Task IsAvailableAsync_Disabled_ReturnsFalse()
-    {
-        var settings = Substitute.For<ISettingsService>();
-        settings.IsProviderEnabled(ProviderId.Copilot).Returns(false);
-        var provider = new CopilotProvider(
-            NullLogger<CopilotProvider>.Instance,
-            Substitute.For<IHttpClientFactory>(), settings);
-
-        Assert.False(await provider.IsAvailableAsync());
-    }
 
     // --- Helpers ---
     private static CopilotProvider CreateProvider(ISettingsService settings, IHttpClientFactory factory)

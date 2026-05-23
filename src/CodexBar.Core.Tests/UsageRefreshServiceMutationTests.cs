@@ -73,18 +73,6 @@ public class UsageRefreshServiceMutationTests : IAsyncDisposable
         Assert.True(results.ContainsKey(ProviderId.Claude));
     }
 
-    [Fact]
-    public async Task RefreshAllAsync_RaisesUsageUpdatedForEachProvider()
-    {
-        var updated = new List<ProviderId>();
-        this._sut.UsageUpdated += (id, _) => updated.Add(id);
-
-        await this._sut.RefreshAllAsync();
-
-        Assert.Contains(ProviderId.Copilot, updated);
-        Assert.Contains(ProviderId.Claude, updated);
-    }
-
     // === FetchSafe: unavailable provider ===
     [Fact]
     public async Task RefreshAllAsync_UnavailableProvider_SkipsAndDoesNotStore()
@@ -118,20 +106,6 @@ public class UsageRefreshServiceMutationTests : IAsyncDisposable
     }
 
     // === FetchSafe: exception handling ===
-    [Fact]
-    public async Task RefreshAllAsync_ProviderThrows_StoresFailure()
-    {
-        this._provider1.FetchUsageAsync(Arg.Any<CancellationToken>())
-            .Throws(new InvalidOperationException("test error"));
-
-        await this._sut.RefreshAllAsync();
-
-        var results = this._sut.LatestResults;
-        Assert.True(results.ContainsKey(ProviderId.Copilot));
-        Assert.False(results[ProviderId.Copilot].Success);
-        Assert.Contains("test error", results[ProviderId.Copilot].ErrorMessage);
-    }
-
     [Fact]
     public async Task RefreshAllAsync_ProviderThrows_RaisesUsageUpdatedWithFailure()
     {
@@ -206,15 +180,6 @@ public class UsageRefreshServiceMutationTests : IAsyncDisposable
         await this._sut.StopAsync();
 
         Assert.Null(this._sut.NextRefreshAtUtc);
-    }
-
-    [Fact]
-    public async Task StopAsync_WhenNotStarted_LeavesNextRefreshNull()
-    {
-        await this._sut.StopAsync();
-
-        Assert.Null(this._sut.NextRefreshAtUtc);
-        Assert.Empty(this._sut.LatestResults);
     }
 
     // === NextRefreshChanged event ===

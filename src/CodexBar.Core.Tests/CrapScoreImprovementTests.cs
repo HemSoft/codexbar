@@ -63,25 +63,6 @@ public class CrapScoreImprovementTests
         Assert.Equal("Resets tomorrow", description);
     }
 
-    [Fact]
-    public void ParseReset_FutureDate_MultipleDays_ReturnsDays()
-    {
-        var future = DateTimeOffset.UtcNow.AddDays(5).ToString("o");
-        var (resetsAt, description) = CopilotProvider.ParseReset(future);
-        Assert.NotNull(resetsAt);
-        Assert.Contains("Resets in", description);
-        Assert.Contains("d", description);
-    }
-
-    [Fact]
-    public void ParseReset_PastDate_ReturnsOverdue()
-    {
-        var past = DateTimeOffset.UtcNow.AddDays(-1).ToString("o");
-        var (resetsAt, description) = CopilotProvider.ParseReset(past);
-        Assert.NotNull(resetsAt);
-        Assert.Equal("Reset overdue", description);
-    }
-
     [Theory]
     [InlineData("alice", "enterprise", "Copilot · alice (Ent)")]
     [InlineData("bob", "individual_pro", "Copilot · bob (Pro)")]
@@ -102,45 +83,6 @@ public class CrapScoreImprovementTests
     {
         var result = CopilotProvider.ExtractUsername(line);
         Assert.Equal(expected, result);
-    }
-
-    [Fact]
-    public void ExtractUsernamesFromGhStatus_MultipleAccounts_ExtractsAll()
-    {
-        var stderr = """
-            github.com
-              ✓ Logged in to github.com account alice (keyring)
-              ✓ Logged in to github.com account bob (keyring)
-            """;
-        var accounts = CopilotProvider.ExtractUsernamesFromGhStatus(stderr);
-        Assert.Equal(2, accounts.Count);
-        Assert.Contains("alice", accounts);
-        Assert.Contains("bob", accounts);
-    }
-
-    [Fact]
-    public void ExtractUsernamesFromGhStatus_NoMatches_ReturnsEmpty()
-    {
-        var accounts = CopilotProvider.ExtractUsernamesFromGhStatus("no accounts here\nnothing");
-        Assert.Empty(accounts);
-    }
-
-    [Fact]
-    public void ParseCopilotApiResponse_ValidJson_ReturnsSuccess()
-    {
-        var json = BuildCopilotJson();
-        var result = CopilotProvider.ParseCopilotApiResponse(json, "testuser", NullLogger<CopilotProvider>.Instance);
-        Assert.True(result.Success);
-        Assert.Equal("testuser", result.Username);
-        Assert.NotNull(result.PremiumInteractions);
-    }
-
-    [Fact]
-    public void ParseCopilotApiResponse_NullJson_ReturnsError()
-    {
-        var result = CopilotProvider.ParseCopilotApiResponse("null", "testuser", NullLogger<CopilotProvider>.Instance);
-        Assert.False(result.Success);
-        Assert.Equal("Empty API response", result.ErrorMessage);
     }
 
     [Fact]
@@ -171,36 +113,6 @@ public class CrapScoreImprovementTests
     }
 
     [Fact]
-    public void ComputeUsageMetrics_Unlimited_ReturnsZeroPercentUnlimited()
-    {
-        var quota = new CopilotQuotaSnapshot
-        {
-            Entitlement = 0,
-            Remaining = 0,
-            Unlimited = true,
-        };
-        var (usedPercent, label, isUnlimited) = CopilotProvider.ComputeUsageMetrics(quota, "premium");
-        Assert.Equal(0.0, usedPercent);
-        Assert.Equal("Unlimited", label);
-        Assert.True(isUnlimited);
-    }
-
-    [Fact]
-    public void ComputeUsageMetrics_NoQuota_ReturnsNoQuota()
-    {
-        var quota = new CopilotQuotaSnapshot
-        {
-            Entitlement = 0,
-            Remaining = 0,
-            Unlimited = false,
-        };
-        var (usedPercent, label, isUnlimited) = CopilotProvider.ComputeUsageMetrics(quota, "premium");
-        Assert.Equal(0.0, usedPercent);
-        Assert.Equal("No quota", label);
-        Assert.False(isUnlimited);
-    }
-
-    [Fact]
     public void ComputeUsageMetrics_WithOverage_ShowsOverageCost()
     {
         var quota = new CopilotQuotaSnapshot
@@ -213,21 +125,6 @@ public class CrapScoreImprovementTests
         };
         var (_, label, _) = CopilotProvider.ComputeUsageMetrics(quota, "premium");
         Assert.Contains("$", label);
-    }
-
-    [Fact]
-    public void ComputeUsageMetrics_OverLimitNotPermitted_ShowsOverLimitLabel()
-    {
-        var quota = new CopilotQuotaSnapshot
-        {
-            Entitlement = 100,
-            Remaining = -5,
-            OverageCount = 5,
-            OveragePermitted = false,
-            Unlimited = false,
-        };
-        var (_, label, _) = CopilotProvider.ComputeUsageMetrics(quota, "premium");
-        Assert.Contains("over limit", label);
     }
 
     [Fact]
@@ -416,46 +313,6 @@ public class CrapScoreImprovementTests
     }
 
     [Fact]
-    public async Task FetchUsageAsync_Unauthorized_ReturnsAuthError()
-    {
-        var provider = CreateOpenCodeGoProvider(statusCode: HttpStatusCode.Unauthorized);
-
-        var result = await provider.FetchUsageAsync();
-
-        Assert.False(result.Success);
-        Assert.Contains("Auth cookie rejected", result.ErrorMessage);
-    }
-
-    [Fact]
-    public async Task FetchUsageAsync_Forbidden_ReturnsAuthError()
-    {
-        var provider = CreateOpenCodeGoProvider(statusCode: HttpStatusCode.Forbidden);
-
-        var result = await provider.FetchUsageAsync();
-
-        Assert.False(result.Success);
-        Assert.Contains("Auth cookie rejected", result.ErrorMessage);
-    }
-
-    [Fact]
-    public async Task FetchUsageAsync_ServerError_ReturnsHttpError()
-    {
-        var provider = CreateOpenCodeGoProvider(statusCode: HttpStatusCode.InternalServerError);
-
-        var result = await provider.FetchUsageAsync();
-
-        Assert.False(result.Success);
-        Assert.Contains("500", result.ErrorMessage);
-    }
-
-    [Fact]
-    public void BuildUsageBars_NullLimits_ReturnsEmpty()
-    {
-        var bars = ClaudeProvider.BuildUsageBars(null);
-        Assert.Empty(bars);
-    }
-
-    [Fact]
     public void BuildUsageBars_WithResets_IncludesResetDescriptions()
     {
         var futureEpoch = DateTimeOffset.UtcNow.AddHours(2).ToUnixTimeSeconds();
@@ -472,24 +329,6 @@ public class CrapScoreImprovementTests
         Assert.Equal(2, bars.Count);
         Assert.NotNull(bars[0].ResetDescription);
         Assert.NotNull(bars[1].ResetDescription);
-    }
-
-    [Fact]
-    public void BuildUsageBars_ZeroResets_NullResetDescriptions()
-    {
-        var limits = new ClaudeProvider.UnifiedRateLimits
-        {
-            FiveHourUtilization = 0.2,
-            FiveHourReset = 0,
-            SevenDayUtilization = 0.1,
-            SevenDayReset = 0,
-        };
-
-        var bars = ClaudeProvider.BuildUsageBars(limits);
-
-        Assert.Equal(2, bars.Count);
-        Assert.Null(bars[0].ResetDescription);
-        Assert.Null(bars[1].ResetDescription);
     }
 
     [Fact]
@@ -519,32 +358,6 @@ public class CrapScoreImprovementTests
         Assert.Equal("new-rt", root.GetProperty("refreshToken").GetString());
         Assert.Equal(9999, root.GetProperty("expiresAt").GetInt64());
         Assert.Equal("keep", root.GetProperty("otherField").GetString());
-    }
-
-    [Fact]
-    public void WriteOAuthSection_NullRefreshToken_PreservesOriginal()
-    {
-        var originalJson = """{"accessToken":"old","refreshToken":"original-rt","expiresAt":100}""";
-        using var doc = JsonDocument.Parse(originalJson);
-        var oauthElement = doc.RootElement;
-
-        var credentials = new ClaudeProvider.ClaudeCredentials
-        {
-            AccessToken = "new-token",
-            RefreshToken = null,
-            ExpiresAt = 200,
-        };
-
-        using var stream = new MemoryStream();
-        using var writer = new Utf8JsonWriter(stream);
-        ClaudeProvider.WriteOAuthSection(writer, oauthElement, credentials);
-        writer.Flush();
-
-        var result = Encoding.UTF8.GetString(stream.ToArray());
-        using var resultDoc = JsonDocument.Parse(result);
-
-        // When credentials.RefreshToken is null, original value is preserved via WriteTo
-        Assert.Equal("new-token", resultDoc.RootElement.GetProperty("accessToken").GetString());
     }
 
     [Fact]
@@ -582,14 +395,6 @@ public class CrapScoreImprovementTests
         Assert.Equal(0, creds.ExpiresAt);
         Assert.Null(creds.AccessToken);
         Assert.Null(creds.RefreshToken);
-    }
-
-    [Fact]
-    public void ResolvePricing_ExactMatch_ReturnsPricing()
-    {
-        var pricing = ClaudeProvider.ResolvePricing("claude-sonnet-4-6");
-        Assert.True(pricing.InputPerMTok > 0);
-        Assert.True(pricing.OutputPerMTok > 0);
     }
 
     [Fact]
@@ -674,31 +479,6 @@ public class CrapScoreImprovementTests
         var accountInfo = new ClaudeProvider.ClaudeAccountInfo { HasExtraUsageEnabled = true };
         var label = ClaudeProvider.FormatUsageLabel("Pro", 0, 2.0, accountInfo);
         Assert.Contains("extra usage on", label);
-    }
-
-    [Fact]
-    public void BuildWeeklySnapshot_NullLimits_ReturnsNull()
-    {
-        var snapshot = ClaudeProvider.BuildWeeklySnapshot(null);
-        Assert.Null(snapshot);
-    }
-
-    [Fact]
-    public void BuildWeeklySnapshot_WithReset_IncludesResetDescription()
-    {
-        var futureEpoch = DateTimeOffset.UtcNow.AddDays(3).ToUnixTimeSeconds();
-        var limits = new ClaudeProvider.UnifiedRateLimits
-        {
-            SevenDayUtilization = 0.4,
-            SevenDayReset = futureEpoch,
-        };
-
-        var snapshot = ClaudeProvider.BuildWeeklySnapshot(limits);
-
-        Assert.NotNull(snapshot);
-        Assert.Equal(0.4, snapshot!.UsedPercent);
-        Assert.NotNull(snapshot.ResetDescription);
-        Assert.NotNull(snapshot.ResetsAt);
     }
 
     [Fact]
@@ -790,14 +570,6 @@ public class CrapScoreImprovementTests
 
         Assert.False(result.Success);
         Assert.Contains("credit fields", result.ErrorMessage, StringComparison.OrdinalIgnoreCase);
-    }
-
-    [Fact]
-    public void ParseRateLimitHeaders_NoHeaders_ReturnsNull()
-    {
-        var response = new HttpResponseMessage(HttpStatusCode.OK);
-        var result = ClaudeProvider.ParseRateLimitHeaders(response.Headers);
-        Assert.Null(result);
     }
 
     [Fact]

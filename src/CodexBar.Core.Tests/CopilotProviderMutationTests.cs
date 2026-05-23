@@ -13,20 +13,6 @@ public class CopilotProviderMutationTests
 {
     // === FormatDisplayName ===
     [Fact]
-    public void FormatDisplayName_IndividualPro_ReturnsPro()
-    {
-        var result = CopilotProvider.FormatDisplayName("testuser", "individual_pro");
-        Assert.Equal("Copilot · testuser (Pro)", result);
-    }
-
-    [Fact]
-    public void FormatDisplayName_Business_ReturnsBiz()
-    {
-        var result = CopilotProvider.FormatDisplayName("testuser", "business");
-        Assert.Equal("Copilot · testuser (Biz)", result);
-    }
-
-    [Fact]
     public void FormatDisplayName_UnknownPlan_ReplacesUnderscores()
     {
         var result = CopilotProvider.FormatDisplayName("testuser", "some_plan");
@@ -137,32 +123,6 @@ public class CopilotProviderMutationTests
 
     // === ParseReset ===
     [Fact]
-    public void ParseReset_NullDate_ReturnsNulls()
-    {
-        var (resetsAt, description) = CopilotProvider.ParseReset(null);
-        Assert.Null(resetsAt);
-        Assert.Null(description);
-    }
-
-    [Fact]
-    public void ParseReset_InvalidDate_ReturnsNulls()
-    {
-        var (resetsAt, description) = CopilotProvider.ParseReset("not-a-date");
-        Assert.Null(resetsAt);
-        Assert.Null(description);
-    }
-
-    [Fact]
-    public void ParseReset_PastDate_ReturnsOverdue()
-    {
-        var past = DateTimeOffset.UtcNow.AddHours(-1).ToString("O");
-        var (resetsAt, description) = CopilotProvider.ParseReset(past);
-
-        Assert.NotNull(resetsAt);
-        Assert.Equal("Reset overdue", description);
-    }
-
-    [Fact]
     public void ParseReset_LessThan1Day_ShowsHoursMinutes()
     {
         var future = DateTimeOffset.UtcNow.AddHours(5).AddMinutes(30).ToString("O");
@@ -194,13 +154,6 @@ public class CopilotProviderMutationTests
     }
 
     // === ExtractUsername ===
-    [Fact]
-    public void ExtractUsername_NoMatch_ReturnsNull()
-    {
-        var result = CopilotProvider.ExtractUsername("some random line");
-        Assert.Null(result);
-    }
-
     [Fact]
     public void ExtractUsername_AccountAtEnd_ReturnsEntireRest()
     {

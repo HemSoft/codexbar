@@ -32,14 +32,6 @@ public class OpenRouterProviderMutationTests : IDisposable
 
     // === IsAvailableAsync ===
     [Fact]
-    public async Task IsAvailableAsync_Disabled_ReturnsFalse()
-    {
-        var settings = CreateSettings(enabled: false, apiKey: "key");
-        var provider = CreateProvider(settings: settings);
-        Assert.False(await provider.IsAvailableAsync());
-    }
-
-    [Fact]
     public async Task IsAvailableAsync_NoKey_ReturnsFalse()
     {
         var settings = CreateSettings(enabled: true, apiKey: null);
@@ -135,17 +127,6 @@ public class OpenRouterProviderMutationTests : IDisposable
 
         Assert.False(result.Success);
         Assert.Contains("'data'", result.ErrorMessage);
-    }
-
-    [Fact]
-    public async Task FetchUsageAsync_MissingCreditFields_ReturnsFailure()
-    {
-        var json = """{"data": {"something_else": 123}}""";
-        var provider = CreateProvider(response: OkJson(json));
-        var result = await provider.FetchUsageAsync();
-
-        Assert.False(result.Success);
-        Assert.Contains("credit fields", result.ErrorMessage);
     }
 
     [Fact]

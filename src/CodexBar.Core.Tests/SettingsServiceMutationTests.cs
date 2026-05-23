@@ -151,17 +151,6 @@ public class SettingsServiceMutationTests : IDisposable
 
     // === ZoomLevel clamping ===
     [Fact]
-    public void Save_ZoomLevelZero_ClampedToOne()
-    {
-        var settings = this._sut.Load();
-        settings.ZoomLevel = 0;
-        this._sut.Save(settings);
-
-        var loaded = this._sut.Load();
-        Assert.Equal(1.0, loaded.ZoomLevel);
-    }
-
-    [Fact]
     public void Save_ZoomLevelNegative_ClampedToOne()
     {
         var settings = this._sut.Load();
@@ -241,16 +230,6 @@ public class SettingsServiceMutationTests : IDisposable
 
     // === GetApiKey ===
     [Fact]
-    public void GetApiKey_ExistingProvider_ReturnsKey()
-    {
-        var settings = this._sut.Load();
-        settings.Providers![ProviderId.OpenRouter.ToString()]!.ApiKey = "my-key";
-        this._sut.Save(settings);
-
-        Assert.Equal("my-key", this._sut.GetApiKey(ProviderId.OpenRouter));
-    }
-
-    [Fact]
     public void GetApiKey_MissingProvider_ReturnsNull()
     {
         Assert.Null(this._sut.GetApiKey(ProviderId.OpenCodeZen));
@@ -262,16 +241,6 @@ public class SettingsServiceMutationTests : IDisposable
     {
         // Provider not in settings → defaults to enabled
         Assert.True(this._sut.IsProviderEnabled(ProviderId.OpenCodeZen));
-    }
-
-    [Fact]
-    public void IsProviderEnabled_ExplicitlyDisabled_ReturnsFalse()
-    {
-        var settings = this._sut.Load();
-        settings.Providers![ProviderId.Claude.ToString()]!.Enabled = false;
-        this._sut.Save(settings);
-
-        Assert.False(this._sut.IsProviderEnabled(ProviderId.Claude));
     }
 
     [Fact]
@@ -307,18 +276,6 @@ public class SettingsServiceMutationTests : IDisposable
     {
         var accounts = this._sut.GetCopilotAccounts();
         Assert.Empty(accounts);
-    }
-
-    [Fact]
-    public void GetCopilotAccounts_Configured_ReturnsList()
-    {
-        var settings = this._sut.Load();
-        settings.CopilotAccounts = ["acct1", "acct2"];
-        this._sut.Save(settings);
-
-        var accounts = this._sut.GetCopilotAccounts();
-        Assert.Equal(2, accounts.Count);
-        Assert.Contains("acct1", accounts);
     }
 
     // === SessionBaseline ===

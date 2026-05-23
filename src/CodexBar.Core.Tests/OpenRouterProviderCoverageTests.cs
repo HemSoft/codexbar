@@ -29,26 +29,6 @@ public class OpenRouterProviderCoverageTests : IDisposable
     }
 
     [Fact]
-    public async Task FetchUsageAsync_NoApiKey_ReturnsFailure()
-    {
-        var settings = Substitute.For<ISettingsService>();
-        settings.IsProviderEnabled(ProviderId.OpenRouter).Returns(true);
-        settings.GetApiKey(ProviderId.OpenRouter).Returns((string?)null);
-
-        var factory = Substitute.For<IHttpClientFactory>();
-
-        var provider = new OpenRouterProvider(
-            NullLogger<OpenRouterProvider>.Instance,
-            factory,
-            settings);
-
-        var result = await provider.FetchUsageAsync();
-
-        Assert.False(result.Success);
-        Assert.Contains("No API key", result.ErrorMessage);
-    }
-
-    [Fact]
     public async Task FetchUsageAsync_EmptyApiKey_ReturnsFailure()
     {
         var settings = Substitute.For<ISettingsService>();

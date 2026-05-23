@@ -72,9 +72,9 @@ public class StartupManagerCoverageTests : IDisposable
             return;
         }
 
-        // On Windows, just verify it doesn't throw and returns a bool
-        var result = StartupManager.IsEnabled();
-        Assert.IsType<bool>(result);
+        // On Windows, verify it returns a value without throwing
+        var ex = Record.Exception(() => StartupManager.IsEnabled());
+        Assert.Null(ex);
     }
 
     /// <summary>

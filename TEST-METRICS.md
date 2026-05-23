@@ -8,11 +8,44 @@
 | Branch coverage %       | 100%   | 100%  | —     |
 | Function coverage %     | 100%   | 100%  | —     |
 | Mutation score %        | 84.23% | 84.23%| —     |
-| Total test count        | 1607   | 1610  | +3    |
+| Total test count        | 1607   | 1230  | -377  |
+| Duplicate tests removed | —      | 103   | -103  |
 | Test types present      | Unit   | Unit  | —     |
 | Avg assertions per test | 1.93   | 1.95  | +0.02 |
 
 ## Improvements Made
+
+### Phase 7 — Deduplicate Test Suite & Fix Tautological Assertions
+
+**Removed 103 duplicate test methods** across 22 files:
+
+- **BranchCoverageTests.cs**: Removed 12 tests duplicated in canonical provider files
+- **CrapScoreImprovementTests.cs**: Removed 18 tests duplicated in canonical provider files
+- **MutationKillingRound2Tests.cs**: Removed 5 tests duplicated in canonical provider files
+- **ClaudeProviderFetchTests.cs**: Removed 6 static method tests (kept in ClaudeProviderTests)
+- **ClaudeProviderFullCoverageTests.cs**: Removed 9 static method tests
+- **ClaudeProviderMutationTests.cs**: Removed 7 static method tests
+- **ClaudeProviderAsyncTests.cs**: Removed 4 static method tests
+- **ClaudeProviderEdgeTests.cs**: Removed 1 static method test
+- **MoreClaudeProviderTests.cs**: Removed 7 static method tests
+- **CopilotProviderMutationTests.cs**: Removed 6 tests (ParseReset, ExtractUsername, FormatDisplayName)
+- **CopilotProviderFullCoverageTests.cs**: Removed 4 tests (IsAvailableAsync, ExtractUsernamesFromGhStatus, ComputeUsageMetrics)
+- **SettingsServiceMutationTests.cs**: Removed 4 tests (IsProviderEnabled, GetApiKey, Save_ZoomLevel, GetCopilotAccounts)
+- **UsageRefreshServiceMutationTests.cs**: Removed 3 tests (StopAsync, RefreshAllAsync, RaisesUsageUpdated)
+- **ClaudeProviderAsyncTests.cs**: Removed 7 tests (IsAvailableAsync, BuildUsageBars, BuildWeeklySnapshot)
+- **OpenCodeZenProviderMutationTests.cs**: Removed 5 tests (IsAvailableAsync, FetchUsageAsync)
+- **MoreCopilotProviderTests.cs**: Removed 2 tests (ParseReset, ComputeUsageMetrics)
+- **OpenRouterProviderMutationTests.cs**: Removed 2 tests (IsAvailableAsync, FetchUsageAsync)
+- **OpenRouterProviderCoverageTests.cs**: Removed 1 test (FetchUsageAsync)
+- **UsageRefreshServiceMoreTests.cs**: Removed 1 test (Dispose)
+
+**Fixed 1 tautological assertion**:
+
+- **StartupManagerCoverageTests.cs**: `Assert.IsType<bool>(result)` (always true for bool)
+  → replaced with `Record.Exception` + `Assert.Null(ex)` pattern
+
+Test count: 1333 → 1230 (removed 103 duplicates, zero unique tests lost)
+Coverage: 100% line, 100% branch (unchanged)
 
 ### Phase 6 — Eliminate Assertion-less Tests & Rename "DoesNotThrow" Methods
 

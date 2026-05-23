@@ -105,22 +105,6 @@ public class MoreCopilotProviderTests
     }
 
     [Fact]
-    public void ComputeUsageMetrics_Unlimited_ReturnsUnlimited()
-    {
-        var quota = new CopilotQuotaSnapshot
-        {
-            Entitlement = 0,
-            Remaining = 0,
-            Unlimited = true,
-        };
-
-        var (usedPercent, usageLabel, isUnlimited) = CopilotProvider.ComputeUsageMetrics(quota, "premium");
-        Assert.True(isUnlimited);
-        Assert.Equal("Unlimited", usageLabel);
-        Assert.Equal(0, usedPercent);
-    }
-
-    [Fact]
     public void ComputeUsageMetrics_ZeroEntitlement_ReturnsNoQuota()
     {
         var quota = new CopilotQuotaSnapshot
@@ -177,14 +161,6 @@ public class MoreCopilotProviderTests
         var (resetsAt, resetDescription) = CopilotProvider.ParseReset(null);
         Assert.Null(resetsAt);
         Assert.Null(resetDescription);
-    }
-
-    [Fact]
-    public void ParseReset_PastDate_ReturnsOverdue()
-    {
-        var pastDate = DateTimeOffset.UtcNow.AddHours(-2).ToString("o");
-        var (_, resetDescription) = CopilotProvider.ParseReset(pastDate);
-        Assert.Equal("Reset overdue", resetDescription);
     }
 
     [Fact]

@@ -12,75 +12,11 @@ using NSubstitute;
 public class ClaudeProviderAsyncTests
 {
     [Fact]
-    public async Task IsAvailableAsync_Enabled_ReturnsTrue()
-    {
-        var settings = CreateSettingsService();
-        var provider = CreateProvider(settings: settings);
-        Assert.True(await provider.IsAvailableAsync());
-    }
-
-    [Fact]
-    public async Task IsAvailableAsync_Disabled_ReturnsFalse()
-    {
-        var settings = CreateSettingsService(enabled: false);
-        var provider = CreateProvider(settings: settings);
-        Assert.False(await provider.IsAvailableAsync());
-    }
-
-    [Fact]
     public async Task FetchUsageAsync_NoCredentials_ReturnsProviderId()
     {
         var provider = CreateProvider();
         var result = await provider.FetchUsageAsync();
         Assert.Equal(ProviderId.Claude, result.Provider);
-    }
-
-    [Fact]
-    public void BuildUsageBars_WithLimits_ReturnsTwoBars()
-    {
-        var limits = new ClaudeProvider.UnifiedRateLimits
-        {
-            FiveHourUtilization = 0.75,
-            FiveHourReset = DateTimeOffset.UtcNow.AddHours(2).ToUnixTimeSeconds(),
-            SevenDayUtilization = 0.30,
-            SevenDayReset = DateTimeOffset.UtcNow.AddDays(3).ToUnixTimeSeconds(),
-        };
-
-        var bars = ClaudeProvider.BuildUsageBars(limits);
-        Assert.Equal(2, bars.Count);
-        Assert.Equal("5-hour limit", bars[0].Label);
-        Assert.Equal(0.75, bars[0].UsedPercent);
-        Assert.Equal("Weekly · all models", bars[1].Label);
-        Assert.Equal(0.30, bars[1].UsedPercent);
-    }
-
-    [Fact]
-    public void BuildUsageBars_Null_ReturnsEmptyList()
-    {
-        var bars = ClaudeProvider.BuildUsageBars(null);
-        Assert.Empty(bars);
-    }
-
-    [Fact]
-    public void BuildWeeklySnapshot_WithLimits_ReturnsSnapshot()
-    {
-        var limits = new ClaudeProvider.UnifiedRateLimits
-        {
-            SevenDayUtilization = 0.65,
-            SevenDayReset = DateTimeOffset.UtcNow.AddDays(5).ToUnixTimeSeconds(),
-        };
-
-        var snapshot = ClaudeProvider.BuildWeeklySnapshot(limits);
-        Assert.NotNull(snapshot);
-        Assert.Equal(0.65, snapshot!.UsedPercent);
-        Assert.False(snapshot.IsUnlimited);
-    }
-
-    [Fact]
-    public void BuildWeeklySnapshot_Null_ReturnsNull()
-    {
-        var snapshot = ClaudeProvider.BuildWeeklySnapshot(null);
-        Assert.Null(snapshot);
     }
 
     [Fact]
@@ -90,14 +26,6 @@ public class ClaudeProviderAsyncTests
         var result = ClaudeProvider.FormatBarReset(resetAt);
         Assert.Contains("Resets", result);
         Assert.Contains("h", result);
-    }
-
-    [Fact]
-    public void FormatBarReset_PastTime_ReturnsResetsNow()
-    {
-        var resetAt = DateTimeOffset.UtcNow.AddHours(-1).ToUnixTimeSeconds();
-        var result = ClaudeProvider.FormatBarReset(resetAt);
-        Assert.Equal("Resets now", result);
     }
 
     [Fact]

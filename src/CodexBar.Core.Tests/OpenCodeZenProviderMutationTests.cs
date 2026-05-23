@@ -93,22 +93,6 @@ public class OpenCodeZenProviderMutationTests : IDisposable
 
     // === Credential resolution ===
     [Fact]
-    public async Task IsAvailableAsync_Disabled_ReturnsFalse()
-    {
-        var settings = CreateSettings(enabled: false);
-        var provider = CreateProvider(settings: settings);
-        Assert.False(await provider.IsAvailableAsync());
-    }
-
-    [Fact]
-    public async Task IsAvailableAsync_NoWorkspaceId_ReturnsFalse()
-    {
-        var settings = CreateSettings(enabled: true, workspaceId: null, apiKey: "cookie");
-        var provider = CreateProvider(settings: settings);
-        Assert.False(await provider.IsAvailableAsync());
-    }
-
-    [Fact]
     public async Task IsAvailableAsync_NoCookie_ReturnsFalse()
     {
         var settings = CreateSettings(enabled: true, workspaceId: "ws", apiKey: null);
@@ -122,17 +106,6 @@ public class OpenCodeZenProviderMutationTests : IDisposable
         var settings = CreateSettings(enabled: true, workspaceId: "ws", apiKey: "cookie");
         var provider = CreateProvider(settings: settings);
         Assert.True(await provider.IsAvailableAsync());
-    }
-
-    [Fact]
-    public async Task FetchUsageAsync_NoWorkspaceId_ReturnsFailure()
-    {
-        var settings = CreateSettings(enabled: true, workspaceId: null, apiKey: "cookie");
-        var provider = CreateProvider(settings: settings);
-        var result = await provider.FetchUsageAsync();
-
-        Assert.False(result.Success);
-        Assert.Contains("WORKSPACE_ID", result.ErrorMessage);
     }
 
     [Fact]
@@ -319,16 +292,6 @@ public class OpenCodeZenProviderMutationTests : IDisposable
 
     // === HTTP error handling ===
     [Fact]
-    public async Task FetchUsageAsync_401_ReturnsAuthFailure()
-    {
-        var provider = CreateProvider(response: new HttpResponseMessage(HttpStatusCode.Unauthorized));
-        var result = await provider.FetchUsageAsync();
-
-        Assert.False(result.Success);
-        Assert.Contains("Auth cookie rejected", result.ErrorMessage);
-    }
-
-    [Fact]
     public async Task FetchUsageAsync_403_ReturnsAuthFailure()
     {
         var provider = CreateProvider(response: new HttpResponseMessage(HttpStatusCode.Forbidden));
@@ -336,16 +299,6 @@ public class OpenCodeZenProviderMutationTests : IDisposable
 
         Assert.False(result.Success);
         Assert.Contains("Auth cookie rejected", result.ErrorMessage);
-    }
-
-    [Fact]
-    public async Task FetchUsageAsync_500_ReturnsHttpError()
-    {
-        var provider = CreateProvider(response: new HttpResponseMessage(HttpStatusCode.InternalServerError));
-        var result = await provider.FetchUsageAsync();
-
-        Assert.False(result.Success);
-        Assert.Contains("HTTP 500", result.ErrorMessage);
     }
 
     [Fact]
