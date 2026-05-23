@@ -141,7 +141,11 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
             items.Add(ToUsageItem(username, result));
         }
 
-        // Aggregate: use the first successful premium snapshot for the legacy SessionUsage field
+        return BuildFetchResult(accountResults, items);
+    }
+
+    private static ProviderUsageResult BuildFetchResult(List<CopilotAccountResult> accountResults, List<UsageItem> items)
+    {
         var firstSuccess = accountResults.FirstOrDefault(r => r.Success && r.PremiumInteractions is not null);
         UsageSnapshot? aggregateSession = null;
         if (firstSuccess?.PremiumInteractions is not null)
@@ -178,33 +182,36 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
         await this._accountsLock.WaitAsync(ct);
         try
         {
-            if (this._cachedAccounts is null or { Count: 0 })
-            {
-                // Respect negative-result cache to avoid hammering gh when it's not installed/configured
-                if (DateTime.UtcNow < this._emptyDiscoveryCachedUntil)
-                {
-                    return [];
-                }
-
-                var discoveryOverride = this.AccountDiscoveryOverride;
-                this._cachedAccounts = discoveryOverride is not null
-                    ? await discoveryOverride(ct)
-                    : await this.DiscoverGhAccountsAsync(ct);
-            }
-
-            // Cache empty results for 5 minutes to avoid repeated process spawning on persistent failures
-            if (this._cachedAccounts is { Count: 0 })
-            {
-                this._emptyDiscoveryCachedUntil = DateTime.UtcNow.AddMinutes(5);
-                this._cachedAccounts = null;
-            }
-
-            return this._cachedAccounts ?? [];
+            return await this.DiscoverAccountsUnderLockAsync(ct);
         }
         finally
         {
             this._accountsLock.Release();
         }
+    }
+
+    private async Task<List<string>> DiscoverAccountsUnderLockAsync(CancellationToken ct)
+    {
+        if (this._cachedAccounts is null or { Count: 0 })
+        {
+            if (DateTime.UtcNow < this._emptyDiscoveryCachedUntil)
+            {
+                return [];
+            }
+
+            var discoveryOverride = this.AccountDiscoveryOverride;
+            this._cachedAccounts = discoveryOverride is not null
+                ? await discoveryOverride(ct)
+                : await this.DiscoverGhAccountsAsync(ct);
+        }
+
+        if (this._cachedAccounts is { Count: 0 })
+        {
+            this._emptyDiscoveryCachedUntil = DateTime.UtcNow.AddMinutes(5);
+            this._cachedAccounts = null;
+        }
+
+        return this._cachedAccounts ?? [];
     }
 
     /// <summary>
@@ -299,7 +306,7 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
         }
     }
 
-    private static void BestEffortKillAndDrain(Process process, Task<string> stderrTask, Task<string> stdoutTask)
+    internal static void BestEffortKillAndDrain(Process process, Task<string> stderrTask, Task<string> stdoutTask)
     {
         try
         {
@@ -428,11 +435,7 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
             return CopilotAccountResult.Error(username, "Empty API response");
         }
 
-        logger?.LogDebug(
-            "Copilot {User} ({Plan}): premium remaining={Remaining}/{Entitlement}",
-            username, data.CopilotPlan ?? "unknown",
-            data.QuotaSnapshots?.PremiumInteractions?.Remaining ?? 0,
-            data.QuotaSnapshots?.PremiumInteractions?.Entitlement ?? 0);
+        LogQuotaDebug(logger, username, data);
 
         return new CopilotAccountResult
         {
@@ -444,6 +447,22 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
             QuotaResetDateUtc = data.QuotaResetDateUtc,
             Success = true,
         };
+    }
+
+    private static void LogQuotaDebug(ILogger? logger, string username, CopilotUserResponse data)
+    {
+        if (logger is null)
+        {
+            return;
+        }
+
+        var plan = data.CopilotPlan ?? "unknown";
+        var premium = data.QuotaSnapshots?.PremiumInteractions;
+        logger.LogDebug(
+            "Copilot {User} ({Plan}): premium remaining={Remaining}/{Entitlement}",
+            username, plan,
+            premium?.Remaining ?? 0,
+            premium?.Entitlement ?? 0);
     }
 
     /// <summary>
@@ -619,25 +638,30 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
         };
     }
 
+    private static readonly Dictionary<string, string> PlanLabels = new(StringComparer.Ordinal)
+    {
+        ["enterprise"] = "Ent",
+        ["individual_pro"] = "Pro",
+        ["business"] = "Biz",
+    };
+
     internal static string FormatDisplayName(string username, string? plan)
     {
-        var planLabel = plan switch
-        {
-            "enterprise" => "Ent",
-            "individual_pro" => "Pro",
-            "business" => "Biz",
-            _ => plan?.Replace("_", " "),
-        };
+        var planLabel = plan is not null && PlanLabels.TryGetValue(plan, out var label)
+            ? label
+            : plan?.Replace("_", " ");
 
         return planLabel is not null ? $"Copilot · {username} ({planLabel})" : $"Copilot · {username}";
     }
 
-    internal static string FormatQuotaLabel(string quotaLabel) => quotaLabel switch
+    private static readonly Dictionary<string, string> QuotaLabels = new(StringComparer.Ordinal)
     {
-        "premium" => "Premium interactions",
-        "chat" => "Chat",
-        _ => quotaLabel,
+        ["premium"] = "Premium interactions",
+        ["chat"] = "Chat",
     };
+
+    internal static string FormatQuotaLabel(string quotaLabel) =>
+        QuotaLabels.TryGetValue(quotaLabel, out var label) ? label : quotaLabel;
 
     private static UsageSnapshot BuildUsageSnapshot(CopilotQuotaSnapshot quota, string? resetDateUtc, string quotaLabel = "premium")
     {

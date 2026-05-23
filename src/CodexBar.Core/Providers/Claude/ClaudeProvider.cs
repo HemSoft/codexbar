@@ -62,11 +62,16 @@ public sealed class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFa
             ["claude-opus-4-7"] = (5.0, 25.0, 6.25, 0.50),
             ["claude-opus-4-6"] = (5.0, 25.0, 6.25, 0.50),
             ["claude-opus-4-5"] = (5.0, 25.0, 6.25, 0.50),
+            ["claude-opus"] = (5.0, 25.0, 6.25, 0.50),
+            ["opus"] = (5.0, 25.0, 6.25, 0.50),
             ["claude-sonnet-4-6"] = (3.0, 15.0, 3.75, 0.30),
             ["claude-sonnet-4-5"] = (3.0, 15.0, 3.75, 0.30),
             ["claude-sonnet-4"] = (3.0, 15.0, 3.75, 0.30),
+            ["claude-sonnet"] = (3.0, 15.0, 3.75, 0.30),
             ["claude-haiku-4-5"] = (1.0, 5.0, 1.25, 0.10),
             ["claude-haiku-3-5"] = (0.80, 4.0, 1.0, 0.08),
+            ["claude-haiku"] = (1.0, 5.0, 1.25, 0.10),
+            ["haiku"] = (1.0, 5.0, 1.25, 0.10),
         };
 
     // Cache the last known rate-limit data so we don't probe the API on every refresh.
@@ -261,7 +266,31 @@ public sealed class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFa
         ClaudeAccountInfo? accountInfo)
     {
         var usedPercent = limits.FiveHourUtilization;
+        var usageLabel = BuildStatusLabel(subscriptionType, totalTokens, equivalentCost, accountInfo);
 
+        var resetDesc = limits.FiveHourReset > 0
+            ? FormatResetCountdown(limits.FiveHourReset, "5-hour limit")
+            : null;
+
+        return new UsageSnapshot
+        {
+            UsedPercent = usedPercent,
+            UsageLabel = usageLabel,
+            ResetsAt = limits.FiveHourReset > 0
+                ? DateTimeOffset.FromUnixTimeSeconds(limits.FiveHourReset)
+                : null,
+            ResetDescription = resetDesc,
+            IsUnlimited = false,
+            CapturedAt = DateTimeOffset.UtcNow,
+        };
+    }
+
+    internal static string BuildStatusLabel(
+        string subscriptionType,
+        long totalTokens,
+        double equivalentCost,
+        ClaudeAccountInfo? accountInfo)
+    {
         var statusParts = new List<string> { $"{subscriptionType} plan" };
         if (equivalentCost > 0)
         {
@@ -277,21 +306,7 @@ public sealed class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFa
             statusParts.Add("extra usage on");
         }
 
-        var resetDesc = limits.FiveHourReset > 0
-            ? FormatResetCountdown(limits.FiveHourReset, "5-hour limit")
-            : null;
-
-        return new UsageSnapshot
-        {
-            UsedPercent = usedPercent,
-            UsageLabel = string.Join(" · ", statusParts),
-            ResetsAt = limits.FiveHourReset > 0
-                ? DateTimeOffset.FromUnixTimeSeconds(limits.FiveHourReset)
-                : null,
-            ResetDescription = resetDesc,
-            IsUnlimited = false,
-            CapturedAt = DateTimeOffset.UtcNow,
-        };
+        return string.Join(" · ", statusParts);
     }
 
     internal static UsageSnapshot? BuildWeeklySnapshot(UnifiedRateLimits? limits)
@@ -596,11 +611,7 @@ public sealed class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFa
 
             var json = await response.Content.ReadAsStringAsync(ct);
             using var doc = JsonDocument.Parse(json);
-            var root = doc.RootElement;
-
-            var newAccessToken = root.TryGetProperty("access_token", out var at) ? at.GetString() : null;
-            var newRefreshToken = root.TryGetProperty("refresh_token", out var rt) ? rt.GetString() : null;
-            var newExpiresAt = root.TryGetProperty("expires_at", out var ea) ? ea.GetInt64() : 0;
+            var (newAccessToken, newRefreshToken, newExpiresAt) = ParseTokenRefreshResponse(doc.RootElement);
 
             if (string.IsNullOrEmpty(newAccessToken))
             {
@@ -629,6 +640,11 @@ public sealed class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFa
             return null;
         }
     }
+
+    internal static (string? AccessToken, string? RefreshToken, long ExpiresAt) ParseTokenRefreshResponse(JsonElement root) =>
+        (root.TryGetProperty("access_token", out var at) ? at.GetString() : null,
+         root.TryGetProperty("refresh_token", out var rt) ? rt.GetString() : null,
+         root.TryGetProperty("expires_at", out var ea) ? ea.GetInt64() : 0);
 
     private void PersistCredentials(ClaudeCredentials credentials)
     {
@@ -847,18 +863,20 @@ public sealed class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFa
 
         foreach (var prop in modelUsage.EnumerateObject())
         {
-            usages.Add(new ClaudeModelUsage
-            {
-                ModelId = prop.Name,
-                InputTokens = prop.Value.TryGetProperty("inputTokens", out var it) ? it.GetInt64() : 0,
-                OutputTokens = prop.Value.TryGetProperty("outputTokens", out var ot) ? ot.GetInt64() : 0,
-                CacheReadInputTokens = prop.Value.TryGetProperty("cacheReadInputTokens", out var crit) ? crit.GetInt64() : 0,
-                CacheCreationInputTokens = prop.Value.TryGetProperty("cacheCreationInputTokens", out var ccit) ? ccit.GetInt64() : 0,
-            });
+            usages.Add(ParseSingleModelUsage(prop.Name, prop.Value));
         }
 
         return usages;
     }
+
+    internal static ClaudeModelUsage ParseSingleModelUsage(string modelId, JsonElement value) => new()
+    {
+        ModelId = modelId,
+        InputTokens = value.TryGetProperty("inputTokens", out var it) ? it.GetInt64() : 0,
+        OutputTokens = value.TryGetProperty("outputTokens", out var ot) ? ot.GetInt64() : 0,
+        CacheReadInputTokens = value.TryGetProperty("cacheReadInputTokens", out var crit) ? crit.GetInt64() : 0,
+        CacheCreationInputTokens = value.TryGetProperty("cacheCreationInputTokens", out var ccit) ? ccit.GetInt64() : 0,
+    };
 
     internal static long CalculateTotalTokens(ClaudeStatsCache? stats)
     {
@@ -904,7 +922,6 @@ public sealed class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFa
     /// <returns></returns>
     internal static (double InputPerMTok, double OutputPerMTok, double CacheWritePerMTok, double CacheReadPerMTok) ResolvePricing(string modelId)
     {
-        // Exact match first
         if (ModelPricing.TryGetValue(modelId, out var exactMatch))
         {
             return exactMatch;
@@ -922,12 +939,11 @@ public sealed class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFa
             }
         }
 
-        if (bestMatch is not null)
-        {
-            return bestMatch.Value;
-        }
+        return bestMatch ?? ResolvePricingByFamily(modelId);
+    }
 
-        // Fallback by model family
+    private static (double InputPerMTok, double OutputPerMTok, double CacheWritePerMTok, double CacheReadPerMTok) ResolvePricingByFamily(string modelId)
+    {
         if (modelId.Contains("opus", StringComparison.OrdinalIgnoreCase))
         {
             return ModelPricing["claude-opus-4-7"];
@@ -938,7 +954,6 @@ public sealed class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFa
             return ModelPricing["claude-haiku-4-5"];
         }
 
-        // Default to Sonnet pricing
         return ModelPricing["claude-sonnet-4-6"];
     }
 

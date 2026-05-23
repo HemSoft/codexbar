@@ -787,6 +787,7 @@ public class ClaudeTokenRefreshBranchTests : IDisposable
 /// <summary>
 /// Tests for StartupManager branch where TestStore is null (falls through to system).
 /// </summary>
+[Collection("StartupManager")]
 public class StartupManagerSystemFallbackTests
 {
     /// <summary>

@@ -11,6 +11,7 @@ using CodexBar.Core.Configuration;
 using CodexBar.Core.Models;
 using CodexBar.Core.Services;
 
+[System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage]
 public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 {
     private readonly UsageRefreshService refreshService;

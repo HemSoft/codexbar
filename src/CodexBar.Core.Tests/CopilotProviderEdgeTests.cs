@@ -318,9 +318,8 @@ public class CopilotProviderEdgeTests
     [Fact]
     public void ParseReset_ExactlyTomorrow_ReturnsTomorrowLabel()
     {
-        var tomorrow = new DateTimeOffset(
-            DateTime.UtcNow.Date.AddDays(1).AddHours(12),
-            TimeSpan.Zero).ToString("o");
+        // Use 36 hours from now to guarantee TotalDays is between 1 and 2
+        var tomorrow = DateTimeOffset.UtcNow.AddHours(36).ToString("o");
         var (_, description) = CopilotProvider.ParseReset(tomorrow);
 
         Assert.Contains("tomorrow", description!, StringComparison.OrdinalIgnoreCase);

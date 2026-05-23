@@ -82,7 +82,7 @@ file sealed class FileLogger(string categoryName, FileLoggerProvider provider) :
         var message = $"{timestamp} [{level}] {categoryName}: {formatter(state, exception)}";
         if (exception is not null)
         {
-            message += Environment.NewLine + exception;
+            message += Environment.NewLine + exception.ToString();
         }
 
         provider.Write(message);

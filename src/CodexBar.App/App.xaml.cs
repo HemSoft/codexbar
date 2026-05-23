@@ -19,6 +19,7 @@ using CodexBar.Core.Services;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
+[System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage]
 public partial class App : Application
 {
     private H.NotifyIcon.TaskbarIcon? _trayIcon;

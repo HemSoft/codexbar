@@ -518,7 +518,7 @@ public class ClaudeProviderFileIoTests : IDisposable
         Assert.Equal(ProviderId.Claude, result.Provider);
         Assert.NotNull(result.SessionUsage);
         Assert.NotNull(result.WeeklyUsage);
-        Assert.Contains("Test User", result.Items[0].DisplayName);
+        Assert.Contains("Test User", result.Items![0].DisplayName);
     }
 
     [Fact]

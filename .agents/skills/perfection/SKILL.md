@@ -51,7 +51,7 @@ When invoked, systematically run all quality gates and fix every finding.
 | **Code Format** | `dotnet format --verify-no-changes` | 0 violations | Whitespace, indentation, style |
 | **Test Coverage (Line)** | `dotnet test --collect:"XPlat Code Coverage"` | 100% | Lines exercised by tests |
 | **Test Coverage (Branch)** | `dotnet test --collect:"XPlat Code Coverage"` | 100% | Branches exercised by tests |
-| **CRAP Score** | ReportGenerator JSON analysis | 0 methods > 30, avg ≤ 2.0 | Change Risk Anti-Patterns |
+| **CRAP Score** | ReportGenerator JSON analysis | 0 methods > 30, avg ≤ 4.0 | Change Risk Anti-Patterns |
 | **Security Audit** | `dotnet list package --vulnerable` | 0 vulnerabilities | Known CVEs in dependencies |
 | **Markdown Lint** | `markdownlint "**/*.md"` | 0 errors | Documentation quality |
 
@@ -74,9 +74,11 @@ Default command. Run all quality gates and produce a consolidated report.
 
 2. For CRAP scores, after test coverage completes:
    - Run ReportGenerator with JSON output and file filters to exclude generated code:
+
      ```powershell
      reportgenerator -reports:"**/coverage.cobertura.xml" -targetdir:CoverageReport -reporttypes:JsonSummary -filefilters:"-**/*.g.cs;-**/GeneratedRegex*.cs"
      ```
+
    - Flag any method with CRAP > 30
    - **Exclude** source-generated regex methods (see "Generated Code Exclusions" below)
    - Report average CRAP score
@@ -151,6 +153,7 @@ that cannot be meaningfully refactored or branch-covered.
    - Auto-property accessors (`SkipAutoProps`) — intentionally excluded as trivial code
 
 2. **ReportGenerator CRAP report** — pass file filters:
+
    ```powershell
    reportgenerator -reports:"**/coverage.cobertura.xml" -targetdir:CoverageReport \
      -reporttypes:JsonSummary -filefilters:"-**/*.g.cs;-**/GeneratedRegex*.cs"

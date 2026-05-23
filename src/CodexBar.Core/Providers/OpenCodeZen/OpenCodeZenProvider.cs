@@ -64,75 +64,22 @@ public sealed partial class OpenCodeZenProvider(
     public async Task<ProviderUsageResult> FetchUsageAsync(CancellationToken ct = default)
     {
         var (workspaceId, authCookie) = this.ResolveCredentials();
-        if (string.IsNullOrWhiteSpace(workspaceId))
-        {
-            return ProviderUsageResult.Failure(
-                ProviderId.OpenCodeZen,
-                "Configure OPENCODE_ZEN_WORKSPACE_ID or OPENCODE_GO_WORKSPACE_ID (env var) or openCodeGoWorkspaceId in settings.json.");
-        }
 
-        if (string.IsNullOrWhiteSpace(authCookie))
+        var validationError = ValidateCredentials(workspaceId, authCookie);
+        if (validationError is not null)
         {
-            return ProviderUsageResult.Failure(
-                ProviderId.OpenCodeZen,
-                "Configure OPENCODE_ZEN_AUTH_COOKIE or OPENCODE_GO_AUTH_COOKIE (env var) or providers.OpenCodeGo.apiKey in settings.json.");
+            return validationError;
         }
 
         await this.fetchLock.WaitAsync(ct);
         try
         {
-            // Serve cached result if still fresh and workspace hasn't changed
-            if (this.cached is not null &&
-                string.Equals(this.cachedWorkspaceId, workspaceId, StringComparison.Ordinal) &&
-                DateTimeOffset.UtcNow - this.lastFetch < CacheTtl)
+            if (this.TryGetCachedResult(workspaceId!, out var cachedResult))
             {
-                this.logger.LogDebug("OpenCode Zen: cached result (${Balance:F2})", this.cached);
-                return BuildResult(this.cached.Value);
+                return cachedResult;
             }
 
-            var url = $"{DashboardPrefix}{Uri.EscapeDataString(workspaceId)}{DashboardSuffix}";
-
-            using var request = new HttpRequestMessage(HttpMethod.Get, url);
-            request.Headers.Add(
-                "User-Agent",
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Gecko/20100101 Firefox/148.0");
-            request.Headers.Add("Accept", "text/html");
-            request.Headers.Add("Cookie", $"auth={authCookie}");
-
-            using var httpClient = this.httpClientFactory.CreateClient();
-            using var response = await httpClient.SendAsync(request, ct);
-
-            if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
-            {
-                return ProviderUsageResult.Failure(
-                    ProviderId.OpenCodeZen,
-                    "Auth cookie rejected. Refresh OPENCODE_GO_AUTH_COOKIE.");
-            }
-
-            if (!response.IsSuccessStatusCode)
-            {
-                return ProviderUsageResult.Failure(
-                    ProviderId.OpenCodeZen,
-                    $"Dashboard returned HTTP {(int)response.StatusCode}.");
-            }
-
-            var html = await response.Content.ReadAsStringAsync(ct);
-            var balance = ParseBalance(html);
-
-            if (balance is null)
-            {
-                return ProviderUsageResult.Failure(
-                    ProviderId.OpenCodeZen,
-                    "Could not parse balance from OpenCode Zen dashboard. " +
-                    "The dashboard markup may have changed.");
-            }
-
-            this.cached = balance;
-            this.cachedWorkspaceId = workspaceId;
-            this.lastFetch = DateTimeOffset.UtcNow;
-            this.logger.LogDebug("OpenCode Zen: ${Balance:F2} remaining", balance);
-
-            return BuildResult(balance.Value);
+            return await this.FetchFromDashboardAsync(workspaceId!, authCookie!, ct);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -153,6 +100,99 @@ public sealed partial class OpenCodeZenProvider(
         {
             this.fetchLock.Release();
         }
+    }
+
+    private static ProviderUsageResult? ValidateCredentials(string? workspaceId, string? authCookie)
+    {
+        if (string.IsNullOrWhiteSpace(workspaceId))
+        {
+            return ProviderUsageResult.Failure(
+                ProviderId.OpenCodeZen,
+                "Configure OPENCODE_ZEN_WORKSPACE_ID or OPENCODE_GO_WORKSPACE_ID (env var) or openCodeGoWorkspaceId in settings.json.");
+        }
+
+        if (string.IsNullOrWhiteSpace(authCookie))
+        {
+            return ProviderUsageResult.Failure(
+                ProviderId.OpenCodeZen,
+                "Configure OPENCODE_ZEN_AUTH_COOKIE or OPENCODE_GO_AUTH_COOKIE (env var) or providers.OpenCodeZen.apiKey or providers.OpenCodeGo.apiKey in settings.json.");
+        }
+
+        return null;
+    }
+
+    private bool TryGetCachedResult(string workspaceId, out ProviderUsageResult result)
+    {
+        if (this.cached is not null &&
+            string.Equals(this.cachedWorkspaceId, workspaceId, StringComparison.Ordinal) &&
+            DateTimeOffset.UtcNow - this.lastFetch < CacheTtl)
+        {
+            this.logger.LogDebug("OpenCode Zen: cached result (${Balance:F2})", this.cached);
+            result = BuildResult(this.cached.Value);
+            return true;
+        }
+
+        result = default!;
+        return false;
+    }
+
+    private async Task<ProviderUsageResult> FetchFromDashboardAsync(
+        string workspaceId, string authCookie, CancellationToken ct)
+    {
+        var url = $"{DashboardPrefix}{Uri.EscapeDataString(workspaceId)}{DashboardSuffix}";
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        request.Headers.Add(
+            "User-Agent",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Gecko/20100101 Firefox/148.0");
+        request.Headers.Add("Accept", "text/html");
+        request.Headers.Add("Cookie", $"auth={authCookie}");
+
+        using var httpClient = this.httpClientFactory.CreateClient();
+        using var response = await httpClient.SendAsync(request, ct);
+
+        var responseError = CheckResponseStatus(response);
+        if (responseError is not null)
+        {
+            return responseError;
+        }
+
+        var html = await response.Content.ReadAsStringAsync(ct);
+        var balance = ParseBalance(html);
+
+        if (balance is null)
+        {
+            return ProviderUsageResult.Failure(
+                ProviderId.OpenCodeZen,
+                "Could not parse balance from OpenCode Zen dashboard. " +
+                "The dashboard markup may have changed.");
+        }
+
+        this.cached = balance;
+        this.cachedWorkspaceId = workspaceId;
+        this.lastFetch = DateTimeOffset.UtcNow;
+        this.logger.LogDebug("OpenCode Zen: ${Balance:F2} remaining", balance);
+
+        return BuildResult(balance.Value);
+    }
+
+    private static ProviderUsageResult? CheckResponseStatus(HttpResponseMessage response)
+    {
+        if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+        {
+            return ProviderUsageResult.Failure(
+                ProviderId.OpenCodeZen,
+                "Auth cookie rejected. Refresh OPENCODE_ZEN_AUTH_COOKIE or OPENCODE_GO_AUTH_COOKIE.");
+        }
+
+        if (!response.IsSuccessStatusCode)
+        {
+            return ProviderUsageResult.Failure(
+                ProviderId.OpenCodeZen,
+                $"Dashboard returned HTTP {(int)response.StatusCode}.");
+        }
+
+        return null;
     }
 
     private static ProviderUsageResult BuildResult(decimal balance) =>
@@ -186,35 +226,30 @@ public sealed partial class OpenCodeZenProvider(
     /// </summary>
     private (string? workspaceId, string? authCookie) ResolveCredentials()
     {
-        var workspaceId =
-            Environment.GetEnvironmentVariable("OPENCODE_GO_WORKSPACE_ID")
-            ?? this.settings.GetOpenCodeGoWorkspaceId();
+        var workspaceId = ResolveEnvOrSetting(
+            "OPENCODE_ZEN_WORKSPACE_ID",
+            "OPENCODE_GO_WORKSPACE_ID",
+            this.settings.GetOpenCodeGoWorkspaceId());
 
-        var authCookie =
-            Environment.GetEnvironmentVariable("OPENCODE_GO_AUTH_COOKIE")
-            ?? this.settings.GetApiKey(ProviderId.OpenCodeGo);
+        var authCookie = ResolveEnvOrSetting(
+            "OPENCODE_ZEN_AUTH_COOKIE",
+            "OPENCODE_GO_AUTH_COOKIE",
+            this.settings.GetApiKey(ProviderId.OpenCodeGo));
 
-        // Also check for Zen-specific overrides
+        // Also check for Zen-specific API key override
         var zenKey = this.settings.GetApiKey(ProviderId.OpenCodeZen);
         if (!string.IsNullOrWhiteSpace(zenKey))
         {
             authCookie = zenKey;
         }
 
-        var zenWorkspaceEnv = Environment.GetEnvironmentVariable("OPENCODE_ZEN_WORKSPACE_ID");
-        if (!string.IsNullOrWhiteSpace(zenWorkspaceEnv))
-        {
-            workspaceId = zenWorkspaceEnv;
-        }
-
-        var zenCookieEnv = Environment.GetEnvironmentVariable("OPENCODE_ZEN_AUTH_COOKIE");
-        if (!string.IsNullOrWhiteSpace(zenCookieEnv))
-        {
-            authCookie = zenCookieEnv;
-        }
-
         return (workspaceId, authCookie);
     }
+
+    private static string? ResolveEnvOrSetting(string primaryEnv, string fallbackEnv, string? settingValue) =>
+        Environment.GetEnvironmentVariable(primaryEnv)
+        ?? Environment.GetEnvironmentVariable(fallbackEnv)
+        ?? settingValue;
 
     [GeneratedRegex(@"balance:(\d+)", RegexOptions.Compiled)]
     private static partial Regex BalanceRegex();

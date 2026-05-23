@@ -56,59 +56,18 @@ public sealed partial class OpenCodeGoProvider(
                 "(env vars or openCodeGoWorkspaceId + providers.OpenCodeGo.apiKey in settings.json).");
         }
 
-        // Serve cached result if still fresh
-        if (this._cached is not null && DateTimeOffset.UtcNow - this._lastFetch < CacheTtl)
+        if (this.TryGetCachedResult(out var cachedResult))
         {
-            this._logger.LogDebug("OpenCodeGo: cached result ({Age:F0}s old)", (DateTimeOffset.UtcNow - this._lastFetch).TotalSeconds);
-            return BuildResult(this._cached);
+            return cachedResult;
         }
 
         try
         {
-            var url = $"{DashboardPrefix}{Uri.EscapeDataString(workspaceId)}{DashboardSuffix}";
-
-            using var request = new HttpRequestMessage(HttpMethod.Get, url);
-            request.Headers.Add(
-                "User-Agent",
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Gecko/20100101 Firefox/148.0");
-            request.Headers.Add("Accept", "text/html");
-            request.Headers.Add("Cookie", $"auth={authCookie}");
-
-            using var httpClient = this._httpClientFactory.CreateClient();
-            using var response = await httpClient.SendAsync(request, ct);
-
-            if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
-            {
-                return ProviderUsageResult.Failure(
-                    ProviderId.OpenCodeGo,
-                    "Auth cookie rejected. Refresh OPENCODE_GO_AUTH_COOKIE.");
-            }
-
-            if (!response.IsSuccessStatusCode)
-            {
-                return ProviderUsageResult.Failure(
-                    ProviderId.OpenCodeGo,
-                    $"Dashboard returned HTTP {(int)response.StatusCode}.");
-            }
-
-            var html = await response.Content.ReadAsStringAsync(ct);
-            var usage = ParseDashboardHtml(html);
-
-            if (usage is null)
-            {
-                return ProviderUsageResult.Failure(
-                    ProviderId.OpenCodeGo,
-                    "Could not parse usage data from OpenCode Go dashboard. " +
-                    "The dashboard markup may have changed.");
-            }
-
-            this._cached = usage;
-            this._lastFetch = DateTimeOffset.UtcNow;
-            this._logger.LogDebug(
-                "OpenCodeGo: rolling={R:P0} weekly={W:P0} monthly={M:P0}",
-                usage.Rolling?.UsedPercent, usage.Weekly?.UsedPercent, usage.Monthly?.UsedPercent);
-
-            return BuildResult(usage);
+            return await this.FetchFromDashboardAsync(workspaceId, authCookie, ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
         }
         catch (TaskCanceledException)
         {
@@ -119,6 +78,79 @@ public sealed partial class OpenCodeGoProvider(
             this._logger.LogWarning(ex, "OpenCodeGo fetch failed");
             return ProviderUsageResult.Failure(ProviderId.OpenCodeGo, ex.Message);
         }
+    }
+
+    private bool TryGetCachedResult(out ProviderUsageResult result)
+    {
+        if (this._cached is not null && DateTimeOffset.UtcNow - this._lastFetch < CacheTtl)
+        {
+            this._logger.LogDebug("OpenCodeGo: cached result ({Age:F0}s old)", (DateTimeOffset.UtcNow - this._lastFetch).TotalSeconds);
+            result = BuildResult(this._cached);
+            return true;
+        }
+
+        result = default!;
+        return false;
+    }
+
+    private async Task<ProviderUsageResult> FetchFromDashboardAsync(
+        string workspaceId, string authCookie, CancellationToken ct)
+    {
+        var url = $"{DashboardPrefix}{Uri.EscapeDataString(workspaceId)}{DashboardSuffix}";
+
+        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        request.Headers.Add(
+            "User-Agent",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Gecko/20100101 Firefox/148.0");
+        request.Headers.Add("Accept", "text/html");
+        request.Headers.Add("Cookie", $"auth={authCookie}");
+
+        using var httpClient = this._httpClientFactory.CreateClient();
+        using var response = await httpClient.SendAsync(request, ct);
+
+        var responseError = CheckResponseStatus(response);
+        if (responseError is not null)
+        {
+            return responseError;
+        }
+
+        var html = await response.Content.ReadAsStringAsync(ct);
+        var usage = ParseDashboardHtml(html);
+
+        if (usage is null)
+        {
+            return ProviderUsageResult.Failure(
+                ProviderId.OpenCodeGo,
+                "Could not parse usage data from OpenCode Go dashboard. " +
+                "The dashboard markup may have changed.");
+        }
+
+        this._cached = usage;
+        this._lastFetch = DateTimeOffset.UtcNow;
+        this._logger.LogDebug(
+            "OpenCodeGo: rolling={R:P0} weekly={W:P0} monthly={M:P0}",
+            usage.Rolling?.UsedPercent, usage.Weekly?.UsedPercent, usage.Monthly?.UsedPercent);
+
+        return BuildResult(usage);
+    }
+
+    private static ProviderUsageResult? CheckResponseStatus(HttpResponseMessage response)
+    {
+        if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+        {
+            return ProviderUsageResult.Failure(
+                ProviderId.OpenCodeGo,
+                "Auth cookie rejected. Refresh OPENCODE_GO_AUTH_COOKIE.");
+        }
+
+        if (!response.IsSuccessStatusCode)
+        {
+            return ProviderUsageResult.Failure(
+                ProviderId.OpenCodeGo,
+                $"Dashboard returned HTTP {(int)response.StatusCode}.");
+        }
+
+        return null;
     }
 
     private static ProviderUsageResult BuildResult(ParsedUsage usage)
