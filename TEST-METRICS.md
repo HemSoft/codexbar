@@ -7,12 +7,55 @@
 | Line coverage %         | 100%   | 100%  | —     |
 | Branch coverage %       | 100%   | 100%  | —     |
 | Function coverage %     | 100%   | 100%  | —     |
-| Mutation score %        | 84.10% | 84.23%| +0.13 |
-| Total test count        | 1572   | 1607  | +35   |
+| Mutation score %        | 84.23% | 84.23%| —     |
+| Total test count        | 1607   | 1612  | +5    |
 | Test types present      | Unit   | Unit  | —     |
-| Avg assertions per test | 1.91   | 1.93  | +0.02 |
+| Avg assertions per test | 1.93   | 1.95  | +0.02 |
 
 ## Improvements Made
+
+### Phase 5 — Test Quality Hardening
+
+**Strengthened 13 weak "DoesNotThrow" tests** with meaningful assertions:
+
+Tests that previously relied on implicit "no exception = pass" now use
+explicit `Record.Exception` + `Assert.Null(ex)` and/or state assertions:
+
+- **UsageRefreshServiceMutationTests** (4 tests):
+  - `Start_CalledTwice_DoesNotThrow` → `Start_CalledTwice_IsIdempotent`
+    with `Assert.NotNull(NextRefreshAtUtc)`
+  - `StopAsync_WhenNotStarted_DoesNotThrow` → `StopAsync_WhenNotStarted_LeavesNextRefreshNull`
+    with `Assert.Null(NextRefreshAtUtc)` + `Assert.Empty(LatestResults)`
+  - `Dispose_CalledTwice_DoesNotThrow` → `Dispose_CalledTwice_IsIdempotent`
+    with `Assert.Null(NextRefreshAtUtc)`
+  - `RefreshAllAsync_UsageUpdatedHandlerThrows_DoesNotCrash` →
+    `RefreshAllAsync_UsageUpdatedHandlerThrows_StillUpdatesLatestResults`
+    with `Record.ExceptionAsync` + `Assert.NotEmpty(LatestResults)`
+- **UsageRefreshServiceFullCoverageTests** (2 tests):
+  - `StopAsync_WhenNotStarted_DoesNotThrow` → `StopAsync_WhenNotStarted_LeavesNextRefreshNull`
+  - `Dispose_WhenNotStarted_DoesNotThrow` → `Dispose_WhenNotStarted_LeavesNextRefreshNull`
+- **UsageRefreshServiceTests** (1 test):
+  - `StartStop_DoesNotThrow` → `Start_ThenStopAsync_ClearsNextRefreshAtUtc`
+    with `Assert.Null(NextRefreshAtUtc)` + `Assert.Empty(LatestResults)`
+- **CopilotProviderBestEffortKillTests** (3 tests):
+  - All three tests now use `Record.Exception` + `Assert.Null(ex)` and
+    have names describing the swallowed exception type
+- **CopilotProviderFullCoverageTests** (1 test):
+  - `BestEffortKillAndDrain_ProcessAlreadyExited_DoesNotThrow` →
+    `BestEffortKillAndDrain_ProcessAlreadyExited_SwallowsKillException`
+    with `Record.Exception` + `Assert.Null(ex)`
+- **FileLoggerTests** (2 tests):
+  - `Log_AfterProviderDisposed_DoesNotThrow` →
+    `Log_AfterProviderDisposed_SilentlyIgnoresWrite`
+    with `Record.Exception` + `Assert.Null(ex)`
+  - `Dispose_CalledTwice_DoesNotThrow` → `Dispose_CalledTwice_IsIdempotent`
+    with `Record.Exception` + `Assert.Null(ex)`
+
+**Removed 1 duplicate test**:
+
+- `BestEffortKillAndDrain_FaultedTasks_DoesNotThrow` removed from
+  `CopilotProviderFullCoverageTests.cs` (kept in
+  `CopilotProviderBestEffortKillTests.cs` with strengthened assertions)
 
 ### Phase 2c — Mutation Killing Round 2
 

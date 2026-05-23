@@ -65,11 +65,14 @@ public class UsageRefreshServiceTests
     }
 
     [Fact]
-    public async Task StartStop_DoesNotThrow()
+    public async Task Start_ThenStopAsync_ClearsNextRefreshAtUtc()
     {
         var service = new UsageRefreshService([], NullLogger<UsageRefreshService>.Instance);
         service.Start();
         await service.StopAsync();
+
+        Assert.Null(service.NextRefreshAtUtc);
+        Assert.Empty(service.LatestResults);
     }
 
     [Fact]

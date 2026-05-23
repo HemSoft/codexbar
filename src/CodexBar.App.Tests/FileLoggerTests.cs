@@ -159,24 +159,26 @@ public sealed class FileLoggerTests : IDisposable
     }
 
     [Fact]
-    public void Log_AfterProviderDisposed_DoesNotThrow()
+    public void Log_AfterProviderDisposed_SilentlyIgnoresWrite()
     {
         var logPath = Path.Combine(this._tempDir, "test.log");
         var provider = new FileLoggerProvider(logPath);
         var logger = provider.CreateLogger("TestCategory");
         provider.Dispose();
 
-        // Should not throw — disposed provider silently ignores writes
-        logger.LogInformation("After dispose");
+        var ex = Record.Exception(() => logger.LogInformation("After dispose"));
+        Assert.Null(ex);
     }
 
     [Fact]
-    public void Dispose_CalledTwice_DoesNotThrow()
+    public void Dispose_CalledTwice_IsIdempotent()
     {
         var logPath = Path.Combine(this._tempDir, "test.log");
         var provider = new FileLoggerProvider(logPath);
         provider.Dispose();
-        provider.Dispose(); // Should not throw
+
+        var ex = Record.Exception(() => provider.Dispose());
+        Assert.Null(ex);
     }
 
     [Fact]

@@ -180,13 +180,16 @@ public class UsageRefreshServiceFullCoverageTests
     }
 
     [Fact]
-    public async Task StopAsync_WhenNotStarted_DoesNotThrow()
+    public async Task StopAsync_WhenNotStarted_LeavesNextRefreshNull()
     {
         var service = new UsageRefreshService(
             [],
             NullLogger<UsageRefreshService>.Instance);
 
-        await service.StopAsync(); // Should not throw
+        await service.StopAsync();
+
+        Assert.Null(service.NextRefreshAtUtc);
+        Assert.Empty(service.LatestResults);
     }
 
     [Fact]
@@ -206,13 +209,16 @@ public class UsageRefreshServiceFullCoverageTests
     }
 
     [Fact]
-    public void Dispose_WhenNotStarted_DoesNotThrow()
+    public void Dispose_WhenNotStarted_LeavesNextRefreshNull()
     {
         var service = new UsageRefreshService(
             [],
             NullLogger<UsageRefreshService>.Instance);
 
-        service.Dispose(); // Should not throw
+        service.Dispose();
+
+        Assert.Null(service.NextRefreshAtUtc);
+        Assert.Empty(service.LatestResults);
     }
 
     [Fact]

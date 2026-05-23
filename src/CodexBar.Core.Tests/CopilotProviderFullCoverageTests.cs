@@ -855,7 +855,7 @@ public class CopilotProviderFullCoverageTests
 
     // --- BestEffortKillAndDrain ---
     [Fact]
-    public void BestEffortKillAndDrain_ProcessAlreadyExited_DoesNotThrow()
+    public void BestEffortKillAndDrain_ProcessAlreadyExited_SwallowsKillException()
     {
         using var process = CreateFakeProcess("stdout", "stderr", 0);
         process.Start();
@@ -864,21 +864,9 @@ public class CopilotProviderFullCoverageTests
         var stderrTask = Task.FromResult("stderr data");
         var stdoutTask = Task.FromResult("stdout data");
 
-        // Should not throw even though process already exited
-        CopilotProvider.BestEffortKillAndDrain(process, stderrTask, stdoutTask);
-    }
-
-    [Fact]
-    public void BestEffortKillAndDrain_FaultedTasks_DoesNotThrow()
-    {
-        using var process = CreateFakeProcess(string.Empty, string.Empty, 0);
-        process.Start();
-        process.WaitForExit();
-
-        var stderrTask = Task.FromException<string>(new InvalidOperationException("err"));
-        var stdoutTask = Task.FromException<string>(new InvalidOperationException("err"));
-
-        CopilotProvider.BestEffortKillAndDrain(process, stderrTask, stdoutTask);
+        var ex = Record.Exception(() =>
+            CopilotProvider.BestEffortKillAndDrain(process, stderrTask, stdoutTask));
+        Assert.Null(ex);
     }
 
     // --- IsAvailableAsync ---

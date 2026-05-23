@@ -188,10 +188,14 @@ public class UsageRefreshServiceMutationTests : IAsyncDisposable
     }
 
     [Fact]
-    public void Start_CalledTwice_DoesNotThrow()
+    public async Task Start_CalledTwice_IsIdempotent()
     {
         this._sut.Start();
         this._sut.Start();
+
+        await this.WaitForNextRefreshSetAsync();
+        Assert.NotNull(this._sut.NextRefreshAtUtc);
+        this._sut.Dispose();
     }
 
     [Fact]
@@ -205,9 +209,12 @@ public class UsageRefreshServiceMutationTests : IAsyncDisposable
     }
 
     [Fact]
-    public async Task StopAsync_WhenNotStarted_DoesNotThrow()
+    public async Task StopAsync_WhenNotStarted_LeavesNextRefreshNull()
     {
         await this._sut.StopAsync();
+
+        Assert.Null(this._sut.NextRefreshAtUtc);
+        Assert.Empty(this._sut.LatestResults);
     }
 
     // === NextRefreshChanged event ===
@@ -258,12 +265,13 @@ public class UsageRefreshServiceMutationTests : IAsyncDisposable
 
     // === UsageUpdated event handler throws ===
     [Fact]
-    public async Task RefreshAllAsync_UsageUpdatedHandlerThrows_DoesNotCrash()
+    public async Task RefreshAllAsync_UsageUpdatedHandlerThrows_StillUpdatesLatestResults()
     {
         this._sut.UsageUpdated += (_, _) => throw new InvalidOperationException("handler boom");
 
-        // Should not throw
-        await this._sut.RefreshAllAsync();
+        var ex = await Record.ExceptionAsync(() => this._sut.RefreshAllAsync());
+        Assert.Null(ex);
+        Assert.NotEmpty(this._sut.LatestResults);
     }
 
     // === Dispose ===
@@ -277,11 +285,13 @@ public class UsageRefreshServiceMutationTests : IAsyncDisposable
     }
 
     [Fact]
-    public void Dispose_CalledTwice_DoesNotThrow()
+    public void Dispose_CalledTwice_IsIdempotent()
     {
         this._sut.Start();
         this._sut.Dispose();
         this._sut.Dispose();
+
+        Assert.Null(this._sut.NextRefreshAtUtc);
     }
 
     // === Start triggers initial RefreshAll ===
