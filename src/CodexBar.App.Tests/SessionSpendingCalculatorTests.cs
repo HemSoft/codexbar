@@ -112,4 +112,60 @@ public sealed class SessionSpendingCalculatorTests
         var expected = time.ToLocalTime().ToString("yyyy-MM-dd hh:mm tt");
         Assert.Equal(expected, result);
     }
+
+    // --- Mutation resilience: verify direction of comparisons ---
+    [Fact]
+    public void CalculateCreditsSpending_BalanceDecreasedByOneCent_ShowsOneCent()
+    {
+        var result = SessionSpendingCalculator.CalculateCreditsSpending(currentBalance: 24.99m, baseline: 25.00m);
+
+        Assert.Equal("$0.01", result.SpendingText);
+        Assert.Null(result.SetBaseline);
+    }
+
+    [Fact]
+    public void CalculateCreditsSpending_BalanceIncreasedByOneCent_ResetsBaseline()
+    {
+        var result = SessionSpendingCalculator.CalculateCreditsSpending(currentBalance: 25.01m, baseline: 25.00m);
+
+        Assert.Equal("$0.00", result.SpendingText);
+        Assert.Equal(25.01m, result.SetBaseline);
+    }
+
+    [Fact]
+    public void CalculateOverageSpending_OverageIncreasedByOneCent_ShowsOneCent()
+    {
+        var result = SessionSpendingCalculator.CalculateOverageSpending(currentOverage: 5.01m, baseline: 5.00m);
+
+        Assert.Equal("$0.01", result.SpendingText);
+        Assert.Null(result.SetBaseline);
+    }
+
+    [Fact]
+    public void CalculateOverageSpending_OverageDecreasedByOneCent_ResetsBaseline()
+    {
+        var result = SessionSpendingCalculator.CalculateOverageSpending(currentOverage: 4.99m, baseline: 5.00m);
+
+        Assert.Equal("$0.00", result.SpendingText);
+        Assert.Equal(4.99m, result.SetBaseline);
+    }
+
+    // --- SpendingResult record equality ---
+    [Fact]
+    public void SessionSpendingResult_EqualValues_AreEqual()
+    {
+        var a = new SessionSpendingResult("$1.00", 10m);
+        var b = new SessionSpendingResult("$1.00", 10m);
+
+        Assert.Equal(a, b);
+    }
+
+    [Fact]
+    public void SessionSpendingResult_DifferentValues_AreNotEqual()
+    {
+        var a = new SessionSpendingResult("$1.00", 10m);
+        var b = new SessionSpendingResult("$2.00", 10m);
+
+        Assert.NotEqual(a, b);
+    }
 }
