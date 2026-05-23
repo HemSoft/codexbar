@@ -8,12 +8,32 @@
 | Branch coverage %       | 100%   | 100%  | —     |
 | Function coverage %     | 100%   | 100%  | —     |
 | Mutation score %        | 84.23% | 84.23%| —     |
-| Total test count        | 1607   | 1230  | -377  |
-| Duplicate tests removed | —      | 103   | -103  |
+| Total test count        | 1607   | 1213  | -394  |
+| Duplicate tests removed | —      | 120   | -120  |
+| Test files consolidated | —      | 6     | -6    |
 | Test types present      | Unit   | Unit  | —     |
-| Avg assertions per test | 1.93   | 1.95  | +0.02 |
+| Avg assertions per test | 1.93   | 1.97  | +0.04 |
 
 ## Improvements Made
+
+### Phase 8 — Consolidate Fragmented Test Files & Strengthen Assertions
+
+**Consolidated 6 orphan test files** into canonical locations:
+
+- **MoreClaudeProviderTests.cs** → `ClaudeProviderTests.cs` (3 unique tests kept, 6 duplicates dropped)
+- **MoreCopilotProviderTests.cs** → `CopilotProviderTests.cs` (7 unique tests kept, 10 duplicates dropped)
+- **BranchCoverageStartupManagerTests.cs** → `StartupManagerTests.cs` (2 tests + NullReturningStore helper)
+- **CrapScoreImprovementEnvVarTests.cs** → `OpenRouterProviderTests.cs` (env var clearing merged)
+- **CrapScoreImprovementClaudeFileIoTests.cs** → `ClaudeProviderFileIoTests.cs` (2 tests + DelegatingHandlerFunc)
+
+**Strengthened 3 weak assertions**:
+
+- **ClaudeProviderFetchTests.cs** (2 tests): `Assert.NotNull(result)` → `Assert.Equal` with expected values
+- **ItemCardReconcilerTests.cs** (1 test): Added `Assert.True(CanExecute)` to complement bare `Assert.NotNull`
+
+Test count: 1230 → 1213 (removed 17 duplicates via consolidation, zero unique tests lost)
+Test files: reduced by 6 (from 74 to 68)
+Coverage: 100% line, 100% branch, 100% method (unchanged)
 
 ### Phase 7 — Deduplicate Test Suite & Fix Tautological Assertions
 

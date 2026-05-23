@@ -354,14 +354,14 @@ public class ClaudeProviderFetchTests
     {
         var past = DateTimeOffset.UtcNow.AddHours(-1).ToUnixTimeSeconds();
         var result = ClaudeProvider.FormatResetCountdown(past, "Weekly");
-        Assert.NotNull(result);
+        Assert.Equal("Weekly resets now", result);
     }
 
     [Fact]
     public void FormatResetCountdown_ZeroEpoch_HandlesGracefully()
     {
         var result = ClaudeProvider.FormatResetCountdown(0, "test");
-        Assert.NotNull(result);
+        Assert.Equal("test resets now", result);
     }
 
     // --- IsAvailableAsync ---

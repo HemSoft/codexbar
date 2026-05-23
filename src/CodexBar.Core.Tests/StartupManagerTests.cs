@@ -56,6 +56,36 @@ public class StartupManagerTests : IDisposable
         Assert.Null(this._store.GetValue("CodexBar"));
     }
 
+    [Fact]
+    public void IsEnabled_TestStoreReturnsNull_ReturnsFalse()
+    {
+        StartupManager.TestStore = new NullReturningStore();
+        Assert.False(StartupManager.IsEnabled());
+    }
+
+    [Fact]
+    public void SetEnabled_Toggle_CoversBothBranches()
+    {
+        StartupManager.SetEnabled(true);
+        Assert.True(StartupManager.IsEnabled());
+
+        StartupManager.SetEnabled(false);
+        Assert.False(StartupManager.IsEnabled());
+    }
+
+    private sealed class NullReturningStore : IStartupStore
+    {
+        public object? GetValue(string name) => null;
+
+        public void SetValue(string name, string value)
+        {
+        }
+
+        public void DeleteValue(string name)
+        {
+        }
+    }
+
     private sealed class InMemoryStartupStore : IStartupStore
     {
         private readonly Dictionary<string, string> _values = [];
