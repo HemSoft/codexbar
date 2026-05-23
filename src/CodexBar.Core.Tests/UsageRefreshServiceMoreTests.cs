@@ -42,30 +42,39 @@ public class UsageRefreshServiceMoreTests
         => new(providers, NullLogger<UsageRefreshService>.Instance);
 
     [Fact]
-    public void Dispose_WhenStarted_StopsLoop()
+    public void Dispose_WhenStarted_ClearsNextRefreshAtUtc()
     {
         var provider = new TestUsageProvider(ProviderId.OpenRouter, "OpenRouter");
         var service = CreateService(provider);
+        service.RefreshInterval = TimeSpan.FromMilliseconds(50);
         service.Start();
+        Thread.Sleep(100); // Allow loop to set NextRefreshAtUtc
         service.Dispose();
+
+        Assert.Null(service.NextRefreshAtUtc);
     }
 
     [Fact]
-    public void Dispose_WhenNotStarted_DoesNotThrow()
+    public void Dispose_WhenNotStarted_LeavesNextRefreshNull()
     {
         var provider = new TestUsageProvider(ProviderId.OpenRouter, "OpenRouter");
         var service = CreateService(provider);
         service.Dispose();
+
+        Assert.Null(service.NextRefreshAtUtc);
     }
 
     [Fact]
-    public async Task DisposeAsync_WhenStarted_StopsLoop()
+    public async Task DisposeAsync_WhenStarted_ClearsNextRefreshAtUtc()
     {
         var provider = new TestUsageProvider(ProviderId.OpenRouter, "OpenRouter");
         var service = CreateService(provider);
+        service.RefreshInterval = TimeSpan.FromMilliseconds(50);
         service.Start();
-        await Task.Delay(50);
+        await Task.Delay(100);
         await service.DisposeAsync();
+
+        Assert.Null(service.NextRefreshAtUtc);
     }
 
     [Fact]
@@ -173,10 +182,42 @@ public class UsageRefreshServiceMoreTests
     }
 
     [Fact]
-    public async Task StopAsync_CalledWithoutStart_DoesNotThrow()
+    public async Task StopAsync_CalledWithoutStart_LeavesNextRefreshNull()
     {
         var provider = new TestUsageProvider(ProviderId.OpenRouter, "OpenRouter");
         var service = CreateService(provider);
         await service.StopAsync();
+
+        Assert.Null(service.NextRefreshAtUtc);
+        Assert.Empty(service.LatestResults);
+    }
+
+    [Fact]
+    public async Task RefreshAllAsync_ConcurrentCalls_DoNotCorruptState()
+    {
+        var provider = new TestUsageProvider(ProviderId.OpenRouter, "OpenRouter");
+        var service = CreateService(provider);
+
+        var tasks = Enumerable.Range(0, 10).Select(_ => service.RefreshAllAsync());
+        await Task.WhenAll(tasks);
+
+        Assert.Single(service.LatestResults);
+        Assert.True(service.LatestResults[ProviderId.OpenRouter].Success);
+    }
+
+    [Fact]
+    public async Task RefreshAllAsync_ProviderResultChanges_ReflectsLatestResult()
+    {
+        var provider = new TestUsageProvider(ProviderId.OpenRouter, "OpenRouter");
+        var service = CreateService(provider);
+
+        await service.RefreshAllAsync();
+        Assert.True(service.LatestResults[ProviderId.OpenRouter].Success);
+
+        provider.SetResult(ProviderUsageResult.Failure(ProviderId.OpenRouter, "API error"));
+        await service.RefreshAllAsync();
+
+        Assert.False(service.LatestResults[ProviderId.OpenRouter].Success);
+        Assert.Equal("API error", service.LatestResults[ProviderId.OpenRouter].ErrorMessage);
     }
 }

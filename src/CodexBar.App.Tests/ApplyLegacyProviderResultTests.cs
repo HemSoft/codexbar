@@ -352,4 +352,52 @@ public sealed class ApplyLegacyProviderResultTests
         Assert.False(card.IsCreditsDisplay);
         Assert.Null(card.CreditsBalance);
     }
+
+    // --- High usage boundary (kills >= to > mutation) ---
+    [Fact]
+    public void ApplyLegacyProviderResult_SessionExactly80Percent_IsHighUsage()
+    {
+        var card = CreateCard();
+        var result = new ProviderUsageResult
+        {
+            Provider = ProviderId.OpenRouter,
+            Success = true,
+            SessionUsage = new UsageSnapshot { UsedPercent = 0.8, UsageLabel = "80%" },
+        };
+
+        MainViewModel.ApplyLegacyProviderResult(card, result);
+
+        Assert.True(card.IsHighUsage);
+    }
+
+    [Fact]
+    public void ApplyLegacyProviderResult_SessionJustBelow80Percent_IsNotHighUsage()
+    {
+        var card = CreateCard();
+        var result = new ProviderUsageResult
+        {
+            Provider = ProviderId.OpenRouter,
+            Success = true,
+            SessionUsage = new UsageSnapshot { UsedPercent = 0.79, UsageLabel = "79%" },
+        };
+
+        MainViewModel.ApplyLegacyProviderResult(card, result);
+
+        Assert.False(card.IsHighUsage);
+    }
+
+    // --- Error clears CreditsBalance (regression) ---
+    [Fact]
+    public void ApplyLegacyProviderResult_ErrorResult_ClearsCreditsBalance()
+    {
+        var card = CreateCard();
+        card.CreditsBalance = 42.00m;
+        card.IsCreditsDisplay = true;
+        var result = ProviderUsageResult.Failure(ProviderId.OpenRouter, "Timeout");
+
+        MainViewModel.ApplyLegacyProviderResult(card, result);
+
+        Assert.Null(card.CreditsBalance);
+        Assert.False(card.IsCreditsDisplay);
+    }
 }
