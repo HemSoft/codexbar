@@ -8,7 +8,7 @@
 | Branch coverage %       | 100%   | 100%  | —     |
 | Function coverage %     | 100%   | 100%  | —     |
 | Mutation score %        | 83.15% | 84.10%| +0.95 |
-| Total test count        | 1417   | 1459  | +42   |
+| Total test count        | 1417   | 1500  | +83   |
 | Test types present      | Unit   | Unit  | —     |
 | Avg assertions per test | 1.87   | 1.91  | +0.04 |
 
@@ -95,3 +95,44 @@ The codebase has unit tests only, which is appropriate:
 The existing test suite is comprehensive with dedicated mutation-killing test
 files for each major class, thorough edge-case coverage, and well-structured
 AAA patterns throughout.
+
+### Phase 4 — ViewModel Quality & Boundary Hardening
+
+**Added PropertyChanged cascading tests** (`ProviderCardViewModelPropertyChangedTests`):
+
+37 tests covering WPF data-binding contract correctness:
+
+- **HasBars setter cascading** (3 tests): Verifies `ShowProgressBar`,
+  `ShowSingleCreditsDisplay`, and `ShowStatusTextLine` fire PropertyChanged
+  when `HasBars` changes — critical for WPF UI reactivity
+- **IsCreditsDisplay setter cascading** (3 tests): Same pattern for
+  credits display state changes
+- **IsPairedCredits setter cascading** (3 tests): Same pattern for
+  paired credits state changes
+- **SetField deduplication** (18 tests): Verifies that setting a property
+  to its current value does NOT fire PropertyChanged — catches duplicate
+  notification bugs across all settable properties
+- **Computed property correctness** (10 tests): Verifies `ShowProgressBar`,
+  `ShowSingleCreditsDisplay`, and `ShowStatusTextLine` return correct values
+  for all state combinations
+
+**Added high-usage threshold boundary tests** (`ItemCardReconcilerTests`):
+
+7 tests at the 0.8 boundary that kill `>=` to `>` mutations:
+
+- `Reconcile_PrimaryUsageExactly80Percent_SetsHighUsage` — exactly 0.8 = high
+- `Reconcile_PrimaryUsageJustBelow80Percent_DoesNotSetHighUsage` — 0.79 ≠ high
+- `ReconcileBars_MultiBarPrimaryUsageExactly80Percent_SetsHighUsage`
+- `ReconcileBars_MultiBarPrimaryUsageJustBelow80Percent_DoesNotSetHighUsage`
+- `Reconcile_PromotedSecondaryUsageExactly80Percent_SetsHighUsage`
+- `Reconcile_PromotedSecondaryUsageJustBelow80Percent_DoesNotSetHighUsage`
+- `ReconcileBars_SessionExactly80Percent_SetsHighUsage`
+
+**Added legacy provider boundary tests** (`ApplyLegacyProviderResultTests`):
+
+3 tests targeting legacy path mutations:
+
+- `ApplyLegacyProviderResult_PrimaryUsageExactly80Percent_SetsHighUsage`
+- `ApplyLegacyProviderResult_PrimaryUsageJustBelow80Percent_DoesNotSetHighUsage`
+- `ApplyLegacyProviderResult_ErrorResult_ClearsCreditsBalance` — regression test
+  verifying error state properly clears stale balance data

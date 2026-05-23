@@ -1296,4 +1296,156 @@ public sealed class ItemCardReconcilerTests
         Assert.Null(card.CreditsBalance);
         Assert.True(card.IsError);
     }
+
+    // ---------------------------------------------------------------
+    // High-usage threshold boundary (kills >= to > mutation)
+    // ---------------------------------------------------------------
+    [Fact]
+    public void Reconcile_PrimaryUsageExactly80Percent_IsHighUsage()
+    {
+        var result = new ProviderUsageResult
+        {
+            Provider = ProviderId.Claude,
+            Success = true,
+            Items =
+            [
+                new UsageItem
+                {
+                    Key = "claude:acct1",
+                    DisplayName = "Claude",
+                    Success = true,
+                    PrimaryUsage = new UsageSnapshot { UsedPercent = 0.8, UsageLabel = "80%" },
+                },
+            ],
+        };
+
+        this._sut.Reconcile(ProviderId.Claude, "claude:", result);
+
+        Assert.True(this._providers[0].IsHighUsage);
+    }
+
+    [Fact]
+    public void Reconcile_PrimaryUsageJustBelow80Percent_IsNotHighUsage()
+    {
+        var result = new ProviderUsageResult
+        {
+            Provider = ProviderId.Claude,
+            Success = true,
+            Items =
+            [
+                new UsageItem
+                {
+                    Key = "claude:acct1",
+                    DisplayName = "Claude",
+                    Success = true,
+                    PrimaryUsage = new UsageSnapshot { UsedPercent = 0.79, UsageLabel = "79%" },
+                },
+            ],
+        };
+
+        this._sut.Reconcile(ProviderId.Claude, "claude:", result);
+
+        Assert.False(this._providers[0].IsHighUsage);
+    }
+
+    [Fact]
+    public void ReconcileBars_Exactly80Percent_IsHighUsage()
+    {
+        var card = new ProviderCardViewModel();
+        var bars = new List<UsageBar>
+        {
+            new() { Label = "Test", UsedPercent = 0.8 },
+        };
+
+        ItemCardReconciler.ReconcileBars(card, bars);
+
+        Assert.True(card.Bars[0].IsHighUsage);
+    }
+
+    [Fact]
+    public void ReconcileBars_JustBelow80Percent_IsNotHighUsage()
+    {
+        var card = new ProviderCardViewModel();
+        var bars = new List<UsageBar>
+        {
+            new() { Label = "Test", UsedPercent = 0.79 },
+        };
+
+        ItemCardReconciler.ReconcileBars(card, bars);
+
+        Assert.False(card.Bars[0].IsHighUsage);
+    }
+
+    [Fact]
+    public void Reconcile_MultiBarPrimaryUsageExactly80Percent_IsHighUsage()
+    {
+        var result = new ProviderUsageResult
+        {
+            Provider = ProviderId.Copilot,
+            Success = true,
+            Items =
+            [
+                new UsageItem
+                {
+                    Key = "copilot:A",
+                    DisplayName = "A",
+                    Success = true,
+                    PrimaryUsage = new UsageSnapshot { UsedPercent = 0.8, UsageLabel = "80%" },
+                    Bars = [new UsageBar { Label = "5-hour", UsedPercent = 0.5 }],
+                },
+            ],
+        };
+
+        this._sut.Reconcile(ProviderId.Copilot, "copilot:", result);
+
+        Assert.True(this._providers[0].IsHighUsage);
+    }
+
+    [Fact]
+    public void Reconcile_SecondaryUsageExactly80Percent_WhenPromoted_IsHighUsage()
+    {
+        var result = new ProviderUsageResult
+        {
+            Provider = ProviderId.Claude,
+            Success = true,
+            Items =
+            [
+                new UsageItem
+                {
+                    Key = "claude:acct1",
+                    DisplayName = "Claude",
+                    Success = true,
+                    SecondaryUsage = new UsageSnapshot { UsedPercent = 0.8, UsageLabel = "Weekly: 80%" },
+                },
+            ],
+        };
+
+        this._sut.Reconcile(ProviderId.Claude, "claude:", result);
+
+        Assert.True(this._providers[0].IsHighUsage);
+    }
+
+    [Fact]
+    public void Reconcile_SecondaryUsageJustBelow80Percent_WhenPromoted_IsNotHighUsage()
+    {
+        var result = new ProviderUsageResult
+        {
+            Provider = ProviderId.Claude,
+            Success = true,
+            Items =
+            [
+                new UsageItem
+                {
+                    Key = "claude:acct1",
+                    DisplayName = "Claude",
+                    Success = true,
+                    SecondaryUsage = new UsageSnapshot { UsedPercent = 0.79, UsageLabel = "Weekly: 79%" },
+                },
+            ],
+        };
+
+        this._sut.Reconcile(ProviderId.Claude, "claude:", result);
+
+        Assert.False(this._providers[0].IsHighUsage);
+    }
 }
