@@ -23,6 +23,7 @@ using Xunit;
 /// ResolvePricing, CalculateEquivalentCost, FetchRateLimitsAsync,
 /// ProbeAndCacheRateLimitsAsync, TryRefreshTokenAsync, ReadStatsCache, ReadAccountInfo.
 /// </summary>
+[Collection("ClaudeProviderFileIo")]
 public class ClaudeProviderFullCoverageTests : IDisposable
 {
     private readonly string _tempDir;
