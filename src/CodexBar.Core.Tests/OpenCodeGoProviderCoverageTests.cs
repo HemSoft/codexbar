@@ -118,7 +118,14 @@ public class OpenCodeGoProviderCoverageTests
         {
             Content = new StringContent(html, Encoding.UTF8, "text/html"),
         };
-        var provider = CreateProvider(response: response);
+        var handler = new CookieAwareHandler(response);
+        var factory = Substitute.For<IHttpClientFactory>();
+        factory.CreateClient(Arg.Any<string>()).Returns(new HttpClient(handler));
+        var settings = CreateSettings(enabled: true, workspaceId: "ws-123", apiKey: "auth-cookie-value");
+        var provider = new OpenCodeGoProvider(
+            NullLogger<OpenCodeGoProvider>.Instance,
+            factory,
+            settings);
 
         var result = await provider.FetchUsageAsync();
 
@@ -134,7 +141,14 @@ public class OpenCodeGoProviderCoverageTests
         {
             Content = new StringContent(html, Encoding.UTF8, "text/html"),
         };
-        var provider = CreateProvider(response: response);
+        var handler = new CookieAwareHandler(response);
+        var factory = Substitute.For<IHttpClientFactory>();
+        factory.CreateClient(Arg.Any<string>()).Returns(new HttpClient(handler));
+        var settings = CreateSettings(enabled: true, workspaceId: "ws-123", apiKey: "auth-cookie-value");
+        var provider = new OpenCodeGoProvider(
+            NullLogger<OpenCodeGoProvider>.Instance,
+            factory,
+            settings);
 
         var result = await provider.FetchUsageAsync();
 

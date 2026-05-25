@@ -601,6 +601,10 @@ public sealed class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFa
             var json = await response.Content.ReadAsStringAsync(ct);
             return this.ApplyRefreshedToken(credentials, json);
         }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
         catch (Exception ex)
         {
             this.logger.LogWarning(ex, "Claude token refresh failed: {Message}", ex.Message);
