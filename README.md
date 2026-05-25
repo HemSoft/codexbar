@@ -11,6 +11,7 @@ Built with C# / WPF / .NET 9 — native Windows, no Electron overhead.
 | **Gemini** | OAuth (Gemini CLI credentials) | Pro + Flash quota |
 | **OpenRouter** | API Key | Credits, usage across models |
 | **Copilot** | GitHub CLI (`gh auth`) | Usage limits per account |
+| **ChatGPT / Codex** | Codex CLI ChatGPT login | 5-hour + weekly usage limits |
 
 ## Features
 
@@ -43,6 +44,7 @@ dotnet run --project src\CodexBar.App
 1. **Gemini**: Install [Gemini CLI](https://github.com/google-gemini/gemini-cli) and run `gemini` to complete OAuth login
 2. **OpenRouter**: Get an API key from [openrouter.ai/keys](https://openrouter.ai/keys) and add it in Settings
 3. **Copilot**: Uses GitHub CLI tokens — run `gh auth login` for each account
+4. **ChatGPT / Codex**: Run `codex` and sign in with your ChatGPT account
 
 ## Architecture
 

@@ -611,6 +611,23 @@ public class BoundaryMutationKillingTests
         }
     }
 
+    [Fact]
+    public void SettingsService_Defaults_CodexEnabled()
+    {
+        var tempDir = Path.Combine(Path.GetTempPath(), $"codexbar_test_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(tempDir);
+        try
+        {
+            var sut = new SettingsService(NullLogger<SettingsService>.Instance, tempDir);
+            var settings = sut.Load();
+            Assert.True(settings.Providers![ProviderId.Codex.ToString()]!.Enabled);
+        }
+        finally
+        {
+            Directory.Delete(tempDir, true);
+        }
+    }
+
     // ==========================================================================
     // Helpers
     // ==========================================================================

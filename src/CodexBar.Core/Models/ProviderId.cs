@@ -10,6 +10,7 @@ public enum ProviderId
     OpenRouter,
     Copilot,
     Claude,
+    Codex,
     OpenCodeGo,
     OpenCodeZen,
 }
