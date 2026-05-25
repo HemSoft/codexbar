@@ -20,6 +20,7 @@ public class ProviderUsageResultTests
     [Theory]
     [InlineData(ProviderId.Copilot)]
     [InlineData(ProviderId.Claude)]
+    [InlineData(ProviderId.Codex)]
     [InlineData(ProviderId.OpenCodeGo)]
     [InlineData(ProviderId.OpenCodeZen)]
     [InlineData(ProviderId.OpenRouter)]

@@ -378,6 +378,7 @@ public sealed class SettingsService : ISettingsService
             [ProviderId.OpenRouter.ToString()] = new() { Enabled = true },
             [ProviderId.Copilot.ToString()] = new() { Enabled = true },
             [ProviderId.Claude.ToString()] = new() { Enabled = false },
+            [ProviderId.Codex.ToString()] = new() { Enabled = true },
             [ProviderId.OpenCodeGo.ToString()] = new() { Enabled = true }
         },
     };

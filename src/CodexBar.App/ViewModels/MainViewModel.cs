@@ -67,11 +67,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         };
         this.refreshIndicatorTimer.Tick += this.RefreshIndicatorTimer_Tick;
 
-        // Initialize cards for non-Copilot/non-Claude/non-OpenCodeGo providers
-        // (those three use dynamic cards via Items reconciliation)
+        // Initialize cards for providers that do not use dynamic Items reconciliation.
         foreach (ProviderId id in Enum.GetValues<ProviderId>())
         {
-            if (id is ProviderId.Copilot or ProviderId.Claude or ProviderId.OpenCodeGo)
+            if (id is ProviderId.Copilot or ProviderId.Claude or ProviderId.Codex or ProviderId.OpenCodeGo)
             {
                 continue;
             }
@@ -128,6 +127,12 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         if (id == ProviderId.Claude)
         {
             this.ReconcileItemCards(ProviderId.Claude, "claude:", result);
+            return;
+        }
+
+        if (id == ProviderId.Codex)
+        {
+            this.ReconcileItemCards(ProviderId.Codex, "codex:", result);
             return;
         }
 
