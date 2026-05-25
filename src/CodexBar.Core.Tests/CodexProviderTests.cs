@@ -312,7 +312,7 @@ public sealed class CodexProviderTests : IDisposable
     {
         Assert.Equal("Resets now", CodexProvider.FormatReset(DateTimeOffset.UtcNow.AddMinutes(-1)));
         Assert.StartsWith("Resets 2h", CodexProvider.FormatReset(DateTimeOffset.UtcNow.AddHours(2.5)));
-        Assert.StartsWith("Resets 4m", CodexProvider.FormatReset(DateTimeOffset.UtcNow.AddMinutes(5)));
+        Assert.StartsWith("Resets 4m", CodexProvider.FormatReset(DateTimeOffset.UtcNow.AddMinutes(4).AddSeconds(30)));
     }
 
     public void Dispose()

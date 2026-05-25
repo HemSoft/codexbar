@@ -109,6 +109,52 @@ public class OpenCodeGoProviderCoverageTests
         return sb.ToString();
     }
 
+    [Fact]
+    public async Task FetchUsageAsync_OverflowUsagePercent_ReturnsFailure()
+    {
+        // usagePercent value exceeds int.MaxValue so TryParse fails
+        var html = "<html><body><script>window.__SOLID_DATA={rollingUsage:$R[0]={usagePercent:99999999999,resetInSec:300}}</script></body></html>";
+        var response = new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(html, Encoding.UTF8, "text/html"),
+        };
+        var handler = new CookieAwareHandler(response);
+        var factory = Substitute.For<IHttpClientFactory>();
+        factory.CreateClient(Arg.Any<string>()).Returns(new HttpClient(handler));
+        var settings = CreateSettings(enabled: true, workspaceId: "ws-123", apiKey: "auth-cookie-value");
+        var provider = new OpenCodeGoProvider(
+            NullLogger<OpenCodeGoProvider>.Instance,
+            factory,
+            settings);
+
+        var result = await provider.FetchUsageAsync();
+
+        Assert.False(result.Success);
+    }
+
+    [Fact]
+    public async Task FetchUsageAsync_OverflowResetInSec_ReturnsFailure()
+    {
+        // resetInSec value exceeds int.MaxValue so TryParse fails
+        var html = "<html><body><script>window.__SOLID_DATA={rollingUsage:$R[0]={usagePercent:50,resetInSec:99999999999}}</script></body></html>";
+        var response = new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(html, Encoding.UTF8, "text/html"),
+        };
+        var handler = new CookieAwareHandler(response);
+        var factory = Substitute.For<IHttpClientFactory>();
+        factory.CreateClient(Arg.Any<string>()).Returns(new HttpClient(handler));
+        var settings = CreateSettings(enabled: true, workspaceId: "ws-123", apiKey: "auth-cookie-value");
+        var provider = new OpenCodeGoProvider(
+            NullLogger<OpenCodeGoProvider>.Instance,
+            factory,
+            settings);
+
+        var result = await provider.FetchUsageAsync();
+
+        Assert.False(result.Success);
+    }
+
     private sealed class CookieAwareHandler(HttpResponseMessage response) : HttpMessageHandler
     {
         private readonly HttpStatusCode _statusCode = response.StatusCode;
