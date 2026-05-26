@@ -9,7 +9,10 @@ using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Threading;
+using CodexBar.App.ViewModels;
 using CodexBar.Core.Configuration;
+using CodexBar.Core.Providers;
+using CodexBar.Core.Services;
 
 [System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage]
 public partial class MainWindow : Window
@@ -52,6 +55,8 @@ public partial class MainWindow : Window
     private static readonly TimeSpan HideDelay = TimeSpan.FromMilliseconds(150);
 
     private readonly SettingsService settings;
+    private readonly IReadOnlyList<IUsageProvider> providers;
+    private readonly UsageRefreshService? refreshService;
     private readonly DispatcherTimer hideTimer;
     private double zoomLevel = 1.0;
     private double lastWidth;
@@ -67,12 +72,15 @@ public partial class MainWindow : Window
     private int lastDragY;
 
     private bool isDragging;
+    private bool isConfigurationOpen;
     private DateTime dragEndedAtUtc = DateTime.MinValue;
     private HwndSource? hwndSource;
 
-    public MainWindow(SettingsService settings)
+    public MainWindow(SettingsService settings, IEnumerable<IUsageProvider>? providers = null, UsageRefreshService? refreshService = null)
     {
         this.settings = settings;
+        this.providers = providers?.ToList() ?? [];
+        this.refreshService = refreshService;
         this.InitializeComponent();
 
         this.hideTimer = new DispatcherTimer { Interval = HideDelay };
@@ -422,6 +430,11 @@ public partial class MainWindow : Window
 
     private void Window_Deactivated(object? sender, EventArgs e)
     {
+        if (this.isConfigurationOpen)
+        {
+            return;
+        }
+
         if (this.isDragging)
         {
             return;
@@ -446,6 +459,49 @@ public partial class MainWindow : Window
 
         this.SaveWindowState();
         this.Hide();
+    }
+
+    private void SettingsMenuItem_Click(object sender, RoutedEventArgs e)
+    {
+        e.Handled = true;
+        this.OpenConfigurationWindow();
+    }
+
+    private void OpenConfigurationWindow()
+    {
+        if (this.isConfigurationOpen)
+        {
+            return;
+        }
+
+        this.hideTimer.Stop();
+        this.isConfigurationOpen = true;
+
+        var window = new ProviderConfigurationWindow
+        {
+            Owner = this,
+        };
+        var viewModel = new ProviderConfigurationViewModel(this.settings, this.providers, window.Close);
+        viewModel.Saved += async (_, _) =>
+        {
+            if (this.DataContext is MainViewModel mainViewModel)
+            {
+                mainViewModel.ReloadProviderVisibility();
+            }
+
+            if (this.refreshService is not null)
+            {
+                await this.refreshService.RefreshAllAsync();
+            }
+        };
+
+        window.DataContext = viewModel;
+        window.Closed += (_, _) =>
+        {
+            this.isConfigurationOpen = false;
+            this.Activate();
+        };
+        window.ShowDialog();
     }
 
     /// <summary>Persists window geometry to disk using physical pixel coordinates from GetWindowRect.</summary>

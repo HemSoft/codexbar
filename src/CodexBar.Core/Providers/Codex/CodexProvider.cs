@@ -2,6 +2,7 @@
 
 namespace CodexBar.Core.Providers.Codex;
 
+using System.Globalization;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Text.Json;
@@ -138,6 +139,10 @@ public sealed class CodexProvider : IUsageProvider
         {
             using var document = JsonDocument.Parse(payload);
             var root = document.RootElement;
+            var planType = root.TryGetProperty("plan_type", out var planTypeElement)
+                ? planTypeElement.GetString()
+                : null;
+
             if (!root.TryGetProperty("rate_limit", out var rateLimit))
             {
                 return ProviderUsageResult.Failure(ProviderId.Codex, "ChatGPT usage response has no rate limits.");
@@ -167,7 +172,7 @@ public sealed class CodexProvider : IUsageProvider
                     new UsageItem
                     {
                         Key = "codex:chatgpt",
-                        DisplayName = "ChatGPT / Codex",
+                        DisplayName = FormatDisplayName(planType),
                         PrimaryUsage = primary,
                         SecondaryUsage = secondary,
                         Bars = bars,
@@ -244,6 +249,33 @@ public sealed class CodexProvider : IUsageProvider
         604800 => "Weekly usage limit",
         _ => $"{Math.Max(1, durationSeconds / 3600)} hour usage limit",
     };
+
+    internal static string FormatDisplayName(string? planType)
+    {
+        if (string.IsNullOrWhiteSpace(planType))
+        {
+            return "ChatGPT / Codex";
+        }
+
+        return $"ChatGPT / Codex ({FormatPlanName(planType)})";
+    }
+
+    internal static string FormatPlanName(string planType) => planType.ToLowerInvariant() switch
+    {
+        "free" => "Free",
+        "plus" => "Plus",
+        "pro" => "Pro",
+        "prolite" => "Max",
+        "team" => "Team",
+        "enterprise" => "Enterprise",
+        _ => FormatUnknownPlanName(planType),
+    };
+
+    private static string FormatUnknownPlanName(string planType)
+    {
+        var planName = planType.Replace("_", " ", StringComparison.Ordinal);
+        return CultureInfo.InvariantCulture.TextInfo.ToTitleCase(planName.ToLowerInvariant());
+    }
 
     private CodexCredentials? ReadCredentials()
     {

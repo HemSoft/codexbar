@@ -13,6 +13,7 @@ using CodexBar.Core.Providers;
 using CodexBar.Core.Providers.Claude;
 using CodexBar.Core.Providers.Codex;
 using CodexBar.Core.Providers.Copilot;
+using CodexBar.Core.Providers.Cursor;
 using CodexBar.Core.Providers.OpenCodeGo;
 using CodexBar.Core.Providers.OpenCodeZen;
 using CodexBar.Core.Providers.OpenRouter;
@@ -70,6 +71,7 @@ public partial class App : Application
         services.AddSingleton<IUsageProvider, CopilotProvider>();
         services.AddSingleton<IUsageProvider, ClaudeProvider>();
         services.AddSingleton<IUsageProvider, CodexProvider>();
+        services.AddSingleton<IUsageProvider, CursorProvider>();
         services.AddSingleton<IUsageProvider, OpenCodeGoProvider>();
         services.AddSingleton<IUsageProvider, OpenCodeZenProvider>();
 
@@ -160,10 +162,12 @@ public partial class App : Application
                 return;
             }
 
-            var settingsService = this._services!.GetRequiredService<SettingsService>();
+            var services = this._services!;
+            var settingsService = services.GetRequiredService<SettingsService>();
             if (this._mainWindow is null)
             {
-                this._mainWindow = new MainWindow(settingsService) { DataContext = this._viewModel };
+                var providers = services.GetRequiredService<IEnumerable<IUsageProvider>>();
+                this._mainWindow = new MainWindow(settingsService, providers, this._refreshService!) { DataContext = this._viewModel };
                 this._mainWindow.Closed += (_, _) => this._mainWindow = null;
             }
 

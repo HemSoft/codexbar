@@ -11,6 +11,7 @@ public enum ProviderId
     Copilot,
     Claude,
     Codex,
+    Cursor,
     OpenCodeGo,
     OpenCodeZen,
 }

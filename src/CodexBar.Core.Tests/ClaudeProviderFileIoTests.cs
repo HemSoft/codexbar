@@ -488,16 +488,22 @@ public class ClaudeProviderFileIoTests : IDisposable
 
         var apiResponse = new HttpResponseMessage(HttpStatusCode.OK)
         {
-            Content = new StringContent("{}", Encoding.UTF8, "application/json"),
+            Content = new StringContent(
+                """
+                {
+                    "five_hour": {
+                        "utilization": 45,
+                        "resets_at": "2026-05-25T15:00:00Z"
+                    },
+                    "seven_day": {
+                        "utilization": 25,
+                        "resets_at": "2026-05-29T15:00:00Z"
+                    }
+                }
+                """,
+                Encoding.UTF8,
+                "application/json"),
         };
-        apiResponse.Headers.TryAddWithoutValidation("anthropic-ratelimit-unified-5h-utilization", "0.45");
-        apiResponse.Headers.TryAddWithoutValidation("anthropic-ratelimit-unified-7d-utilization", "0.25");
-        apiResponse.Headers.TryAddWithoutValidation(
-            "anthropic-ratelimit-unified-5h-reset",
-            DateTimeOffset.UtcNow.AddHours(3).ToUnixTimeSeconds().ToString());
-        apiResponse.Headers.TryAddWithoutValidation(
-            "anthropic-ratelimit-unified-7d-reset",
-            DateTimeOffset.UtcNow.AddDays(4).ToUnixTimeSeconds().ToString());
 
         var handler = new TestResponseHandler(apiResponse);
         var httpClient = new HttpClient(handler);
@@ -518,6 +524,8 @@ public class ClaudeProviderFileIoTests : IDisposable
         Assert.Equal(ProviderId.Claude, result.Provider);
         Assert.NotNull(result.SessionUsage);
         Assert.NotNull(result.WeeklyUsage);
+        Assert.Equal(0.45, result.SessionUsage!.UsedPercent, 0.01);
+        Assert.Equal(0.25, result.WeeklyUsage!.UsedPercent, 0.01);
         Assert.Contains("Test User", result.Items![0].DisplayName);
     }
 
@@ -662,7 +670,7 @@ public class ClaudeProviderFileIoTests : IDisposable
 
     // --- LoadAndValidateCredentials ---
     [Fact]
-    public void LoadAndValidateCredentials_CredentialsMissing_FileExists_ReturnsCorruptError()
+    public void LoadAndValidateCredentials_CredentialsMissing_FileExists_ReturnsNoCredentialsError()
     {
         // File exists but doesn't have claudeAiOauth
         var json = """{"noOauth": true}""";
@@ -678,7 +686,26 @@ public class ClaudeProviderFileIoTests : IDisposable
         var error = resultType.GetField("Item2")?.GetValue(result) as string;
 
         Assert.Null(creds);
-        Assert.Contains("could not be read", error);
+        Assert.Contains("No Claude Code OAuth credentials found", error);
+    }
+
+    [Fact]
+    public void LoadAndValidateCredentials_McpOauthOnly_ReturnsMissingClaudeCodeCredentialsError()
+    {
+        var json = """{"mcpOAuth":{"plugin:github|abc":{"accessToken":"token"}}}""";
+        File.WriteAllText(this._credentialsPath, json);
+
+        var provider = CreateProvider();
+        var method = typeof(ClaudeProvider).GetMethod(
+            "LoadAndValidateCredentials",
+            BindingFlags.NonPublic | BindingFlags.Instance);
+        var result = method!.Invoke(provider, null);
+        var resultType = result!.GetType();
+        var creds = resultType.GetField("Item1")?.GetValue(result);
+        var error = resultType.GetField("Item2")?.GetValue(result) as string;
+
+        Assert.Null(creds);
+        Assert.Contains("Claude MCP credentials exist", error);
     }
 
     // Helper message handlers for tests

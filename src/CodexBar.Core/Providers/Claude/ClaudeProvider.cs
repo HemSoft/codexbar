@@ -2,18 +2,19 @@
 
 namespace CodexBar.Core.Providers.Claude;
 
+using System.Globalization;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using CodexBar.Core.Configuration;
 using CodexBar.Core.Models;
 using Microsoft.Extensions.Logging;
 
 /// <summary>
-/// Fetches Claude Code Pro subscription usage by making a lightweight API call
-/// to the Anthropic Messages endpoint using the local OAuth token, then parsing
-/// the rate-limit response headers for per-window utilization data.
+/// Fetches Claude Code subscription usage from the OAuth usage endpoint, with
+/// rate-limit response headers as a fallback for older token behavior.
 /// </summary>
 public sealed class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFactory httpClientFactory, ISettingsService settings) : IUsageProvider
 {
@@ -46,6 +47,8 @@ public sealed class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFa
     private static string ClaudeJsonPath => ClaudeJsonPathOverride ?? _defaultClaudeJsonPath;
 
     private static readonly TimeSpan ApiTimeout = TimeSpan.FromSeconds(15);
+    private const string UsageApiUrl = "https://api.anthropic.com/api/oauth/usage";
+    private const string TokenRefreshUrl = "https://platform.claude.com/v1/oauth/token";
 
     // Minimal request body: haiku model, 1 token, trivial prompt — just enough to trigger rate-limit headers
     private static readonly string ProbeRequestBody = JsonSerializer.Serialize(new
@@ -136,7 +139,8 @@ public sealed class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFa
 
             var equivalentCost = CalculateEquivalentCost(stats);
             var totalTokens = CalculateTotalTokens(stats);
-            var limits = await this.FetchRateLimitsAsync(credentials.AccessToken, ct);
+            var limits = await this.FetchOAuthUsageAsync(credentials.AccessToken, ct)
+                ?? await this.FetchRateLimitsAsync(credentials.AccessToken, ct);
 
             return BuildFetchResult(limits, displaySub, totalTokens, equivalentCost, accountInfo);
         }
@@ -159,11 +163,40 @@ public sealed class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFa
             return (credentials, null);
         }
 
-        var error = File.Exists(CredentialsPath)
-            ? $"Claude credentials file exists but could not be read or is corrupted ({CredentialsPath}). Delete the file and run 'claude' to re-authenticate."
-            : "No Claude Code credentials found. Run 'claude' and sign in.";
+        var error = BuildCredentialErrorMessage();
 
         return (null, error);
+    }
+
+    private static string BuildCredentialErrorMessage()
+    {
+        if (!File.Exists(CredentialsPath))
+        {
+            return "No Claude Code credentials found. Run 'claude' and sign in.";
+        }
+
+        try
+        {
+            var json = File.ReadAllText(CredentialsPath);
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+
+            if (root.TryGetProperty("mcpOAuth", out _))
+            {
+                return $"Claude MCP credentials exist, but Claude Code OAuth credentials are missing ({CredentialsPath}). Run 'claude auth login' or 'claude setup-token' and set CLAUDE_CODE_OAUTH_TOKEN.";
+            }
+
+            if (!root.TryGetProperty("claudeAiOauth", out _))
+            {
+                return $"No Claude Code OAuth credentials found in {CredentialsPath}. Run 'claude auth login' or 'claude setup-token' and set CLAUDE_CODE_OAUTH_TOKEN.";
+            }
+        }
+        catch (Exception)
+        {
+            return $"Claude credentials file exists but could not be read or is corrupted ({CredentialsPath}). Delete the file and run 'claude' to re-authenticate.";
+        }
+
+        return $"Claude credentials file exists but could not be read or is corrupted ({CredentialsPath}). Delete the file and run 'claude auth login' to re-authenticate.";
     }
 
     private async Task<ClaudeCredentials?> EnsureTokenFreshAsync(ClaudeCredentials credentials, CancellationToken ct)
@@ -210,9 +243,10 @@ public sealed class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFa
         var weeklySnapshot = BuildWeeklySnapshot(limits);
         var bars = BuildUsageBars(limits);
 
+        var providerDisplayName = FormatProviderDisplayName(displaySub);
         var itemDisplayName = accountInfo?.DisplayName is not null
-            ? $"Claude · {accountInfo.DisplayName}"
-            : "Claude Code";
+            ? $"{providerDisplayName} · {accountInfo.DisplayName}"
+            : providerDisplayName;
 
         var item = new UsageItem
         {
@@ -233,6 +267,11 @@ public sealed class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFa
             Items = [item],
         };
     }
+
+    internal static string FormatProviderDisplayName(string subscriptionType) =>
+        string.IsNullOrWhiteSpace(subscriptionType) || string.Equals(subscriptionType, "Unknown", StringComparison.OrdinalIgnoreCase)
+            ? "Claude"
+            : $"Claude ({subscriptionType})";
 
     internal static UsageSnapshot BuildSessionSnapshot(
         UnifiedRateLimits? limits,
@@ -491,6 +530,79 @@ public sealed class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFa
         }
     }
 
+    private async Task<UnifiedRateLimits?> FetchOAuthUsageAsync(string? accessToken, CancellationToken ct)
+    {
+        if (this.TryGetFreshCachedLimits(out var cached))
+        {
+            return cached;
+        }
+
+        if (string.IsNullOrEmpty(accessToken))
+        {
+            this.logger.LogWarning("Claude: no OAuth access token available for usage endpoint");
+            return this.cachedLimits;
+        }
+
+        await this.cacheLock.WaitAsync(ct);
+        try
+        {
+            if (this.TryGetFreshCachedLimits(out cached))
+            {
+                return cached;
+            }
+
+            using var httpClient = this.httpClientFactory.CreateClient();
+            httpClient.Timeout = ApiTimeout;
+
+            using var request = BuildOAuthUsageRequest(accessToken);
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            cts.CancelAfter(ApiTimeout);
+
+            using var response = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cts.Token);
+            this.logger.LogDebug("Claude OAuth usage endpoint returned status {StatusCode}", (int)response.StatusCode);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                this.logger.LogWarning("Claude OAuth usage endpoint failed with status {StatusCode}", (int)response.StatusCode);
+                return this.cachedLimits;
+            }
+
+            var json = await response.Content.ReadAsStringAsync(ct);
+            var usage = JsonSerializer.Deserialize<ClaudeOAuthUsageResponse>(json);
+            var result = MapOAuthUsageToRateLimits(usage);
+            return this.CacheAndReturnUsageLimits(result);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (OperationCanceledException)
+        {
+            this.logger.LogDebug("Claude OAuth usage endpoint timed out");
+            return this.cachedLimits;
+        }
+        catch (Exception ex)
+        {
+            this.logger.LogWarning(ex, "Claude OAuth usage endpoint failed: {Message}", ex.Message);
+            return this.cachedLimits;
+        }
+        finally
+        {
+            this.cacheLock.Release();
+        }
+    }
+
+    internal static HttpRequestMessage BuildOAuthUsageRequest(string accessToken)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Get, UsageApiUrl);
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+        request.Headers.TryAddWithoutValidation("Content-Type", "application/json");
+        request.Headers.TryAddWithoutValidation("anthropic-beta", "oauth-2025-04-20");
+        request.Headers.TryAddWithoutValidation("User-Agent", "claude-code/2.1.0");
+        return request;
+    }
+
     private bool TryGetFreshCachedLimits(out UnifiedRateLimits? cached)
     {
         // Read ticks first — Volatile.Read provides an acquire fence that
@@ -575,6 +687,23 @@ public sealed class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFa
         return result ?? this.cachedLimits;
     }
 
+    private UnifiedRateLimits? CacheAndReturnUsageLimits(UnifiedRateLimits? result)
+    {
+        if (result is null)
+        {
+            this.logger.LogWarning("Claude OAuth usage payload did not include usage windows");
+            return this.cachedLimits;
+        }
+
+        this.cachedLimits = result;
+        Volatile.Write(ref this.limitsCachedAtTicks, DateTimeOffset.UtcNow.UtcTicks);
+        this.logger.LogDebug(
+            "Claude OAuth usage: 5h={FiveH:P0}, 7d={SevenD:P0}",
+            result.FiveHourUtilization,
+            result.SevenDayUtilization);
+        return result;
+    }
+
     private async Task<ClaudeCredentials?> TryRefreshTokenAsync(ClaudeCredentials credentials, CancellationToken ct)
     {
         if (string.IsNullOrEmpty(credentials.RefreshToken))
@@ -620,7 +749,7 @@ public sealed class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFa
             refresh_token = refreshToken,
         });
 
-        var request = new HttpRequestMessage(HttpMethod.Post, "https://api.anthropic.com/v1/oauth/token")
+        var request = new HttpRequestMessage(HttpMethod.Post, TokenRefreshUrl)
         {
             Content = new StringContent(body, Encoding.UTF8, "application/json"),
         };
@@ -763,8 +892,58 @@ public sealed class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFa
         };
     }
 
+    internal static UnifiedRateLimits? MapOAuthUsageToRateLimits(ClaudeOAuthUsageResponse? usage)
+    {
+        var fiveHour = usage?.FiveHour;
+        var sevenDay = usage?.SevenDay
+            ?? usage?.SevenDayOAuthApps
+            ?? usage?.SevenDaySonnet
+            ?? usage?.SevenDayOpus;
+
+        if (fiveHour?.Utilization is null && sevenDay?.Utilization is null)
+        {
+            return null;
+        }
+
+        return new UnifiedRateLimits
+        {
+            FiveHourUtilization = NormalizeUtilization(fiveHour?.Utilization),
+            FiveHourReset = ParseOAuthResetToEpochSeconds(fiveHour?.ResetsAt),
+            FiveHourStatus = "active",
+            SevenDayUtilization = NormalizeUtilization(sevenDay?.Utilization),
+            SevenDayReset = ParseOAuthResetToEpochSeconds(sevenDay?.ResetsAt),
+            SevenDayStatus = "active",
+        };
+    }
+
+    internal static double NormalizeUtilization(double? utilization)
+    {
+        var value = utilization ?? 0;
+        if (value > 1)
+        {
+            value /= 100;
+        }
+
+        return Math.Clamp(value, 0, 1);
+    }
+
+    internal static long ParseOAuthResetToEpochSeconds(string? value) =>
+        DateTimeOffset.TryParse(
+            value,
+            CultureInfo.InvariantCulture,
+            DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
+            out var reset)
+            ? reset.ToUnixTimeSeconds()
+            : 0;
+
     private ClaudeCredentials? ReadCredentials()
     {
+        var environmentCredentials = ReadEnvironmentCredentials();
+        if (environmentCredentials is not null)
+        {
+            return environmentCredentials;
+        }
+
         if (!File.Exists(CredentialsPath))
         {
             return null;
@@ -788,6 +967,31 @@ public sealed class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFa
             this.logger.LogDebug(ex, "Failed to read Claude credentials from {Path}", CredentialsPath);
             return null;
         }
+    }
+
+    private static ClaudeCredentials? ReadEnvironmentCredentials()
+    {
+        if (CredentialsPathOverride is not null)
+        {
+            return null;
+        }
+
+        var accessToken = Environment.GetEnvironmentVariable("CLAUDE_CODE_OAUTH_TOKEN");
+        if (string.IsNullOrWhiteSpace(accessToken))
+        {
+            accessToken = Environment.GetEnvironmentVariable("CLAUDE_CODE_OAUTH_TOKEN", EnvironmentVariableTarget.User);
+        }
+
+        if (string.IsNullOrWhiteSpace(accessToken))
+        {
+            return null;
+        }
+
+        return new ClaudeCredentials
+        {
+            AccessToken = accessToken,
+            SubscriptionType = "subscription",
+        };
     }
 
     internal static ClaudeCredentials ParseCredentials(JsonElement oauth) => new()
@@ -984,6 +1188,33 @@ public sealed class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFa
         public long SevenDayReset { get; init; }
 
         public string SevenDayStatus { get; init; } = "unknown";
+    }
+
+    internal sealed record ClaudeOAuthUsageResponse
+    {
+        [JsonPropertyName("five_hour")]
+        public ClaudeOAuthUsageWindow? FiveHour { get; init; }
+
+        [JsonPropertyName("seven_day")]
+        public ClaudeOAuthUsageWindow? SevenDay { get; init; }
+
+        [JsonPropertyName("seven_day_oauth_apps")]
+        public ClaudeOAuthUsageWindow? SevenDayOAuthApps { get; init; }
+
+        [JsonPropertyName("seven_day_opus")]
+        public ClaudeOAuthUsageWindow? SevenDayOpus { get; init; }
+
+        [JsonPropertyName("seven_day_sonnet")]
+        public ClaudeOAuthUsageWindow? SevenDaySonnet { get; init; }
+    }
+
+    internal sealed record ClaudeOAuthUsageWindow
+    {
+        [JsonPropertyName("utilization")]
+        public double? Utilization { get; init; }
+
+        [JsonPropertyName("resets_at")]
+        public string? ResetsAt { get; init; }
     }
 
     internal sealed record ClaudeCredentials

@@ -113,6 +113,7 @@ public sealed class CodexProviderTests : IDisposable
         Assert.Equal(ProviderId.Codex, result.Provider);
         var item = Assert.Single(result.Items!);
         Assert.Equal("codex:chatgpt", item.Key);
+        Assert.Equal("ChatGPT / Codex (Plus)", item.DisplayName);
         Assert.Collection(
             item.Bars!,
             bar =>
@@ -125,6 +126,17 @@ public sealed class CodexProviderTests : IDisposable
                 Assert.Equal("Weekly usage limit", bar.Label);
                 Assert.Equal(0.01, bar.UsedPercent);
             });
+    }
+
+    [Theory]
+    [InlineData("plus", "ChatGPT / Codex (Plus)")]
+    [InlineData("prolite", "ChatGPT / Codex (Max)")]
+    [InlineData("some_custom_plan", "ChatGPT / Codex (Some Custom Plan)")]
+    public void FormatDisplayName_MapsKnownPlanCodes(string planType, string expected)
+    {
+        var result = CodexProvider.FormatDisplayName(planType);
+
+        Assert.Equal(expected, result);
     }
 
     [Fact]

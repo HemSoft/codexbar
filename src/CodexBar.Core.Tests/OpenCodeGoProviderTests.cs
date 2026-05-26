@@ -140,7 +140,7 @@ public class OpenCodeGoProviderTests
         Assert.True(result.Success);
         Assert.NotNull(result.Items);
         Assert.Single(result.Items);
-        Assert.Equal("OpenCode Go", result.Items![0].DisplayName);
+        Assert.Equal("OpenCode Go (Go)", result.Items![0].DisplayName);
         Assert.Equal(0.45, result.Items[0].PrimaryUsage!.UsedPercent);
     }
 

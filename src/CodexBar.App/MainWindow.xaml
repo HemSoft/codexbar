@@ -42,6 +42,12 @@
         </Style>
     </Window.Resources>
 
+    <Window.ContextMenu>
+        <ContextMenu>
+            <MenuItem Header="Settings ..." Click="SettingsMenuItem_Click" />
+        </ContextMenu>
+    </Window.ContextMenu>
+
     <Border Background="{StaticResource BackgroundBrush}"
             CornerRadius="12"
             BorderBrush="#3F3F5F"
@@ -110,7 +116,7 @@
                                 CornerRadius="8"
                                 Padding="14,12"
                                 Margin="0,0,0,8"
-                                Visibility="{Binding IsHiddenCompanion, Converter={StaticResource InverseBoolToVis}}">
+                                Visibility="{Binding IsCardVisible, Converter={StaticResource BoolToVis}}">
                             <StackPanel>
                                 <!-- Header row: name + primary percent (hidden for paired credits cards) -->
                                 <Grid Visibility="{Binding IsPairedCredits, Converter={StaticResource InverseBoolToVis}}">
