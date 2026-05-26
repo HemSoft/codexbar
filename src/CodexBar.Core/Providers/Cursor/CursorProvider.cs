@@ -256,7 +256,23 @@ public sealed class CursorProvider(
             return $"{planName} plan";
         }
 
-        return $"{planName} plan · {FormatCents(plan.IncludedSpend ?? plan.TotalSpend)} / {FormatCents(plan.Limit)}";
+        var parts = new List<string> { $"{planName} plan" };
+        if (plan.AutoPercentUsed is not null)
+        {
+            parts.Add($"Auto {FormatPercent(plan.AutoPercentUsed.Value)}");
+        }
+
+        if (plan.ApiPercentUsed is not null)
+        {
+            parts.Add($"API {FormatPercent(plan.ApiPercentUsed.Value)}");
+        }
+
+        if (parts.Count == 1 && plan.TotalPercentUsed is not null)
+        {
+            parts.Add($"Total {FormatPercent(plan.TotalPercentUsed.Value)}");
+        }
+
+        return string.Join(" · ", parts);
     }
 
     internal static string FormatDisplayName(string? email, string? membership)
@@ -305,6 +321,9 @@ public sealed class CursorProvider(
         var dollars = (cents ?? 0) / 100;
         return dollars.ToString("C", CultureInfo.GetCultureInfo("en-US"));
     }
+
+    private static string FormatPercent(double percent) =>
+        $"{Math.Round(Math.Clamp(percent, 0, 100), MidpointRounding.AwayFromZero):0}%";
 
     private static async Task<CommandResult> RunCursorAgentAsync(string arguments, CancellationToken ct)
     {
