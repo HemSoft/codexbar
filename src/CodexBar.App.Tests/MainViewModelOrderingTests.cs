@@ -17,11 +17,14 @@ public sealed class MainViewModelOrderingTests
         var settings = CreateSettingsService();
         using var refresh = CreateRefreshService();
         using var viewModel = new MainViewModel(refresh, settings);
+        var expectedOrder = new[] { "cursor", "openrouter" };
 
         Assert.True(viewModel.MoveProviderCard("cursor", "openrouter", insertAfter: false));
 
         Assert.Equal("cursor", viewModel.Providers[0].CardKey);
-        Assert.Equal("cursor", settings.Load().ProviderCardOrder[0]);
+        Assert.Equal(expectedOrder, settings.Load().ProviderCardOrder);
+        settings.Received(1).Save(Arg.Is<AppSettings>(saved =>
+            saved.ProviderCardOrder.SequenceEqual(expectedOrder)));
     }
 
     [Fact]
