@@ -73,7 +73,7 @@ public sealed class ProviderConfigurationViewModel
 [System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage]
 public sealed class ProviderOptionViewModel : INotifyPropertyChanged
 {
-    private bool isDisplayed;
+    private bool _isDisplayed;
 
     private ProviderOptionViewModel(ProviderMetadata metadata, bool isDisplayed)
     {
@@ -91,8 +91,8 @@ public sealed class ProviderOptionViewModel : INotifyPropertyChanged
 
     public bool IsDisplayed
     {
-        get => this.isDisplayed;
-        set => this.SetField(ref this.isDisplayed, value);
+        get => this._isDisplayed;
+        set => this.SetField(ref this._isDisplayed, value);
     }
 
     public static ProviderOptionViewModel From(ProviderMetadata metadata, bool isDisplayed) => new(metadata, isDisplayed);

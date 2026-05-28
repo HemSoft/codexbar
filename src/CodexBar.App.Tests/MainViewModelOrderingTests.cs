@@ -4,36 +4,17 @@ namespace CodexBar.App.Tests;
 
 using CodexBar.App.ViewModels;
 using CodexBar.Core.Configuration;
+using CodexBar.Core.Models;
 using CodexBar.Core.Services;
 using Microsoft.Extensions.Logging.Abstractions;
+using NSubstitute;
 
-public sealed class MainViewModelOrderingTests : IDisposable
+public sealed class MainViewModelOrderingTests
 {
-    private readonly string tempDir = Path.Combine(Path.GetTempPath(), $"codexbar-order-test-{Guid.NewGuid():N}");
-
-    public MainViewModelOrderingTests()
-    {
-        Directory.CreateDirectory(this.tempDir);
-    }
-
-    public void Dispose()
-    {
-        try
-        {
-            if (Directory.Exists(this.tempDir))
-            {
-                Directory.Delete(this.tempDir, recursive: true);
-            }
-        }
-        catch
-        {
-        }
-    }
-
     [Fact]
     public void MoveProviderCard_ReordersCardsAndPersistsOrder()
     {
-        var settings = this.CreateSettingsService();
+        var settings = CreateSettingsService();
         using var refresh = CreateRefreshService();
         using var viewModel = new MainViewModel(refresh, settings);
 
@@ -46,19 +27,29 @@ public sealed class MainViewModelOrderingTests : IDisposable
     [Fact]
     public void Constructor_AppliesPersistedProviderCardOrder()
     {
-        var settings = this.CreateSettingsService();
-        var stored = settings.Load();
-        stored.ProviderCardOrder = ["cursor", "openrouter"];
-        settings.Save(stored);
-
+        var settings = CreateSettingsService("cursor", "openrouter");
         using var refresh = CreateRefreshService();
         using var viewModel = new MainViewModel(refresh, settings);
 
         Assert.Equal("cursor", viewModel.Providers[0].CardKey);
     }
 
-    private SettingsService CreateSettingsService() =>
-        new(NullLogger<SettingsService>.Instance, this.tempDir);
+    private static ISettingsService CreateSettingsService(params string[] initialOrder)
+    {
+        var settings = Substitute.For<ISettingsService>();
+        var appSettings = new AppSettings
+        {
+            ProviderCardOrder = [.. initialOrder],
+        };
+
+        settings.Load().Returns(_ => appSettings);
+        settings.IsProviderEnabled(Arg.Any<ProviderId>()).Returns(true);
+        settings
+            .When(x => x.Save(Arg.Any<AppSettings>()))
+            .Do(callInfo => appSettings = callInfo.Arg<AppSettings>());
+
+        return settings;
+    }
 
     private static UsageRefreshService CreateRefreshService() =>
         new([], NullLogger<UsageRefreshService>.Instance);

@@ -102,6 +102,53 @@ public sealed class CursorProviderTests : IDisposable
     }
 
     [Fact]
+    public async Task FetchUsageAsync_WhenCursorAgentReturnsMalformedAboutJson_IgnoresOptionalMetadataFailure()
+    {
+        CursorProvider.AuthPathOverride = WriteAuthFile("test-token");
+        CursorProvider.RunCommandAsync = (arguments, _) =>
+        {
+            if (arguments.StartsWith("status", StringComparison.Ordinal))
+            {
+                return Task.FromResult(new CursorProvider.CommandResult(
+                    0,
+                    """
+                    {
+                        "isAuthenticated": true,
+                        "userInfo": {
+                            "email": "dev@example.com"
+                        }
+                    }
+                    """,
+                    string.Empty));
+            }
+
+            return Task.FromResult(new CursorProvider.CommandResult(0, "{", string.Empty));
+        };
+
+        var provider = CreateProvider(CreateResponse(
+            """
+            {
+                "billingCycleEnd": "1780613438000",
+                "planUsage": {
+                    "totalSpend": 652,
+                    "includedSpend": 652,
+                    "remaining": 1348,
+                    "limit": 2000,
+                    "autoPercentUsed": 2.62,
+                    "apiPercentUsed": 5.7555555555555555,
+                    "totalPercentUsed": 3.3435897435897437
+                }
+            }
+            """));
+
+        var result = await provider.FetchUsageAsync();
+
+        Assert.True(result.Success);
+        Assert.Equal("Cursor · dev@example.com", result.Items![0].DisplayName);
+        Assert.Equal("Included usage · Auto 3% · API 6%", result.SessionUsage!.UsageLabel);
+    }
+
+    [Fact]
     public async Task IsAvailableAsync_WhenDisabled_ReturnsFalse()
     {
         var settings = Substitute.For<ISettingsService>();

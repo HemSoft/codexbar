@@ -182,9 +182,18 @@ public sealed class CursorProvider(
         try
         {
             var result = await RunCommandAsync("status --format json", ct);
-            return result.ExitCode == 0 ? ParseStatus(result.Stdout) : null;
+            if (result.ExitCode != 0 || string.IsNullOrWhiteSpace(result.Stdout))
+            {
+                return null;
+            }
+
+            return ParseStatus(result.Stdout);
         }
         catch (Win32Exception)
+        {
+            return null;
+        }
+        catch (JsonException)
         {
             return null;
         }
@@ -195,9 +204,18 @@ public sealed class CursorProvider(
         try
         {
             var result = await RunCommandAsync("about --format json", ct);
-            return result.ExitCode == 0 ? ParseAbout(result.Stdout) : null;
+            if (result.ExitCode != 0 || string.IsNullOrWhiteSpace(result.Stdout))
+            {
+                return null;
+            }
+
+            return ParseAbout(result.Stdout);
         }
         catch (Win32Exception)
+        {
+            return null;
+        }
+        catch (JsonException)
         {
             return null;
         }

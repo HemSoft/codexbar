@@ -567,7 +567,7 @@ public sealed class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFa
                 return this.cachedLimits;
             }
 
-            var json = await response.Content.ReadAsStringAsync(ct);
+            var json = await response.Content.ReadAsStringAsync(cts.Token);
             var usage = JsonSerializer.Deserialize<ClaudeOAuthUsageResponse>(json);
             var result = MapOAuthUsageToRateLimits(usage);
             return this.CacheAndReturnUsageLimits(result);

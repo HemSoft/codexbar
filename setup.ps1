@@ -35,8 +35,21 @@ if (-not $SkipToken) {
     Write-Host "  claude setup-token" -ForegroundColor Green
     Write-Host ""
 
-    $token = Read-Host "Paste the new Claude token"
-    $token = $token.Trim()
+    $secureToken = Read-Host "Paste the new Claude token" -AsSecureString
+    $tokenBstr = [IntPtr]::Zero
+
+    try {
+        $tokenBstr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($secureToken)
+        $token = [Runtime.InteropServices.Marshal]::PtrToStringBSTR($tokenBstr)
+        $token = $token.Trim()
+    }
+    finally {
+        if ($tokenBstr -ne [IntPtr]::Zero) {
+            [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($tokenBstr)
+        }
+
+        $secureToken.Dispose()
+    }
 
     if ([string]::IsNullOrWhiteSpace($token)) {
         Write-Host "No token entered. Nothing was changed." -ForegroundColor Yellow
@@ -64,12 +77,14 @@ if ([string]::IsNullOrWhiteSpace($savedToken)) {
 Write-Host "CLAUDE_CODE_OAUTH_TOKEN is set for the current user."
 Write-Host "Token length: $($savedToken.Length)"
 
+$projectPath = Join-Path $PSScriptRoot "src/CodexBar.App/CodexBar.App.csproj"
+
 Write-Step "Next steps"
 Write-Host "Fully quit CodexBar and start it again so it reads the new user environment."
 Write-Host "To test this branch build directly, run:"
-Write-Host "  dotnet run --project src/CodexBar.App/CodexBar.App.csproj" -ForegroundColor Green
+Write-Host "  dotnet run --project `"$projectPath`"" -ForegroundColor Green
 
 if ($Run) {
     Write-Step "Starting CodexBar from this checkout"
-    dotnet run --project src/CodexBar.App/CodexBar.App.csproj
+    dotnet run --project $projectPath
 }

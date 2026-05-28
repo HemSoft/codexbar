@@ -742,19 +742,19 @@ public sealed class ProviderCardViewModel : INotifyPropertyChanged
         }
     }
 
-    private bool isProviderDisplayed = true;
+    private bool _isProviderDisplayed = true;
 
     public bool IsProviderDisplayed
     {
-        get => this.isProviderDisplayed;
+        get => this._isProviderDisplayed;
         set
         {
-            if (this.isProviderDisplayed == value)
+            if (this._isProviderDisplayed == value)
             {
                 return;
             }
 
-            this.isProviderDisplayed = value;
+            this._isProviderDisplayed = value;
             this.PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(this.IsProviderDisplayed)));
             this.PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(this.IsCardVisible)));
         }
