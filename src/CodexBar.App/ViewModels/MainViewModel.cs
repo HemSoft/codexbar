@@ -89,9 +89,72 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             this.cardsByKey[card.CardKey] = card;
         }
 
+        this.ApplyProviderCardOrder();
         this.PairCreditsCards();
         this.ReloadProviderVisibility();
         this.ApplyRefreshIndicatorState(RefreshIndicatorState.Calculate(DateTimeOffset.UtcNow, this.refreshService.NextRefreshAtUtc, this.refreshService.RefreshInterval));
+    }
+
+    public bool MoveProviderCard(string movedCardKey, string targetCardKey, bool insertAfter)
+    {
+        if (string.Equals(movedCardKey, targetCardKey, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var moved = this.Providers.FirstOrDefault(card => string.Equals(card.CardKey, movedCardKey, StringComparison.OrdinalIgnoreCase));
+        var target = this.Providers.FirstOrDefault(card => string.Equals(card.CardKey, targetCardKey, StringComparison.OrdinalIgnoreCase));
+        if (moved is null || target is null || moved.IsHiddenCompanion || target.IsHiddenCompanion)
+        {
+            return false;
+        }
+
+        var oldIndex = this.Providers.IndexOf(moved);
+        this.Providers.RemoveAt(oldIndex);
+        var targetIndex = this.Providers.IndexOf(target);
+        var newIndex = insertAfter ? targetIndex + 1 : targetIndex;
+        this.Providers.Insert(Math.Clamp(newIndex, 0, this.Providers.Count), moved);
+        this.PairCreditsCards();
+        this.SaveProviderCardOrder();
+        return true;
+    }
+
+    private void ApplyProviderCardOrder()
+    {
+        var configuredOrder = this.settingsService.Load().ProviderCardOrder;
+        if (configuredOrder.Count == 0 || this.Providers.Count <= 1)
+        {
+            return;
+        }
+
+        var order = configuredOrder
+            .Select((key, index) => new { key, index })
+            .ToDictionary(item => item.key, item => item.index, StringComparer.OrdinalIgnoreCase);
+
+        var orderedCards = this.Providers
+            .Select((card, index) => new { card, index })
+            .OrderBy(item => order.TryGetValue(item.card.CardKey, out var configuredIndex) ? configuredIndex : int.MaxValue)
+            .ThenBy(item => item.index)
+            .Select(item => item.card)
+            .ToList();
+
+        for (var i = 0; i < orderedCards.Count; i++)
+        {
+            if (!ReferenceEquals(this.Providers[i], orderedCards[i]))
+            {
+                this.Providers.Move(this.Providers.IndexOf(orderedCards[i]), i);
+            }
+        }
+    }
+
+    private void SaveProviderCardOrder()
+    {
+        var settings = this.settingsService.Load();
+        settings.ProviderCardOrder = this.Providers
+            .Where(card => !card.IsHiddenCompanion)
+            .Select(card => card.CardKey)
+            .ToList();
+        this.settingsService.Save(settings);
     }
 
     public void ReloadProviderVisibility()
@@ -235,6 +298,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     private void ReconcileItemCards(ProviderId providerId, string keyPrefix, ProviderUsageResult result)
     {
         this._itemCardReconciler.Reconcile(providerId, keyPrefix, result);
+        this.ApplyProviderCardOrder();
         this.ApplyVisibilityToProvider(providerId);
     }
 

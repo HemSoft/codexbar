@@ -80,7 +80,7 @@ public sealed class CursorProviderTests : IDisposable
         Assert.True(result.Success);
         Assert.Equal(ProviderId.Cursor, result.Provider);
         Assert.Equal("Cursor (Pro) · dev@example.com", result.Items![0].DisplayName);
-        Assert.Equal("Pro plan · Auto 3% · API 6%", result.SessionUsage!.UsageLabel);
+        Assert.Equal("Included usage · Auto 3% · API 6%", result.SessionUsage!.UsageLabel);
         Assert.Equal(0.03343589743589744, result.SessionUsage.UsedPercent, 6);
         Assert.Contains(result.Items[0].Bars!, b => b is { Label: "Total" } && Math.Abs(b.UsedPercent - 0.03343589743589744) < 0.000001);
         Assert.Contains(result.Items[0].Bars!, b => b is { Label: "Auto" } && Math.Abs(b.UsedPercent - 0.0262) < 0.000001);

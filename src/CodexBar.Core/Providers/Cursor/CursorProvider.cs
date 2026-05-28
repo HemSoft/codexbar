@@ -256,7 +256,7 @@ public sealed class CursorProvider(
             return $"{planName} plan";
         }
 
-        var parts = new List<string> { $"{planName} plan" };
+        var parts = new List<string> { "Included usage" };
         if (plan.AutoPercentUsed is not null)
         {
             parts.Add($"Auto {FormatPercent(plan.AutoPercentUsed.Value)}");

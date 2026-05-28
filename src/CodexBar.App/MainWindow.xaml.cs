@@ -60,6 +60,8 @@ public partial class MainWindow : Window
     private readonly DispatcherTimer hideTimer;
     private double zoomLevel = 1.0;
     private double lastWidth;
+    private Point providerCardDragStart;
+    private ProviderCardViewModel? providerCardDragCandidate;
 
     /// <summary>Saved physical pixel X coordinate (from GetWindowRect). Null = no saved position.</summary>
     private int? physicalLeft;
@@ -459,6 +461,118 @@ public partial class MainWindow : Window
 
         this.SaveWindowState();
         this.Hide();
+    }
+
+    private void ProviderCardDragHandle_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        this.providerCardDragStart = e.GetPosition(this);
+        this.providerCardDragCandidate = (sender as FrameworkElement)?.DataContext as ProviderCardViewModel;
+        Mouse.Capture(sender as IInputElement);
+        e.Handled = true;
+    }
+
+    private void ProviderCardDragHandle_PreviewMouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        if (Mouse.Captured == sender)
+        {
+            Mouse.Capture(null);
+        }
+
+        this.providerCardDragCandidate = null;
+    }
+
+    private void ProviderCardDragHandle_MouseMove(object sender, MouseEventArgs e)
+    {
+        if (e.LeftButton != MouseButtonState.Pressed || this.providerCardDragCandidate is null)
+        {
+            return;
+        }
+
+        var current = e.GetPosition(this);
+        if (Math.Abs(current.X - this.providerCardDragStart.X) < SystemParameters.MinimumHorizontalDragDistance &&
+            Math.Abs(current.Y - this.providerCardDragStart.Y) < SystemParameters.MinimumVerticalDragDistance)
+        {
+            return;
+        }
+
+        var data = new DataObject(typeof(ProviderCardViewModel), this.providerCardDragCandidate);
+        Mouse.Capture(null);
+        DragDrop.DoDragDrop((DependencyObject)sender, data, DragDropEffects.Move);
+        this.providerCardDragCandidate = null;
+        e.Handled = true;
+    }
+
+    private void ProviderCardContainer_MouseEnter(object sender, MouseEventArgs e)
+    {
+        if (sender is DependencyObject container && FindVisualChildByName<FrameworkElement>(container, "ProviderCardDragHandle") is { } handle)
+        {
+            handle.Opacity = 0.9;
+        }
+    }
+
+    private void ProviderCardContainer_MouseLeave(object sender, MouseEventArgs e)
+    {
+        if (sender is DependencyObject container && FindVisualChildByName<FrameworkElement>(container, "ProviderCardDragHandle") is { } handle)
+        {
+            handle.Opacity = 0;
+        }
+    }
+
+    private void ProviderCard_DragOver(object sender, DragEventArgs e)
+    {
+        e.Effects = CanDropProviderCard(sender, e) ? DragDropEffects.Move : DragDropEffects.None;
+        e.Handled = true;
+    }
+
+    private void ProviderCard_Drop(object sender, DragEventArgs e)
+    {
+        e.Handled = true;
+        if (!CanDropProviderCard(sender, e) ||
+            this.DataContext is not MainViewModel viewModel ||
+            !e.Data.GetDataPresent(typeof(ProviderCardViewModel)) ||
+            e.Data.GetData(typeof(ProviderCardViewModel)) is not ProviderCardViewModel moved ||
+            (sender as FrameworkElement)?.DataContext is not ProviderCardViewModel target)
+        {
+            return;
+        }
+
+        var insertAfter = e.GetPosition((IInputElement)sender).Y > ((FrameworkElement)sender).ActualHeight / 2;
+        viewModel.MoveProviderCard(moved.CardKey, target.CardKey, insertAfter);
+    }
+
+    private static bool CanDropProviderCard(object sender, DragEventArgs e)
+    {
+        if (!e.Data.GetDataPresent(typeof(ProviderCardViewModel)) ||
+            e.Data.GetData(typeof(ProviderCardViewModel)) is not ProviderCardViewModel moved ||
+            (sender as FrameworkElement)?.DataContext is not ProviderCardViewModel target)
+        {
+            return false;
+        }
+
+        return !moved.IsHiddenCompanion &&
+               !target.IsHiddenCompanion &&
+               !string.Equals(moved.CardKey, target.CardKey, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static T? FindVisualChildByName<T>(DependencyObject parent, string name)
+        where T : FrameworkElement
+    {
+        for (var i = 0; i < VisualTreeHelper.GetChildrenCount(parent); i++)
+        {
+            var child = VisualTreeHelper.GetChild(parent, i);
+            if (child is T element && element.Name == name)
+            {
+                return element;
+            }
+
+            var match = FindVisualChildByName<T>(child, name);
+            if (match is not null)
+            {
+                return match;
+            }
+        }
+
+        return null;
     }
 
     private void SettingsMenuItem_Click(object sender, RoutedEventArgs e)
