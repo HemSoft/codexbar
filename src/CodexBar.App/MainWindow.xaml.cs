@@ -9,7 +9,10 @@ using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Threading;
+using CodexBar.App.ViewModels;
 using CodexBar.Core.Configuration;
+using CodexBar.Core.Providers;
+using CodexBar.Core.Services;
 
 [System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage]
 public partial class MainWindow : Window
@@ -52,9 +55,13 @@ public partial class MainWindow : Window
     private static readonly TimeSpan HideDelay = TimeSpan.FromMilliseconds(150);
 
     private readonly SettingsService settings;
+    private readonly IReadOnlyList<IUsageProvider> providers;
+    private readonly UsageRefreshService? refreshService;
     private readonly DispatcherTimer hideTimer;
     private double zoomLevel = 1.0;
     private double lastWidth;
+    private Point providerCardDragStart;
+    private ProviderCardViewModel? providerCardDragCandidate;
 
     /// <summary>Saved physical pixel X coordinate (from GetWindowRect). Null = no saved position.</summary>
     private int? physicalLeft;
@@ -67,12 +74,15 @@ public partial class MainWindow : Window
     private int lastDragY;
 
     private bool isDragging;
+    private bool isConfigurationOpen;
     private DateTime dragEndedAtUtc = DateTime.MinValue;
     private HwndSource? hwndSource;
 
-    public MainWindow(SettingsService settings)
+    public MainWindow(SettingsService settings, IEnumerable<IUsageProvider>? providers = null, UsageRefreshService? refreshService = null)
     {
         this.settings = settings;
+        this.providers = providers?.ToList() ?? [];
+        this.refreshService = refreshService;
         this.InitializeComponent();
 
         this.hideTimer = new DispatcherTimer { Interval = HideDelay };
@@ -422,6 +432,11 @@ public partial class MainWindow : Window
 
     private void Window_Deactivated(object? sender, EventArgs e)
     {
+        if (this.isConfigurationOpen)
+        {
+            return;
+        }
+
         if (this.isDragging)
         {
             return;
@@ -446,6 +461,161 @@ public partial class MainWindow : Window
 
         this.SaveWindowState();
         this.Hide();
+    }
+
+    private void ProviderCardDragHandle_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        this.providerCardDragStart = e.GetPosition(this);
+        this.providerCardDragCandidate = (sender as FrameworkElement)?.DataContext as ProviderCardViewModel;
+        Mouse.Capture(sender as IInputElement);
+        e.Handled = true;
+    }
+
+    private void ProviderCardDragHandle_PreviewMouseLeftButtonUp(object sender, MouseButtonEventArgs e)
+    {
+        if (Mouse.Captured == sender)
+        {
+            Mouse.Capture(null);
+        }
+
+        this.providerCardDragCandidate = null;
+    }
+
+    private void ProviderCardDragHandle_MouseMove(object sender, MouseEventArgs e)
+    {
+        if (e.LeftButton != MouseButtonState.Pressed || this.providerCardDragCandidate is null)
+        {
+            return;
+        }
+
+        var current = e.GetPosition(this);
+        if (Math.Abs(current.X - this.providerCardDragStart.X) < SystemParameters.MinimumHorizontalDragDistance &&
+            Math.Abs(current.Y - this.providerCardDragStart.Y) < SystemParameters.MinimumVerticalDragDistance)
+        {
+            return;
+        }
+
+        var data = new DataObject(typeof(ProviderCardViewModel), this.providerCardDragCandidate);
+        Mouse.Capture(null);
+        DragDrop.DoDragDrop((DependencyObject)sender, data, DragDropEffects.Move);
+        this.providerCardDragCandidate = null;
+        e.Handled = true;
+    }
+
+    private void ProviderCardContainer_MouseEnter(object sender, MouseEventArgs e)
+    {
+        if (sender is DependencyObject container && FindVisualChildByName<FrameworkElement>(container, "ProviderCardDragHandle") is { } handle)
+        {
+            handle.Opacity = 0.9;
+        }
+    }
+
+    private void ProviderCardContainer_MouseLeave(object sender, MouseEventArgs e)
+    {
+        if (sender is DependencyObject container && FindVisualChildByName<FrameworkElement>(container, "ProviderCardDragHandle") is { } handle)
+        {
+            handle.Opacity = 0;
+        }
+    }
+
+    private void ProviderCard_DragOver(object sender, DragEventArgs e)
+    {
+        e.Effects = CanDropProviderCard(sender, e) ? DragDropEffects.Move : DragDropEffects.None;
+        e.Handled = true;
+    }
+
+    private void ProviderCard_Drop(object sender, DragEventArgs e)
+    {
+        e.Handled = true;
+        if (!CanDropProviderCard(sender, e) ||
+            this.DataContext is not MainViewModel viewModel ||
+            !e.Data.GetDataPresent(typeof(ProviderCardViewModel)) ||
+            e.Data.GetData(typeof(ProviderCardViewModel)) is not ProviderCardViewModel moved ||
+            (sender as FrameworkElement)?.DataContext is not ProviderCardViewModel target)
+        {
+            return;
+        }
+
+        var insertAfter = e.GetPosition((IInputElement)sender).Y > ((FrameworkElement)sender).ActualHeight / 2;
+        viewModel.MoveProviderCard(moved.CardKey, target.CardKey, insertAfter);
+    }
+
+    private static bool CanDropProviderCard(object sender, DragEventArgs e)
+    {
+        if (!e.Data.GetDataPresent(typeof(ProviderCardViewModel)) ||
+            e.Data.GetData(typeof(ProviderCardViewModel)) is not ProviderCardViewModel moved ||
+            (sender as FrameworkElement)?.DataContext is not ProviderCardViewModel target)
+        {
+            return false;
+        }
+
+        return !moved.IsHiddenCompanion &&
+               !target.IsHiddenCompanion &&
+               !string.Equals(moved.CardKey, target.CardKey, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static T? FindVisualChildByName<T>(DependencyObject parent, string name)
+        where T : FrameworkElement
+    {
+        for (var i = 0; i < VisualTreeHelper.GetChildrenCount(parent); i++)
+        {
+            var child = VisualTreeHelper.GetChild(parent, i);
+            if (child is T element && element.Name == name)
+            {
+                return element;
+            }
+
+            var match = FindVisualChildByName<T>(child, name);
+            if (match is not null)
+            {
+                return match;
+            }
+        }
+
+        return null;
+    }
+
+    private void SettingsMenuItem_Click(object sender, RoutedEventArgs e)
+    {
+        e.Handled = true;
+        this.OpenConfigurationWindow();
+    }
+
+    private void OpenConfigurationWindow()
+    {
+        if (this.isConfigurationOpen)
+        {
+            return;
+        }
+
+        this.hideTimer.Stop();
+        this.isConfigurationOpen = true;
+
+        var window = new ProviderConfigurationWindow
+        {
+            Owner = this,
+        };
+        var viewModel = new ProviderConfigurationViewModel(this.settings, this.providers, window.Close);
+        viewModel.Saved += async (_, _) =>
+        {
+            if (this.DataContext is MainViewModel mainViewModel)
+            {
+                mainViewModel.ReloadProviderVisibility();
+            }
+
+            if (this.refreshService is not null)
+            {
+                await this.refreshService.RefreshAllAsync();
+            }
+        };
+
+        window.DataContext = viewModel;
+        window.Closed += (_, _) =>
+        {
+            this.isConfigurationOpen = false;
+            this.Activate();
+        };
+        window.ShowDialog();
     }
 
     /// <summary>Persists window geometry to disk using physical pixel coordinates from GetWindowRect.</summary>

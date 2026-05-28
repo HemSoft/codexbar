@@ -161,7 +161,7 @@ public sealed partial class OpenCodeGoProvider(
         var item = new UsageItem
         {
             Key = "opencode-go:go",
-            DisplayName = "OpenCode Go",
+            DisplayName = "OpenCode Go (Go)",
             PrimaryUsage = primary is null ? null : new UsageSnapshot
             {
                 UsedPercent = primary.UsedPercent,

@@ -994,6 +994,45 @@ public class BranchCoverageTests
         Assert.Equal("active", result.SevenDayStatus);
     }
 
+    [Fact]
+    public void MapOAuthUsageToRateLimits_PercentPayload_NormalizesToFractions()
+    {
+        var usage = new ClaudeProvider.ClaudeOAuthUsageResponse
+        {
+            FiveHour = new ClaudeProvider.ClaudeOAuthUsageWindow
+            {
+                Utilization = 42.5,
+                ResetsAt = "2026-05-25T15:00:00Z",
+            },
+            SevenDay = new ClaudeProvider.ClaudeOAuthUsageWindow
+            {
+                Utilization = 75,
+                ResetsAt = "2026-05-29T15:00:00Z",
+            },
+        };
+
+        var result = ClaudeProvider.MapOAuthUsageToRateLimits(usage);
+
+        Assert.NotNull(result);
+        Assert.Equal(0.425, result.FiveHourUtilization, 0.001);
+        Assert.Equal(0.75, result.SevenDayUtilization, 0.001);
+        Assert.True(result.FiveHourReset > 0);
+        Assert.True(result.SevenDayReset > 0);
+    }
+
+    [Fact]
+    public void BuildOAuthUsageRequest_UsesClaudeCodeUsageEndpoint()
+    {
+        using var request = ClaudeProvider.BuildOAuthUsageRequest("access-token");
+
+        Assert.Equal(HttpMethod.Get, request.Method);
+        Assert.Equal("https://api.anthropic.com/api/oauth/usage", request.RequestUri!.ToString());
+        Assert.Equal("Bearer", request.Headers.Authorization!.Scheme);
+        Assert.Equal("access-token", request.Headers.Authorization.Parameter);
+        Assert.True(request.Headers.TryGetValues("anthropic-beta", out var beta));
+        Assert.Contains("oauth-2025-04-20", beta);
+    }
+
     /// <summary>
     /// Exercises BuildResult where Rolling is null so primary falls back to Monthly (line 127: ?? usage.Monthly).
     /// </summary>

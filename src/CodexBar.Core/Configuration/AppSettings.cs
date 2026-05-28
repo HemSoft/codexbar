@@ -16,6 +16,13 @@ public sealed class AppSettings
     public Dictionary<string, ProviderSettings> Providers { get; set; } = [];
 
     /// <summary>
+    /// Gets or sets provider card keys in the user's preferred vertical display order.
+    /// Unknown keys are ignored so renamed or removed providers do not break startup.
+    /// </summary>
+    [JsonPropertyName("providerCardOrder")]
+    public List<string> ProviderCardOrder { get; set; } = [];
+
+    /// <summary>
     /// Gets or sets gitHub usernames for multi-account Copilot tracking.
     /// Uses <c>gh auth token --user &lt;name&gt;</c> for per-account tokens.
     /// When empty, falls back to auto-discovery from the gh CLI.

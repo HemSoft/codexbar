@@ -89,8 +89,82 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             this.cardsByKey[card.CardKey] = card;
         }
 
+        this.ApplyProviderCardOrder();
         this.PairCreditsCards();
+        this.ReloadProviderVisibility();
         this.ApplyRefreshIndicatorState(RefreshIndicatorState.Calculate(DateTimeOffset.UtcNow, this.refreshService.NextRefreshAtUtc, this.refreshService.RefreshInterval));
+    }
+
+    public bool MoveProviderCard(string movedCardKey, string targetCardKey, bool insertAfter)
+    {
+        if (string.Equals(movedCardKey, targetCardKey, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var moved = this.Providers.FirstOrDefault(card => string.Equals(card.CardKey, movedCardKey, StringComparison.OrdinalIgnoreCase));
+        var target = this.Providers.FirstOrDefault(card => string.Equals(card.CardKey, targetCardKey, StringComparison.OrdinalIgnoreCase));
+        if (moved is null || target is null || moved.IsHiddenCompanion || target.IsHiddenCompanion)
+        {
+            return false;
+        }
+
+        var oldIndex = this.Providers.IndexOf(moved);
+        this.Providers.RemoveAt(oldIndex);
+        var targetIndex = this.Providers.IndexOf(target);
+        var newIndex = insertAfter ? targetIndex + 1 : targetIndex;
+        this.Providers.Insert(Math.Clamp(newIndex, 0, this.Providers.Count), moved);
+        this.PairCreditsCards();
+        this.SaveProviderCardOrder();
+        return true;
+    }
+
+    private void ApplyProviderCardOrder()
+    {
+        var configuredOrder = this.settingsService.Load().ProviderCardOrder;
+        if (configuredOrder.Count == 0 || this.Providers.Count <= 1)
+        {
+            return;
+        }
+
+        var order = configuredOrder
+            .Select((key, index) => new { key, index })
+            .ToDictionary(item => item.key, item => item.index, StringComparer.OrdinalIgnoreCase);
+
+        var orderedCards = this.Providers
+            .Select((card, index) => new { card, index })
+            .OrderBy(item => order.TryGetValue(item.card.CardKey, out var configuredIndex) ? configuredIndex : int.MaxValue)
+            .ThenBy(item => item.index)
+            .Select(item => item.card)
+            .ToList();
+
+        for (var i = 0; i < orderedCards.Count; i++)
+        {
+            if (!ReferenceEquals(this.Providers[i], orderedCards[i]))
+            {
+                this.Providers.Move(this.Providers.IndexOf(orderedCards[i]), i);
+            }
+        }
+    }
+
+    private void SaveProviderCardOrder()
+    {
+        var settings = this.settingsService.Load();
+        settings.ProviderCardOrder = this.Providers
+            .Where(card => !card.IsHiddenCompanion)
+            .Select(card => card.CardKey)
+            .ToList();
+        this.settingsService.Save(settings);
+    }
+
+    public void ReloadProviderVisibility()
+    {
+        foreach (var card in this.Providers)
+        {
+            card.IsProviderDisplayed = this.settingsService.IsProviderEnabled(card.ProviderId);
+        }
+
+        this.PairCreditsCards();
     }
 
     /// <summary>
@@ -103,8 +177,24 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         var openRouterCard = this.Providers.FirstOrDefault(c => c.ProviderId == ProviderId.OpenRouter);
         var zenCard = this.Providers.FirstOrDefault(c => c.ProviderId == ProviderId.OpenCodeZen);
 
+        if (openRouterCard is not null)
+        {
+            openRouterCard.CompanionCard = null;
+            openRouterCard.IsPairedCredits = false;
+        }
+
+        if (zenCard is not null)
+        {
+            zenCard.IsHiddenCompanion = false;
+        }
+
         if (openRouterCard is not null && zenCard is not null)
         {
+            if (!openRouterCard.IsProviderDisplayed || !zenCard.IsProviderDisplayed)
+            {
+                return;
+            }
+
             openRouterCard.CompanionCard = zenCard;
             openRouterCard.IsPairedCredits = true;
             zenCard.IsHiddenCompanion = true;
@@ -151,6 +241,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
         ApplyLegacyProviderResult(card, result);
         this.UpdateSessionSpending(card);
+        this.ApplyVisibilityToProvider(id);
     });
 
     private void OnNextRefreshChanged(DateTimeOffset? nextRefreshAtUtc) => System.Windows.Application.Current?.Dispatcher.InvokeAsync(() =>
@@ -204,8 +295,23 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
     /// Generic reconciliation for providers that use per-item cards (e.g., Copilot, Claude).
     /// Delegates to <see cref="ItemCardReconciler"/> for testability.
     /// </summary>
-    private void ReconcileItemCards(ProviderId providerId, string keyPrefix, ProviderUsageResult result) =>
+    private void ReconcileItemCards(ProviderId providerId, string keyPrefix, ProviderUsageResult result)
+    {
         this._itemCardReconciler.Reconcile(providerId, keyPrefix, result);
+        this.ApplyProviderCardOrder();
+        this.ApplyVisibilityToProvider(providerId);
+    }
+
+    private void ApplyVisibilityToProvider(ProviderId providerId)
+    {
+        var isDisplayed = this.settingsService.IsProviderEnabled(providerId);
+        foreach (var card in this.Providers.Where(c => c.ProviderId == providerId))
+        {
+            card.IsProviderDisplayed = isDisplayed;
+        }
+
+        this.PairCreditsCards();
+    }
 
     /// <summary>
     /// Applies a provider usage result to a legacy single-card view model.
@@ -623,8 +729,38 @@ public sealed class ProviderCardViewModel : INotifyPropertyChanged
     public bool IsHiddenCompanion
     {
         get => this.isHiddenCompanion;
-        set => this.SetField(ref this.isHiddenCompanion, value);
+        set
+        {
+            if (this.isHiddenCompanion == value)
+            {
+                return;
+            }
+
+            this.isHiddenCompanion = value;
+            this.PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(this.IsHiddenCompanion)));
+            this.PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(this.IsCardVisible)));
+        }
     }
+
+    private bool _isProviderDisplayed = true;
+
+    public bool IsProviderDisplayed
+    {
+        get => this._isProviderDisplayed;
+        set
+        {
+            if (this._isProviderDisplayed == value)
+            {
+                return;
+            }
+
+            this._isProviderDisplayed = value;
+            this.PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(this.IsProviderDisplayed)));
+            this.PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(this.IsCardVisible)));
+        }
+    }
+
+    public bool IsCardVisible => this.IsProviderDisplayed && !this.IsHiddenCompanion;
 
     private decimal? creditsBalance;
 

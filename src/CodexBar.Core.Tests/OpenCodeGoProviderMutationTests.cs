@@ -351,7 +351,7 @@ public class OpenCodeGoProviderMutationTests : IDisposable
 
         Assert.True(result.Success);
         Assert.Equal("opencode-go:go", result.Items![0].Key);
-        Assert.Equal("OpenCode Go", result.Items![0].DisplayName);
+        Assert.Equal("OpenCode Go (Go)", result.Items![0].DisplayName);
         Assert.True(result.Items![0].Success);
     }
 

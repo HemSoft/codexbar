@@ -94,6 +94,7 @@ public sealed class SettingsService : ISettingsService
             }
 
             MergeProviders(settings, disk);
+            MergeProviderCardOrder(settings, disk);
             MergeWorkspaceId(settings, disk);
             MergeSessionBaselines(settings, disk);
             MergeSessionResetTimes(settings, disk);
@@ -128,6 +129,14 @@ public sealed class SettingsService : ISettingsService
         if (diskProvider?.ApiKey is not null && string.IsNullOrWhiteSpace(memProvider.ApiKey))
         {
             memProvider.ApiKey = diskProvider.ApiKey;
+        }
+    }
+
+    private static void MergeProviderCardOrder(AppSettings settings, AppSettings disk)
+    {
+        if ((settings.ProviderCardOrder?.Count ?? 0) == 0 && disk.ProviderCardOrder is { Count: > 0 })
+        {
+            settings.ProviderCardOrder = disk.ProviderCardOrder.ToList();
         }
     }
 
@@ -207,6 +216,7 @@ public sealed class SettingsService : ISettingsService
         {
             RefreshIntervalSeconds = settings.RefreshIntervalSeconds,
             CopilotAccounts = (settings.CopilotAccounts ?? []).ToList(),
+            ProviderCardOrder = NormalizeProviderCardOrder(settings.ProviderCardOrder),
             OpenCodeGoWorkspaceId = NullIfWhitespace(settings.OpenCodeGoWorkspaceId),
             ZoomLevel = NormalizeZoom(settings.ZoomLevel),
             WindowWidth = settings.WindowWidth,
@@ -228,6 +238,12 @@ public sealed class SettingsService : ISettingsService
     private static Dictionary<TKey, TValue> CloneDictionary<TKey, TValue>(Dictionary<TKey, TValue>? source)
         where TKey : notnull =>
         (source ?? []).ToDictionary(kvp => kvp.Key, kvp => kvp.Value);
+
+    private static List<string> NormalizeProviderCardOrder(IEnumerable<string>? order) =>
+        (order ?? [])
+            .Where(key => !string.IsNullOrWhiteSpace(key))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
 
     private static Dictionary<string, ProviderSettings> SanitizeProviders(Dictionary<string, ProviderSettings>? providers) =>
         (providers ?? []).ToDictionary(
@@ -379,7 +395,9 @@ public sealed class SettingsService : ISettingsService
             [ProviderId.Copilot.ToString()] = new() { Enabled = true },
             [ProviderId.Claude.ToString()] = new() { Enabled = false },
             [ProviderId.Codex.ToString()] = new() { Enabled = true },
-            [ProviderId.OpenCodeGo.ToString()] = new() { Enabled = true }
+            [ProviderId.Cursor.ToString()] = new() { Enabled = true },
+            [ProviderId.OpenCodeGo.ToString()] = new() { Enabled = true },
+            [ProviderId.OpenCodeZen.ToString()] = new() { Enabled = true }
         },
     };
 
@@ -387,6 +405,7 @@ public sealed class SettingsService : ISettingsService
     {
         RefreshIntervalSeconds = source.RefreshIntervalSeconds,
         CopilotAccounts = (source.CopilotAccounts ?? []).ToList(),
+        ProviderCardOrder = NormalizeProviderCardOrder(source.ProviderCardOrder),
         OpenCodeGoWorkspaceId = source.OpenCodeGoWorkspaceId,
         ZoomLevel = source.ZoomLevel,
         WindowWidth = source.WindowWidth,

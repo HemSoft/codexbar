@@ -996,9 +996,18 @@ public class ClaudeProviderFullCoverageTests : IDisposable
         var handler = new DelegatingHandlerFunc((_, _) =>
         {
             Interlocked.Increment(ref apiCalls);
-            var resp = new HttpResponseMessage(HttpStatusCode.OK);
-            resp.Headers.TryAddWithoutValidation("anthropic-ratelimit-unified-5h-utilization", "0.1");
-            resp.Headers.TryAddWithoutValidation("anthropic-ratelimit-unified-7d-utilization", "0.2");
+            var resp = new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(
+                    """
+                    {
+                        "five_hour": { "utilization": 10 },
+                        "seven_day": { "utilization": 20 }
+                    }
+                    """,
+                    Encoding.UTF8,
+                    "application/json"),
+            };
             return Task.FromResult(resp);
         });
         var factory = CreateFactory(handler);
@@ -1125,7 +1134,7 @@ public class ClaudeProviderFullCoverageTests : IDisposable
 
         Assert.True(result.Success);
         var item = result.Items!.First();
-        Assert.Equal("Claude Code", item.DisplayName);
+        Assert.Equal("Claude (Pro)", item.DisplayName);
     }
 
     [Fact]

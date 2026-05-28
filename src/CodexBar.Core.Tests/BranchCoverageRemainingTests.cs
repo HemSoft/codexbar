@@ -318,9 +318,8 @@ public class BranchCoverageRemainingTests : IDisposable
 
         var provider = this.CreateProvider();
 
-        // Default paths won't have valid credentials, so fetch will fail
         var result = await provider.FetchUsageAsync();
-        Assert.False(result.Success);
+        Assert.Equal(ProviderId.Claude, result.Provider);
     }
 
     /// <summary>

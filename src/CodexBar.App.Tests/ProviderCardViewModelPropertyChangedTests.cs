@@ -266,6 +266,28 @@ public sealed class ProviderCardViewModelPropertyChangedTests
         Assert.Contains(nameof(ProviderCardViewModel.IsHiddenCompanion), firedProperties);
     }
 
+    [Fact]
+    public void IsHiddenCompanion_WhenChanged_FiresIsCardVisibleChanged()
+    {
+        var card = new ProviderCardViewModel();
+        var firedProperties = CapturePropertyChanges(card);
+
+        card.IsHiddenCompanion = true;
+
+        Assert.Contains(nameof(ProviderCardViewModel.IsCardVisible), firedProperties);
+    }
+
+    [Fact]
+    public void IsProviderDisplayed_WhenChanged_FiresIsCardVisibleChanged()
+    {
+        var card = new ProviderCardViewModel();
+        var firedProperties = CapturePropertyChanges(card);
+
+        card.IsProviderDisplayed = false;
+
+        Assert.Contains(nameof(ProviderCardViewModel.IsCardVisible), firedProperties);
+    }
+
     // ---------------------------------------------------------------
     // Computed property correctness after state changes
     // ---------------------------------------------------------------
@@ -350,6 +372,27 @@ public sealed class ProviderCardViewModelPropertyChangedTests
     {
         var card = new ProviderCardViewModel { IsPairedCredits = true };
         Assert.False(card.ShowStatusTextLine);
+    }
+
+    [Fact]
+    public void IsCardVisible_WhenProviderDisplayedAndNotCompanion_IsTrue()
+    {
+        var card = new ProviderCardViewModel();
+        Assert.True(card.IsCardVisible);
+    }
+
+    [Fact]
+    public void IsCardVisible_WhenProviderNotDisplayed_IsFalse()
+    {
+        var card = new ProviderCardViewModel { IsProviderDisplayed = false };
+        Assert.False(card.IsCardVisible);
+    }
+
+    [Fact]
+    public void IsCardVisible_WhenHiddenCompanion_IsFalse()
+    {
+        var card = new ProviderCardViewModel { IsHiddenCompanion = true };
+        Assert.False(card.IsCardVisible);
     }
 
     private static List<string> CapturePropertyChanges(INotifyPropertyChanged vm)

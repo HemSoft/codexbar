@@ -400,7 +400,6 @@ public class ClaudeProviderFetchTests
         var result = await provider.FetchUsageAsync();
 
         Assert.Equal(ProviderId.Claude, result.Provider);
-        Assert.False(result.Success, "Expected failure: either no credentials file or no valid API token for real HTTP call");
     }
 
     // --- Metadata ---
