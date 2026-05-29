@@ -40,6 +40,9 @@ public sealed partial class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttp
     /// <summary>Gets or sets an override for the claude.json file path (test hook).</summary>
     internal static string? ClaudeJsonPathOverride { get; set; }
 
+    /// <summary>Gets or sets an override for the environment access token (test hook).</summary>
+    internal static string? EnvironmentAccessTokenOverride { get; set; }
+
     private static string CredentialsPath => CredentialsPathOverride ?? _defaultCredentialsPath;
 
     private static string StatsCachePath => StatsCachePathOverride ?? _defaultStatsCachePath;
@@ -961,9 +964,15 @@ public sealed partial class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttp
 
     private ClaudeCredentials? ReadCredentials()
     {
+        var environmentCredentials = ReadEnvironmentCredentials();
+        if (environmentCredentials is not null)
+        {
+            return environmentCredentials;
+        }
+
         if (!File.Exists(CredentialsPath))
         {
-            return this.ReadClaudeDesktopTokenCacheCredentials() ?? ReadEnvironmentCredentials();
+            return this.ReadClaudeDesktopTokenCacheCredentials();
         }
 
         try
@@ -974,7 +983,7 @@ public sealed partial class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttp
 
             if (!root.TryGetProperty("claudeAiOauth", out var oauth))
             {
-                return this.ReadClaudeDesktopTokenCacheCredentials() ?? ReadEnvironmentCredentials();
+                return this.ReadClaudeDesktopTokenCacheCredentials();
             }
 
             return ParseCredentials(oauth);
@@ -982,18 +991,24 @@ public sealed partial class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttp
         catch (Exception ex)
         {
             this.logger.LogDebug(ex, "Failed to read Claude credentials from {Path}", CredentialsPath);
-            return this.ReadClaudeDesktopTokenCacheCredentials() ?? ReadEnvironmentCredentials();
+            return this.ReadClaudeDesktopTokenCacheCredentials();
         }
     }
 
     private static ClaudeCredentials? ReadEnvironmentCredentials()
     {
+        var accessToken = EnvironmentAccessTokenOverride;
+        if (!string.IsNullOrWhiteSpace(accessToken))
+        {
+            return CreateEnvironmentCredentials(accessToken);
+        }
+
         if (CredentialsPathOverride is not null)
         {
             return null;
         }
 
-        var accessToken = Environment.GetEnvironmentVariable("CLAUDE_CODE_OAUTH_TOKEN");
+        accessToken = Environment.GetEnvironmentVariable("CLAUDE_CODE_OAUTH_TOKEN");
         if (string.IsNullOrWhiteSpace(accessToken))
         {
             accessToken = Environment.GetEnvironmentVariable("CLAUDE_CODE_OAUTH_TOKEN", EnvironmentVariableTarget.User);
@@ -1004,12 +1019,14 @@ public sealed partial class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttp
             return null;
         }
 
-        return new ClaudeCredentials
-        {
-            AccessToken = accessToken,
-            SubscriptionType = "subscription",
-        };
+        return CreateEnvironmentCredentials(accessToken);
     }
+
+    private static ClaudeCredentials CreateEnvironmentCredentials(string accessToken) => new()
+    {
+        AccessToken = accessToken,
+        SubscriptionType = "subscription",
+    };
 
     internal static ClaudeCredentials ParseCredentials(JsonElement oauth) => new()
     {

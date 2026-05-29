@@ -5,7 +5,6 @@ namespace CodexBar.Core.Providers.Claude;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
-using Microsoft.Extensions.Logging;
 #if WINDOWS
 using System.Security.Cryptography;
 using Microsoft.Data.Sqlite;
@@ -82,7 +81,10 @@ public sealed partial class ClaudeProvider
         }
         catch (Exception ex)
         {
-            this.logger.LogDebug(ex, "Failed to read Claude Desktop OAuth token cache");
+            Microsoft.Extensions.Logging.LoggerExtensions.LogDebug(
+                this.logger,
+                ex,
+                "Failed to read Claude Desktop OAuth token cache");
             return null;
         }
 #else
@@ -164,11 +166,17 @@ public sealed partial class ClaudeProvider
             cts.CancelAfter(ApiTimeout);
 
             using var response = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cts.Token);
-            this.logger.LogDebug("Claude web usage endpoint returned status {StatusCode}", (int)response.StatusCode);
+            Microsoft.Extensions.Logging.LoggerExtensions.LogDebug(
+                this.logger,
+                "Claude web usage endpoint returned status {StatusCode}",
+                (int)response.StatusCode);
 
             if (!response.IsSuccessStatusCode)
             {
-                this.logger.LogWarning("Claude web usage endpoint failed with status {StatusCode}", (int)response.StatusCode);
+                Microsoft.Extensions.Logging.LoggerExtensions.LogWarning(
+                    this.logger,
+                    "Claude web usage endpoint failed with status {StatusCode}",
+                    (int)response.StatusCode);
                 return null;
             }
 
@@ -183,12 +191,18 @@ public sealed partial class ClaudeProvider
         }
         catch (OperationCanceledException)
         {
-            this.logger.LogDebug("Claude web usage endpoint timed out");
+            Microsoft.Extensions.Logging.LoggerExtensions.LogDebug(
+                this.logger,
+                "Claude web usage endpoint timed out");
             return null;
         }
         catch (Exception ex)
         {
-            this.logger.LogWarning(ex, "Claude web usage endpoint failed: {Message}", ex.Message);
+            Microsoft.Extensions.Logging.LoggerExtensions.LogWarning(
+                this.logger,
+                ex,
+                "Claude web usage endpoint failed: {Message}",
+                ex.Message);
             return null;
         }
     }
@@ -199,7 +213,7 @@ public sealed partial class ClaudeProvider
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
         request.Headers.TryAddWithoutValidation("Cookie", cookieHeader);
         request.Headers.TryAddWithoutValidation("x-organization-uuid", organizationUuid);
-        request.Headers.TryAddWithoutValidation("User-Agent", "CodexBar/1.0");
+        request.Headers.UserAgent.ParseAdd("CodexBar/1.0");
         return request;
     }
 
@@ -232,7 +246,10 @@ public sealed partial class ClaudeProvider
         }
         catch (Exception ex)
         {
-            this.logger.LogDebug(ex, "Failed to read Claude Desktop web cookies");
+            Microsoft.Extensions.Logging.LoggerExtensions.LogDebug(
+                this.logger,
+                ex,
+                "Failed to read Claude Desktop web cookies");
             return null;
         }
 #else

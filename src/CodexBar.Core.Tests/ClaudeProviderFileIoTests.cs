@@ -43,6 +43,7 @@ public class ClaudeProviderFileIoTests : IDisposable
         ClaudeProvider.CredentialsPathOverride = null;
         ClaudeProvider.StatsCachePathOverride = null;
         ClaudeProvider.ClaudeJsonPathOverride = null;
+        ClaudeProvider.EnvironmentAccessTokenOverride = null;
 
         try
         {
@@ -117,6 +118,29 @@ public class ClaudeProviderFileIoTests : IDisposable
         Assert.Equal("test-access-token", credType.GetProperty("AccessToken")!.GetValue(result) as string);
         Assert.Equal("test-refresh-token", credType.GetProperty("RefreshToken")!.GetValue(result) as string);
         Assert.Equal(1750000000L, (long)credType.GetProperty("ExpiresAt")!.GetValue(result)!);
+    }
+
+    [Fact]
+    public void ReadCredentials_EnvironmentTokenExists_ReturnsEnvironmentCredentials()
+    {
+        ClaudeProvider.EnvironmentAccessTokenOverride = "env-access-token";
+        var json = """
+        {
+            "claudeAiOauth": {
+                "subscriptionType": "pro",
+                "accessToken": "file-access-token"
+            }
+        }
+        """;
+        File.WriteAllText(this._credentialsPath, json);
+        var provider = CreateProvider();
+
+        var result = InvokePrivateMethod(provider, "ReadCredentials");
+
+        Assert.NotNull(result);
+        var credType = result!.GetType();
+        Assert.Equal("subscription", credType.GetProperty("SubscriptionType")!.GetValue(result) as string);
+        Assert.Equal("env-access-token", credType.GetProperty("AccessToken")!.GetValue(result) as string);
     }
 
     [Fact]

@@ -1044,6 +1044,7 @@ public class BranchCoverageTests
         Assert.Contains("sessionKey=value", cookies);
         Assert.True(request.Headers.TryGetValues("x-organization-uuid", out var orgs));
         Assert.Contains("org-id", orgs);
+        Assert.Equal("CodexBar/1.0", request.Headers.UserAgent.ToString());
     }
 
     [Fact]
