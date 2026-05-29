@@ -59,6 +59,20 @@ public class ClaudeProviderPrivateMethodTests
         return task.GetType().GetProperty("Result")!.GetValue(task);
     }
 
+    private static async Task<object?> InvokeFetchClaudeWebUsageAsync(
+        ClaudeProvider provider,
+        ClaudeProvider.ClaudeAccountInfo? accountInfo,
+        CancellationToken ct = default)
+    {
+        var method = typeof(ClaudeProvider).GetMethod(
+            "FetchClaudeWebUsageAsync",
+            BindingFlags.NonPublic | BindingFlags.Instance);
+        Assert.NotNull(method);
+        var task = (Task)method!.Invoke(provider, [accountInfo, ct])!;
+        await task;
+        return task.GetType().GetProperty("Result")!.GetValue(task);
+    }
+
     private static object CreateClaudeCredentials(
         string? subscriptionType = null,
         string? accessToken = null,
@@ -88,6 +102,32 @@ public class ClaudeProviderPrivateMethodTests
     }
 
     // --- FetchRateLimitsAsync ---
+    [Fact]
+    public async Task FetchClaudeWebUsageAsync_NullAccount_ReturnsNull()
+    {
+        var factory = Substitute.For<IHttpClientFactory>();
+        var provider = CreateProvider(factory);
+
+        var result = await InvokeFetchClaudeWebUsageAsync(provider, null);
+
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public async Task FetchClaudeWebUsageAsync_MissingCookie_ReturnsNull()
+    {
+        var factory = Substitute.For<IHttpClientFactory>();
+        var provider = CreateProvider(factory);
+        var accountInfo = new ClaudeProvider.ClaudeAccountInfo
+        {
+            OrganizationUuid = "org-id",
+        };
+
+        var result = await InvokeFetchClaudeWebUsageAsync(provider, accountInfo);
+
+        Assert.Null(result);
+    }
+
     [Fact]
     public async Task FetchRateLimitsAsync_NullToken_ReturnsNull()
     {

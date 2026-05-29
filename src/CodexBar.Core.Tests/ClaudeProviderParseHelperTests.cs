@@ -70,6 +70,86 @@ public class ClaudeProviderParseHelperTests
         Assert.Null(result.RefreshToken);
     }
 
+    [Fact]
+    public void ParseClaudeDesktopTokenCache_ClaudeCodeEntry_ReturnsCredentials()
+    {
+        var json = """
+        {
+            "other-entry": {
+                "token": "other-token",
+                "subscriptionType": "max"
+            },
+            "account:org:https://api.anthropic.com:user:inference:claude_code": {
+                "token": "desktop-token",
+                "refreshToken": "desktop-refresh",
+                "expiresAt": 1782623852122,
+                "subscriptionType": "pro",
+                "rateLimitTier": "default_claude_ai"
+            }
+        }
+        """;
+        using var doc = JsonDocument.Parse(json);
+
+        var result = ClaudeProvider.ParseClaudeDesktopTokenCache(doc.RootElement);
+
+        Assert.NotNull(result);
+        Assert.Equal("desktop-token", result.AccessToken);
+        Assert.Equal("desktop-refresh", result.RefreshToken);
+        Assert.Equal(1782623852122L, result.ExpiresAt);
+        Assert.Equal("pro", result.SubscriptionType);
+        Assert.Equal("default_claude_ai", result.RateLimitTier);
+    }
+
+    [Fact]
+    public void ParseClaudeDesktopTokenCache_NonObject_ReturnsNull()
+    {
+        using var doc = JsonDocument.Parse("[]");
+
+        var result = ClaudeProvider.ParseClaudeDesktopTokenCache(doc.RootElement);
+
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public void ParseClaudeDesktopTokenCache_FallbackEntry_ReturnsCredentials()
+    {
+        var json = """
+        {
+            "account:org:https://api.anthropic.com:user:inference": {
+                "token": "fallback-token",
+                "subscriptionType": "max"
+            }
+        }
+        """;
+        using var doc = JsonDocument.Parse(json);
+
+        var result = ClaudeProvider.ParseClaudeDesktopTokenCache(doc.RootElement);
+
+        Assert.NotNull(result);
+        Assert.Equal("fallback-token", result.AccessToken);
+        Assert.Equal("max", result.SubscriptionType);
+    }
+
+    [Fact]
+    public void ParseClaudeDesktopTokenCache_InvalidEntries_ReturnsNull()
+    {
+        var json = """
+        {
+            "empty-token": {
+                "token": ""
+            },
+            "missing-token": {
+                "subscriptionType": "pro"
+            }
+        }
+        """;
+        using var doc = JsonDocument.Parse(json);
+
+        var result = ClaudeProvider.ParseClaudeDesktopTokenCache(doc.RootElement);
+
+        Assert.Null(result);
+    }
+
     // --- ParseAccountInfo ---
     [Fact]
     public void ParseAccountInfo_AllFieldsPresent_ReturnsAccountInfo()
@@ -78,6 +158,7 @@ public class ClaudeProviderParseHelperTests
         {
             "displayName": "Test User",
             "billingType": "pro",
+            "organizationUuid": "org-123",
             "hasExtraUsageEnabled": true
         }
         """;
@@ -86,6 +167,7 @@ public class ClaudeProviderParseHelperTests
 
         Assert.Equal("Test User", result.DisplayName);
         Assert.Equal("pro", result.BillingType);
+        Assert.Equal("org-123", result.OrganizationUuid);
         Assert.True(result.HasExtraUsageEnabled);
     }
 
@@ -98,6 +180,7 @@ public class ClaudeProviderParseHelperTests
 
         Assert.Null(result.DisplayName);
         Assert.Null(result.BillingType);
+        Assert.Null(result.OrganizationUuid);
         Assert.False(result.HasExtraUsageEnabled);
     }
 
@@ -120,6 +203,7 @@ public class ClaudeProviderParseHelperTests
 
         Assert.Equal("Partial", result.DisplayName);
         Assert.Null(result.BillingType);
+        Assert.Null(result.OrganizationUuid);
         Assert.False(result.HasExtraUsageEnabled);
     }
 

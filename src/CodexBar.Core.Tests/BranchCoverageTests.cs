@@ -1033,6 +1033,38 @@ public class BranchCoverageTests
         Assert.Contains("oauth-2025-04-20", beta);
     }
 
+    [Fact]
+    public void BuildClaudeWebUsageRequest_UsesClaudeSettingsUsageEndpoint()
+    {
+        using var request = ClaudeProvider.BuildClaudeWebUsageRequest("org-id", "sessionKey=value");
+
+        Assert.Equal(HttpMethod.Get, request.Method);
+        Assert.Equal("https://claude.ai/api/organizations/org-id/usage", request.RequestUri!.ToString());
+        Assert.True(request.Headers.TryGetValues("Cookie", out var cookies));
+        Assert.Contains("sessionKey=value", cookies);
+        Assert.True(request.Headers.TryGetValues("x-organization-uuid", out var orgs));
+        Assert.Contains("org-id", orgs);
+    }
+
+    [Fact]
+    public void IsEmptyRateLimitSnapshot_BothWindowsZero_ReturnsTrue()
+    {
+        var limits = new ClaudeProvider.UnifiedRateLimits();
+
+        Assert.True(ClaudeProvider.IsEmptyRateLimitSnapshot(limits));
+    }
+
+    [Fact]
+    public void IsEmptyRateLimitSnapshot_WeeklyWindowNonZero_ReturnsFalse()
+    {
+        var limits = new ClaudeProvider.UnifiedRateLimits
+        {
+            SevenDayUtilization = 0.04,
+        };
+
+        Assert.False(ClaudeProvider.IsEmptyRateLimitSnapshot(limits));
+    }
+
     /// <summary>
     /// Exercises BuildResult where Rolling is null so primary falls back to Monthly (line 127: ?? usage.Monthly).
     /// </summary>
