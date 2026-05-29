@@ -209,7 +209,8 @@ public sealed partial class ClaudeProvider
 
     internal static HttpRequestMessage BuildClaudeWebUsageRequest(string organizationUuid, string cookieHeader)
     {
-        var request = new HttpRequestMessage(HttpMethod.Get, $"{ClaudeWebBaseUrl}/api/organizations/{organizationUuid}/usage");
+        var escapedOrganizationUuid = Uri.EscapeDataString(organizationUuid);
+        var request = new HttpRequestMessage(HttpMethod.Get, $"{ClaudeWebBaseUrl}/api/organizations/{escapedOrganizationUuid}/usage");
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
         request.Headers.TryAddWithoutValidation("Cookie", cookieHeader);
         request.Headers.TryAddWithoutValidation("x-organization-uuid", organizationUuid);

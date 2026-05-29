@@ -1048,6 +1048,16 @@ public class BranchCoverageTests
     }
 
     [Fact]
+    public void BuildClaudeWebUsageRequest_OrganizationUuidContainsPathCharacters_EscapesPathSegment()
+    {
+        using var request = ClaudeProvider.BuildClaudeWebUsageRequest("org/id?test=value", "sessionKey=value");
+
+        Assert.Equal("https://claude.ai/api/organizations/org%2Fid%3Ftest%3Dvalue/usage", request.RequestUri!.ToString());
+        Assert.True(request.Headers.TryGetValues("x-organization-uuid", out var orgs));
+        Assert.Contains("org/id?test=value", orgs);
+    }
+
+    [Fact]
     public void IsEmptyRateLimitSnapshot_BothWindowsZero_ReturnsTrue()
     {
         var limits = new ClaudeProvider.UnifiedRateLimits();
