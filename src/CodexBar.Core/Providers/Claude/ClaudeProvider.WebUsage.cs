@@ -3,10 +3,10 @@
 namespace CodexBar.Core.Providers.Claude;
 
 using System.Net.Http.Headers;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 #if WINDOWS
-using System.Security.Cryptography;
 using Microsoft.Data.Sqlite;
 #endif
 
@@ -391,30 +391,36 @@ public sealed partial class ClaudeProvider
         return plaintext;
     }
 
+    private sealed record ClaudeWebCookie(string Name, string Value);
+#endif
+
     internal static string DecodeChromiumCookiePlaintext(string hostKey, byte[] plaintext)
     {
-        if (plaintext.Length <= 32)
+        var hostDigest = SHA256.HashData(Encoding.UTF8.GetBytes(hostKey));
+        if (plaintext.Length == hostDigest.Length &&
+            plaintext.AsSpan().SequenceEqual(hostDigest))
+        {
+            return string.Empty;
+        }
+
+        if (plaintext.Length <= hostDigest.Length)
         {
             return Encoding.UTF8.GetString(plaintext);
         }
 
-        var hostDigest = SHA256.HashData(Encoding.UTF8.GetBytes(hostKey));
         return plaintext.AsSpan(0, hostDigest.Length).SequenceEqual(hostDigest)
             ? Encoding.UTF8.GetString(plaintext.AsSpan(hostDigest.Length))
             : Encoding.UTF8.GetString(plaintext);
     }
 
-    private static bool IsChromiumCookieExpired(long expiresUtc)
+    internal static bool IsChromiumCookieExpired(long expiresUtc)
     {
         if (expiresUtc <= 0)
         {
             return false;
         }
 
-        var expires = DateTimeOffset.FromFileTime(expiresUtc * 10);
+        var expires = new DateTimeOffset(DateTime.FromFileTimeUtc(expiresUtc * 10));
         return expires <= DateTimeOffset.UtcNow;
     }
-
-    private sealed record ClaudeWebCookie(string Name, string Value);
-#endif
 }

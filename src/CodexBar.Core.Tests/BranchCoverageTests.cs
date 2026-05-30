@@ -4,6 +4,7 @@ namespace CodexBar.Core.Tests;
 
 using System.Net;
 using System.Net.Http.Headers;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using CodexBar.Core.Configuration;
@@ -1055,6 +1056,50 @@ public class BranchCoverageTests
         Assert.Equal("https://claude.ai/api/organizations/org%2Fid%3Ftest%3Dvalue/usage", request.RequestUri!.ToString());
         Assert.True(request.Headers.TryGetValues("x-organization-uuid", out var orgs));
         Assert.Contains("org/id?test=value", orgs);
+    }
+
+    [Fact]
+    public void DecodeChromiumCookiePlaintext_DigestOnlyPayload_ReturnsEmptyString()
+    {
+        const string hostKey = ".claude.ai";
+        var plaintext = SHA256.HashData(Encoding.UTF8.GetBytes(hostKey));
+
+        var result = ClaudeProvider.DecodeChromiumCookiePlaintext(hostKey, plaintext);
+
+        Assert.Equal(string.Empty, result);
+    }
+
+    [Fact]
+    public void DecodeChromiumCookiePlaintext_DigestPrefixedPayload_ReturnsCookieValue()
+    {
+        const string hostKey = ".claude.ai";
+        var plaintext = SHA256.HashData(Encoding.UTF8.GetBytes(hostKey))
+            .Concat(Encoding.UTF8.GetBytes("session-value"))
+            .ToArray();
+
+        var result = ClaudeProvider.DecodeChromiumCookiePlaintext(hostKey, plaintext);
+
+        Assert.Equal("session-value", result);
+    }
+
+    [Fact]
+    public void IsChromiumCookieExpired_PastUtcTimestamp_ReturnsTrue()
+    {
+        var expiresUtc = DateTimeOffset.UtcNow.AddMinutes(-1).ToFileTime() / 10;
+
+        var result = ClaudeProvider.IsChromiumCookieExpired(expiresUtc);
+
+        Assert.True(result);
+    }
+
+    [Fact]
+    public void IsChromiumCookieExpired_FutureUtcTimestamp_ReturnsFalse()
+    {
+        var expiresUtc = DateTimeOffset.UtcNow.AddMinutes(1).ToFileTime() / 10;
+
+        var result = ClaudeProvider.IsChromiumCookieExpired(expiresUtc);
+
+        Assert.False(result);
     }
 
     [Fact]
