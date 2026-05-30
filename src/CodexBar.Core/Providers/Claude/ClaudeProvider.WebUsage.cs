@@ -36,6 +36,8 @@ public sealed partial class ClaudeProvider
 
     internal static string? ClaudeDesktopConfigPathOverride { get; set; }
 
+    internal static string? ClaudeDesktopCookieHeaderOverride { get; set; }
+
     private static string ClaudeDesktopLocalStatePath =>
         ClaudeDesktopLocalStatePathOverride ?? _defaultClaudeDesktopLocalStatePath;
 
@@ -156,12 +158,30 @@ public sealed partial class ClaudeProvider
             return null;
         }
 
+        await this.cacheLock.WaitAsync(ct);
+        try
+        {
+            if (this.TryGetFreshCachedLimits(out cached, requireAuthoritative: true))
+            {
+                return cached;
+            }
+
+            return await this.FetchClaudeWebUsageAsync(accountInfo.OrganizationUuid, cookieHeader, ct);
+        }
+        finally
+        {
+            this.cacheLock.Release();
+        }
+    }
+
+    internal async Task<UnifiedRateLimits?> FetchClaudeWebUsageAsync(string organizationUuid, string cookieHeader, CancellationToken ct)
+    {
         try
         {
             using var httpClient = this.httpClientFactory.CreateClient();
             httpClient.Timeout = ApiTimeout;
 
-            using var request = BuildClaudeWebUsageRequest(accountInfo.OrganizationUuid, cookieHeader);
+            using var request = BuildClaudeWebUsageRequest(organizationUuid, cookieHeader);
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             cts.CancelAfter(ApiTimeout);
 
@@ -220,6 +240,11 @@ public sealed partial class ClaudeProvider
 
     private string? TryReadClaudeDesktopCookieHeader()
     {
+        if (ClaudeDesktopCookieHeaderOverride is not null)
+        {
+            return ClaudeDesktopCookieHeaderOverride;
+        }
+
 #if WINDOWS
         if ((CredentialsPathOverride is not null || ClaudeJsonPathOverride is not null) &&
             (ClaudeDesktopCookiesPathOverride is null || ClaudeDesktopLocalStatePathOverride is null))

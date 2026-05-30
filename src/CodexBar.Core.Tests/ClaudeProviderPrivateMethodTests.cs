@@ -47,6 +47,28 @@ public class ClaudeProviderPrivateMethodTests
         return factory;
     }
 
+    private static IHttpClientFactory CreateFactory(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> handler)
+    {
+        var client = new HttpClient(new DelegatingHandlerFunc(handler));
+        var factory = Substitute.For<IHttpClientFactory>();
+        factory.CreateClient(Arg.Any<string>()).Returns(client);
+        return factory;
+    }
+
+    private static string CreateClaudeWebUsageResponse(double fiveHourUtilization = 35, double sevenDayUtilization = 60) =>
+        $$"""
+        {
+            "five_hour": {
+                "utilization": {{fiveHourUtilization}},
+                "resets_at": "2026-05-30T10:00:00Z"
+            },
+            "seven_day": {
+                "utilization": {{sevenDayUtilization}},
+                "resets_at": "2026-06-01T10:00:00Z"
+            }
+        }
+        """;
+
     private static async Task<object?> InvokeFetchRateLimitsAsync(
         ClaudeProvider provider, string? accessToken, CancellationToken ct = default)
     {
@@ -66,7 +88,8 @@ public class ClaudeProviderPrivateMethodTests
     {
         var method = typeof(ClaudeProvider).GetMethod(
             "FetchClaudeWebUsageAsync",
-            BindingFlags.NonPublic | BindingFlags.Instance);
+            BindingFlags.NonPublic | BindingFlags.Instance,
+            [typeof(ClaudeProvider.ClaudeAccountInfo), typeof(CancellationToken)]);
         Assert.NotNull(method);
         var task = (Task)method!.Invoke(provider, [accountInfo, ct])!;
         await task;
@@ -126,6 +149,121 @@ public class ClaudeProviderPrivateMethodTests
         var result = await InvokeFetchClaudeWebUsageAsync(provider, accountInfo);
 
         Assert.Null(result);
+    }
+
+    [Fact]
+    public async Task FetchClaudeWebUsageAsync_ValidCookie_SendsWebUsageRequestAndCachesResult()
+    {
+        var requestCount = 0;
+        var factory = CreateFactory((request, _) =>
+        {
+            Interlocked.Increment(ref requestCount);
+            Assert.Equal(
+                "https://claude.ai/api/organizations/org%2Fid%3Ftest%3Dvalue/usage",
+                request.RequestUri!.ToString());
+            Assert.True(request.Headers.TryGetValues("Cookie", out var cookies));
+            Assert.Contains("sessionKey=value", cookies);
+            Assert.True(request.Headers.TryGetValues("x-organization-uuid", out var orgs));
+            Assert.Contains("org/id?test=value", orgs);
+
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(CreateClaudeWebUsageResponse(), Encoding.UTF8, "application/json"),
+            });
+        });
+        var provider = CreateProvider(factory);
+        var accountInfo = new ClaudeProvider.ClaudeAccountInfo
+        {
+            OrganizationUuid = "org/id?test=value",
+        };
+
+        ClaudeProvider.ClaudeDesktopCookieHeaderOverride = "sessionKey=value";
+        try
+        {
+            var result = await InvokeFetchClaudeWebUsageAsync(provider, accountInfo);
+            var cached = await InvokeFetchClaudeWebUsageAsync(provider, null);
+
+            Assert.NotNull(result);
+            var limits = (ClaudeProvider.UnifiedRateLimits)result!;
+            Assert.Equal(0.35, limits.FiveHourUtilization, 2);
+            Assert.Equal(0.60, limits.SevenDayUtilization, 2);
+            Assert.Same(result, cached);
+            Assert.Equal(1, requestCount);
+        }
+        finally
+        {
+            ClaudeProvider.ClaudeDesktopCookieHeaderOverride = null;
+        }
+    }
+
+    [Fact]
+    public async Task FetchClaudeWebUsageAsync_NonSuccessStatus_ReturnsNull()
+    {
+        var factory = CreateFactory((_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.TooManyRequests)
+        {
+            Content = new StringContent("rate limited", Encoding.UTF8, "text/plain"),
+        }));
+        var provider = CreateProvider(factory);
+
+        var result = await provider.FetchClaudeWebUsageAsync("org-id", "sessionKey=value", CancellationToken.None);
+
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public async Task FetchClaudeWebUsageAsync_InvalidJson_ReturnsNull()
+    {
+        var factory = CreateFactory((_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("{", Encoding.UTF8, "application/json"),
+        }));
+        var provider = CreateProvider(factory);
+
+        var result = await provider.FetchClaudeWebUsageAsync("org-id", "sessionKey=value", CancellationToken.None);
+
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public async Task FetchClaudeWebUsageAsync_ConcurrentCalls_UseSingleWebUsageRequest()
+    {
+        var requestCount = 0;
+        var requestStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var allowResponse = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var factory = CreateFactory(async (_, ct) =>
+        {
+            Interlocked.Increment(ref requestCount);
+            requestStarted.TrySetResult(true);
+            await allowResponse.Task.WaitAsync(ct);
+            return new HttpResponseMessage(HttpStatusCode.OK)
+            {
+                Content = new StringContent(CreateClaudeWebUsageResponse(45, 70), Encoding.UTF8, "application/json"),
+            };
+        });
+        var provider = CreateProvider(factory);
+        var accountInfo = new ClaudeProvider.ClaudeAccountInfo
+        {
+            OrganizationUuid = "org-id",
+        };
+
+        ClaudeProvider.ClaudeDesktopCookieHeaderOverride = "sessionKey=value";
+        try
+        {
+            var firstTask = InvokeFetchClaudeWebUsageAsync(provider, accountInfo);
+            await requestStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            var secondTask = InvokeFetchClaudeWebUsageAsync(provider, accountInfo);
+
+            allowResponse.SetResult(true);
+            var results = await Task.WhenAll(firstTask, secondTask);
+
+            Assert.NotNull(results[0]);
+            Assert.Same(results[0], results[1]);
+            Assert.Equal(1, requestCount);
+        }
+        finally
+        {
+            ClaudeProvider.ClaudeDesktopCookieHeaderOverride = null;
+        }
     }
 
     [Fact]
@@ -436,5 +574,14 @@ public class ClaudeProviderPrivateMethodTests
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request, CancellationToken cancellationToken) =>
             throw this._exception;
+    }
+
+    private sealed class DelegatingHandlerFunc(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> handler)
+        : HttpMessageHandler
+    {
+        private readonly Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> _handler = handler;
+
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
+            this._handler(request, cancellationToken);
     }
 }
