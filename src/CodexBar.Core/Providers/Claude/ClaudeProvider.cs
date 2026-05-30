@@ -16,7 +16,7 @@ using Microsoft.Extensions.Logging;
 /// Fetches Claude Code subscription usage from the OAuth usage endpoint, with
 /// rate-limit response headers as a fallback for older token behavior.
 /// </summary>
-public sealed class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFactory httpClientFactory, ISettingsService settings) : IUsageProvider
+public sealed partial class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFactory httpClientFactory, ISettingsService settings) : IUsageProvider
 {
     private readonly ILogger<ClaudeProvider> logger = logger;
     private readonly ISettingsService settings = settings;
@@ -39,6 +39,9 @@ public sealed class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFa
 
     /// <summary>Gets or sets an override for the claude.json file path (test hook).</summary>
     internal static string? ClaudeJsonPathOverride { get; set; }
+
+    /// <summary>Gets or sets an override for the environment access token (test hook).</summary>
+    internal static string? EnvironmentAccessTokenOverride { get; set; }
 
     private static string CredentialsPath => CredentialsPathOverride ?? _defaultCredentialsPath;
 
@@ -80,6 +83,7 @@ public sealed class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFa
     // Cache the last known rate-limit data so we don't probe the API on every refresh.
     // TTL is 30 min to avoid burning subscription quota with frequent probes (~48 req/day vs ~288).
     private UnifiedRateLimits? cachedLimits;
+    private bool cachedLimitsAreAuthoritative;
     private long limitsCachedAtTicks; // stored as ticks for atomic reads via Volatile
     private static readonly TimeSpan CacheTtl = TimeSpan.FromMinutes(30);
     private readonly SemaphoreSlim cacheLock = new(1, 1);
@@ -139,7 +143,8 @@ public sealed class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFa
 
             var equivalentCost = CalculateEquivalentCost(stats);
             var totalTokens = CalculateTotalTokens(stats);
-            var limits = await this.FetchOAuthUsageAsync(credentials.AccessToken, ct)
+            var limits = await this.FetchClaudeWebUsageAsync(accountInfo, ct)
+                ?? await this.FetchOAuthUsageAsync(credentials.AccessToken, ct)
                 ?? await this.FetchRateLimitsAsync(credentials.AccessToken, ct);
 
             return BuildFetchResult(limits, displaySub, totalTokens, equivalentCost, accountInfo);
@@ -511,7 +516,7 @@ public sealed class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFa
         if (string.IsNullOrEmpty(accessToken))
         {
             this.logger.LogWarning("Claude: no OAuth access token available for rate-limit probe");
-            return this.cachedLimits;
+            return this.GetFallbackCachedLimits();
         }
 
         await this.cacheLock.WaitAsync(ct);
@@ -532,7 +537,7 @@ public sealed class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFa
 
     private async Task<UnifiedRateLimits?> FetchOAuthUsageAsync(string? accessToken, CancellationToken ct)
     {
-        if (this.TryGetFreshCachedLimits(out var cached))
+        if (this.TryGetFreshCachedLimits(out var cached, requireAuthoritative: true))
         {
             return cached;
         }
@@ -540,13 +545,13 @@ public sealed class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFa
         if (string.IsNullOrEmpty(accessToken))
         {
             this.logger.LogWarning("Claude: no OAuth access token available for usage endpoint");
-            return this.cachedLimits;
+            return this.GetFallbackCachedLimits();
         }
 
         await this.cacheLock.WaitAsync(ct);
         try
         {
-            if (this.TryGetFreshCachedLimits(out cached))
+            if (this.TryGetFreshCachedLimits(out cached, requireAuthoritative: true))
             {
                 return cached;
             }
@@ -564,7 +569,7 @@ public sealed class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFa
             if (!response.IsSuccessStatusCode)
             {
                 this.logger.LogWarning("Claude OAuth usage endpoint failed with status {StatusCode}", (int)response.StatusCode);
-                return this.cachedLimits;
+                return this.GetFallbackCachedLimits();
             }
 
             var json = await response.Content.ReadAsStringAsync(cts.Token);
@@ -579,12 +584,12 @@ public sealed class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFa
         catch (OperationCanceledException)
         {
             this.logger.LogDebug("Claude OAuth usage endpoint timed out");
-            return this.cachedLimits;
+            return this.GetFallbackCachedLimits();
         }
         catch (Exception ex)
         {
             this.logger.LogWarning(ex, "Claude OAuth usage endpoint failed: {Message}", ex.Message);
-            return this.cachedLimits;
+            return this.GetFallbackCachedLimits();
         }
         finally
         {
@@ -603,7 +608,7 @@ public sealed class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFa
         return request;
     }
 
-    private bool TryGetFreshCachedLimits(out UnifiedRateLimits? cached)
+    private bool TryGetFreshCachedLimits(out UnifiedRateLimits? cached, bool requireAuthoritative = false)
     {
         // Read ticks first — Volatile.Read provides an acquire fence that
         // guarantees the subsequent read of cachedLimits sees the value
@@ -611,8 +616,18 @@ public sealed class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFa
         var cachedTicks = Volatile.Read(ref this.limitsCachedAtTicks);
         cached = this.cachedLimits;
         return cached is not null &&
+               (!requireAuthoritative || this.cachedLimitsAreAuthoritative) &&
+               (this.cachedLimitsAreAuthoritative || !IsEmptyRateLimitSnapshot(cached)) &&
                cachedTicks > 0 &&
                DateTimeOffset.UtcNow.UtcTicks - cachedTicks < CacheTtl.Ticks;
+    }
+
+    private UnifiedRateLimits? GetFallbackCachedLimits()
+    {
+        var cached = this.cachedLimits;
+        return cached is not null && !IsEmptyRateLimitSnapshot(cached)
+            ? cached
+            : null;
     }
 
     private async Task<UnifiedRateLimits?> ProbeAndCacheRateLimitsAsync(string accessToken, CancellationToken ct)
@@ -642,17 +657,17 @@ public sealed class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFa
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
             this.logger.LogDebug("Claude API probe timed out");
-            return this.cachedLimits;
+            return this.GetFallbackCachedLimits();
         }
         catch (HttpRequestException ex)
         {
             this.logger.LogWarning(ex, "Claude API probe failed (HTTP): {Message}", ex.Message);
-            return this.cachedLimits;
+            return this.GetFallbackCachedLimits();
         }
         catch (Exception ex)
         {
             this.logger.LogWarning(ex, "Claude API probe failed: {Type}: {Message}", ex.GetType().Name, ex.Message);
-            return this.cachedLimits;
+            return this.GetFallbackCachedLimits();
         }
     }
 
@@ -670,7 +685,14 @@ public sealed class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFa
     {
         if (result is not null)
         {
+            if (IsEmptyRateLimitSnapshot(result))
+            {
+                this.logger.LogWarning("Claude API rate-limit probe returned 0% for both windows; ignoring non-authoritative empty snapshot");
+                return this.GetFallbackCachedLimits();
+            }
+
             this.cachedLimits = result;
+            this.cachedLimitsAreAuthoritative = false;
             Volatile.Write(ref this.limitsCachedAtTicks, DateTimeOffset.UtcNow.UtcTicks);
             this.logger.LogDebug(
                 "Claude rate limits: 5h={FiveH:P0}, 7d={SevenD:P0}",
@@ -684,7 +706,7 @@ public sealed class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFa
                 headerNames);
         }
 
-        return result ?? this.cachedLimits;
+        return result ?? this.GetFallbackCachedLimits();
     }
 
     private UnifiedRateLimits? CacheAndReturnUsageLimits(UnifiedRateLimits? result)
@@ -692,10 +714,11 @@ public sealed class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFa
         if (result is null)
         {
             this.logger.LogWarning("Claude OAuth usage payload did not include usage windows");
-            return this.cachedLimits;
+            return this.GetFallbackCachedLimits();
         }
 
         this.cachedLimits = result;
+        this.cachedLimitsAreAuthoritative = true;
         Volatile.Write(ref this.limitsCachedAtTicks, DateTimeOffset.UtcNow.UtcTicks);
         this.logger.LogDebug(
             "Claude OAuth usage: 5h={FiveH:P0}, 7d={SevenD:P0}",
@@ -703,6 +726,12 @@ public sealed class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFa
             result.SevenDayUtilization);
         return result;
     }
+
+    internal static bool IsEmptyRateLimitSnapshot(UnifiedRateLimits limits) =>
+        limits.FiveHourUtilization <= 0
+        && limits.SevenDayUtilization <= 0
+        && limits.FiveHourReset == 0
+        && limits.SevenDayReset == 0;
 
     private async Task<ClaudeCredentials?> TryRefreshTokenAsync(ClaudeCredentials credentials, CancellationToken ct)
     {
@@ -946,7 +975,7 @@ public sealed class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFa
 
         if (!File.Exists(CredentialsPath))
         {
-            return null;
+            return this.ReadClaudeDesktopTokenCacheCredentials();
         }
 
         try
@@ -957,7 +986,7 @@ public sealed class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFa
 
             if (!root.TryGetProperty("claudeAiOauth", out var oauth))
             {
-                return null;
+                return this.ReadClaudeDesktopTokenCacheCredentials();
             }
 
             return ParseCredentials(oauth);
@@ -965,18 +994,24 @@ public sealed class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFa
         catch (Exception ex)
         {
             this.logger.LogDebug(ex, "Failed to read Claude credentials from {Path}", CredentialsPath);
-            return null;
+            return this.ReadClaudeDesktopTokenCacheCredentials();
         }
     }
 
     private static ClaudeCredentials? ReadEnvironmentCredentials()
     {
+        var accessToken = EnvironmentAccessTokenOverride;
+        if (!string.IsNullOrWhiteSpace(accessToken))
+        {
+            return CreateEnvironmentCredentials(accessToken);
+        }
+
         if (CredentialsPathOverride is not null)
         {
             return null;
         }
 
-        var accessToken = Environment.GetEnvironmentVariable("CLAUDE_CODE_OAUTH_TOKEN");
+        accessToken = Environment.GetEnvironmentVariable("CLAUDE_CODE_OAUTH_TOKEN");
         if (string.IsNullOrWhiteSpace(accessToken))
         {
             accessToken = Environment.GetEnvironmentVariable("CLAUDE_CODE_OAUTH_TOKEN", EnvironmentVariableTarget.User);
@@ -987,12 +1022,14 @@ public sealed class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFa
             return null;
         }
 
-        return new ClaudeCredentials
-        {
-            AccessToken = accessToken,
-            SubscriptionType = "subscription",
-        };
+        return CreateEnvironmentCredentials(accessToken);
     }
+
+    private static ClaudeCredentials CreateEnvironmentCredentials(string accessToken) => new()
+    {
+        AccessToken = accessToken,
+        SubscriptionType = "subscription",
+    };
 
     internal static ClaudeCredentials ParseCredentials(JsonElement oauth) => new()
     {
@@ -1034,6 +1071,7 @@ public sealed class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFa
     {
         DisplayName = account.TryGetProperty("displayName", out var dn) ? dn.GetString() : null,
         BillingType = account.TryGetProperty("billingType", out var bt) ? bt.GetString() : null,
+        OrganizationUuid = account.TryGetProperty("organizationUuid", out var org) ? org.GetString() : null,
         HasExtraUsageEnabled = account.TryGetProperty("hasExtraUsageEnabled", out var eu) && eu.GetBoolean(),
     };
 
@@ -1235,6 +1273,8 @@ public sealed class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFa
         public string? DisplayName { get; init; }
 
         public string? BillingType { get; init; }
+
+        public string? OrganizationUuid { get; init; }
 
         public bool HasExtraUsageEnabled { get; init; }
     }

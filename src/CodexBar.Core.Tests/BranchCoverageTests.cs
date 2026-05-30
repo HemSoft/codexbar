@@ -4,6 +4,7 @@ namespace CodexBar.Core.Tests;
 
 using System.Net;
 using System.Net.Http.Headers;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using CodexBar.Core.Configuration;
@@ -1031,6 +1032,105 @@ public class BranchCoverageTests
         Assert.Equal("access-token", request.Headers.Authorization.Parameter);
         Assert.True(request.Headers.TryGetValues("anthropic-beta", out var beta));
         Assert.Contains("oauth-2025-04-20", beta);
+    }
+
+    [Fact]
+    public void BuildClaudeWebUsageRequest_UsesClaudeSettingsUsageEndpoint()
+    {
+        using var request = ClaudeProvider.BuildClaudeWebUsageRequest("org-id", "sessionKey=value");
+
+        Assert.Equal(HttpMethod.Get, request.Method);
+        Assert.Equal("https://claude.ai/api/organizations/org-id/usage", request.RequestUri!.ToString());
+        Assert.True(request.Headers.TryGetValues("Cookie", out var cookies));
+        Assert.Contains("sessionKey=value", cookies);
+        Assert.True(request.Headers.TryGetValues("x-organization-uuid", out var orgs));
+        Assert.Contains("org-id", orgs);
+        Assert.Equal("CodexBar/1.0", request.Headers.UserAgent.ToString());
+    }
+
+    [Fact]
+    public void BuildClaudeWebUsageRequest_OrganizationUuidContainsPathCharacters_EscapesPathSegment()
+    {
+        using var request = ClaudeProvider.BuildClaudeWebUsageRequest("org/id?test=value", "sessionKey=value");
+
+        Assert.Equal("https://claude.ai/api/organizations/org%2Fid%3Ftest%3Dvalue/usage", request.RequestUri!.ToString());
+        Assert.True(request.Headers.TryGetValues("x-organization-uuid", out var orgs));
+        Assert.Contains("org/id?test=value", orgs);
+    }
+
+    [Fact]
+    public void DecodeChromiumCookiePlaintext_DigestOnlyPayload_ReturnsEmptyString()
+    {
+        const string hostKey = ".claude.ai";
+        var plaintext = SHA256.HashData(Encoding.UTF8.GetBytes(hostKey));
+
+        var result = ClaudeProvider.DecodeChromiumCookiePlaintext(hostKey, plaintext);
+
+        Assert.Equal(string.Empty, result);
+    }
+
+    [Fact]
+    public void DecodeChromiumCookiePlaintext_DigestPrefixedPayload_ReturnsCookieValue()
+    {
+        const string hostKey = ".claude.ai";
+        var plaintext = SHA256.HashData(Encoding.UTF8.GetBytes(hostKey))
+            .Concat(Encoding.UTF8.GetBytes("session-value"))
+            .ToArray();
+
+        var result = ClaudeProvider.DecodeChromiumCookiePlaintext(hostKey, plaintext);
+
+        Assert.Equal("session-value", result);
+    }
+
+    [Fact]
+    public void IsChromiumCookieExpired_PastUtcTimestamp_ReturnsTrue()
+    {
+        var expiresUtc = DateTimeOffset.UtcNow.AddMinutes(-1).ToFileTime() / 10;
+
+        var result = ClaudeProvider.IsChromiumCookieExpired(expiresUtc);
+
+        Assert.True(result);
+    }
+
+    [Fact]
+    public void IsChromiumCookieExpired_FutureUtcTimestamp_ReturnsFalse()
+    {
+        var expiresUtc = DateTimeOffset.UtcNow.AddMinutes(1).ToFileTime() / 10;
+
+        var result = ClaudeProvider.IsChromiumCookieExpired(expiresUtc);
+
+        Assert.False(result);
+    }
+
+    [Fact]
+    public void IsEmptyRateLimitSnapshot_BothWindowsZero_ReturnsTrue()
+    {
+        var limits = new ClaudeProvider.UnifiedRateLimits();
+
+        Assert.True(ClaudeProvider.IsEmptyRateLimitSnapshot(limits));
+    }
+
+    [Fact]
+    public void IsEmptyRateLimitSnapshot_BothWindowsZeroWithResetMetadata_ReturnsFalse()
+    {
+        var limits = new ClaudeProvider.UnifiedRateLimits
+        {
+            FiveHourReset = 1_700_000_000,
+            SevenDayReset = 1_700_500_000,
+        };
+
+        Assert.False(ClaudeProvider.IsEmptyRateLimitSnapshot(limits));
+    }
+
+    [Fact]
+    public void IsEmptyRateLimitSnapshot_WeeklyWindowNonZero_ReturnsFalse()
+    {
+        var limits = new ClaudeProvider.UnifiedRateLimits
+        {
+            SevenDayUtilization = 0.04,
+        };
+
+        Assert.False(ClaudeProvider.IsEmptyRateLimitSnapshot(limits));
     }
 
     /// <summary>
