@@ -728,7 +728,10 @@ public sealed partial class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttp
     }
 
     internal static bool IsEmptyRateLimitSnapshot(UnifiedRateLimits limits) =>
-        limits.FiveHourUtilization <= 0 && limits.SevenDayUtilization <= 0;
+        limits.FiveHourUtilization <= 0
+        && limits.SevenDayUtilization <= 0
+        && limits.FiveHourReset == 0
+        && limits.SevenDayReset == 0;
 
     private async Task<ClaudeCredentials?> TryRefreshTokenAsync(ClaudeCredentials credentials, CancellationToken ct)
     {

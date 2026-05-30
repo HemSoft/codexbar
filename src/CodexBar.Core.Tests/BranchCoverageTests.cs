@@ -1066,6 +1066,18 @@ public class BranchCoverageTests
     }
 
     [Fact]
+    public void IsEmptyRateLimitSnapshot_BothWindowsZeroWithResetMetadata_ReturnsFalse()
+    {
+        var limits = new ClaudeProvider.UnifiedRateLimits
+        {
+            FiveHourReset = 1_700_000_000,
+            SevenDayReset = 1_700_500_000,
+        };
+
+        Assert.False(ClaudeProvider.IsEmptyRateLimitSnapshot(limits));
+    }
+
+    [Fact]
     public void IsEmptyRateLimitSnapshot_WeeklyWindowNonZero_ReturnsFalse()
     {
         var limits = new ClaudeProvider.UnifiedRateLimits
