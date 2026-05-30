@@ -17,6 +17,7 @@ using NSubstitute;
 /// accessed via reflection. These cover HTTP-based paths that are otherwise only reachable
 /// through <see cref="ClaudeProvider.FetchUsageAsync"/> which depends on filesystem credentials.
 /// </summary>
+[Collection("ClaudeProviderFileIo")]
 public class ClaudeProviderPrivateMethodTests
 {
     private static ClaudeProvider CreateProvider(IHttpClientFactory httpFactory)
@@ -49,9 +50,8 @@ public class ClaudeProviderPrivateMethodTests
 
     private static IHttpClientFactory CreateFactory(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> handler)
     {
-        var client = new HttpClient(new DelegatingHandlerFunc(handler));
         var factory = Substitute.For<IHttpClientFactory>();
-        factory.CreateClient(Arg.Any<string>()).Returns(client);
+        factory.CreateClient(Arg.Any<string>()).Returns(_ => new HttpClient(new DelegatingHandlerFunc(handler)));
         return factory;
     }
 
