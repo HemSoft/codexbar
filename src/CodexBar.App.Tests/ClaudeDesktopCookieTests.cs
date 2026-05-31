@@ -80,6 +80,18 @@ public sealed class ClaudeDesktopCookieTests : IDisposable
                 CreateAesGcmChromiumCookie(".claude.ai", "encrypted-value", key),
                 futureExpiresUtc),
             new CookieRow("app.claude.ai", "legacySession", string.Empty, CreateDpapiCookie("legacy-value"), futureExpiresUtc),
+            new CookieRow(
+                "claude.ai",
+                "malformedEncrypted",
+                string.Empty,
+                CreateMalformedAesGcmChromiumCookie(),
+                futureExpiresUtc),
+            new CookieRow(
+                "claude.ai",
+                "appBoundSession",
+                string.Empty,
+                CreateAesGcmChromiumCookie("claude.ai", "app-bound-value", key, "v20"),
+                futureExpiresUtc),
             new CookieRow("claude.ai", "expiredSession", "expired-value", null, pastExpiresUtc),
             new CookieRow(".claude.ai", string.Empty, "missing-name", null, null),
             new CookieRow("claude.ai", "emptyEncrypted", string.Empty, [], futureExpiresUtc),
@@ -87,7 +99,7 @@ public sealed class ClaudeDesktopCookieTests : IDisposable
 
         ClaudeProvider.ClaudeDesktopCookiesPathOverride = cookiesPath;
 
-        var result = InvokePrivateStaticMethod("ReadClaudeDesktopCookies", key);
+        var result = InvokePrivateStaticMethod("ReadClaudeDesktopCookies", key, null);
 
         var cookies = ReadCookiePairs(result);
         Assert.Equal(
@@ -146,7 +158,7 @@ public sealed class ClaudeDesktopCookieTests : IDisposable
         return path;
     }
 
-    private static byte[] CreateAesGcmChromiumCookie(string hostKey, string value, byte[] key)
+    private static byte[] CreateAesGcmChromiumCookie(string hostKey, string value, byte[] key, string prefix = "v10")
     {
         const int tagLength = 16;
 
@@ -160,12 +172,17 @@ public sealed class ClaudeDesktopCookieTests : IDisposable
         using var aes = new AesGcm(key, tagLength);
         aes.Encrypt(nonce, plaintext, cipherText, tag);
 
-        return Encoding.ASCII.GetBytes("v10")
+        return Encoding.ASCII.GetBytes(prefix)
             .Concat(nonce)
             .Concat(cipherText)
             .Concat(tag)
             .ToArray();
     }
+
+    private static byte[] CreateMalformedAesGcmChromiumCookie() =>
+        Encoding.ASCII.GetBytes("v10")
+            .Concat(new byte[29])
+            .ToArray();
 
     private static byte[] CreateDpapiCookie(string value) =>
         ProtectedData.Protect(Encoding.UTF8.GetBytes(value), optionalEntropy: null, DataProtectionScope.CurrentUser);

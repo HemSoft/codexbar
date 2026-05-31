@@ -55,16 +55,42 @@ public class ClaudeProviderPrivateMethodTests
         return factory;
     }
 
-    private static string CreateClaudeWebUsageResponse(double fiveHourUtilization = 35, double sevenDayUtilization = 60) =>
+    private static string CreateClaudeWebUsageResponse(double fiveHourUtilization = 35, double sevenDayUtilization = 60)
+    {
+        var now = DateTimeOffset.UtcNow;
+        return CreateClaudeWebUsageResponse(
+            fiveHourUtilization,
+            sevenDayUtilization,
+            now.AddHours(1),
+            now.AddDays(1));
+    }
+
+    private static string CreateClaudeWebUsageResponse(
+        double fiveHourUtilization,
+        double sevenDayUtilization,
+        DateTimeOffset fiveHourResetAt,
+        DateTimeOffset sevenDayResetAt) =>
         $$"""
         {
             "five_hour": {
                 "utilization": {{fiveHourUtilization}},
-                "resets_at": "2026-05-30T10:00:00Z"
+                "resets_at": "{{fiveHourResetAt:O}}"
             },
             "seven_day": {
                 "utilization": {{sevenDayUtilization}},
-                "resets_at": "2026-06-01T10:00:00Z"
+                "resets_at": "{{sevenDayResetAt:O}}"
+            }
+        }
+        """;
+
+    private static string CreateClaudeWebUsageResponseWithoutResets(double fiveHourUtilization, double sevenDayUtilization) =>
+        $$"""
+        {
+            "five_hour": {
+                "utilization": {{fiveHourUtilization}}
+            },
+            "seven_day": {
+                "utilization": {{sevenDayUtilization}}
             }
         }
         """;
@@ -79,6 +105,27 @@ public class ClaudeProviderPrivateMethodTests
         var task = (Task)method!.Invoke(provider, [accessToken, ct])!;
         await task;
         return task.GetType().GetProperty("Result")!.GetValue(task);
+    }
+
+    private static async Task<object?> InvokeFetchOAuthUsageAsync(
+        ClaudeProvider provider, string? accessToken, CancellationToken ct = default)
+    {
+        var method = typeof(ClaudeProvider).GetMethod(
+            "FetchOAuthUsageAsync",
+            BindingFlags.NonPublic | BindingFlags.Instance);
+        Assert.NotNull(method);
+        var task = (Task)method!.Invoke(provider, [accessToken, ct])!;
+        await task;
+        return task.GetType().GetProperty("Result")!.GetValue(task);
+    }
+
+    private static void ExpireCachedLimits(ClaudeProvider provider)
+    {
+        var field = typeof(ClaudeProvider).GetField(
+            "limitsCachedAtTicks",
+            BindingFlags.NonPublic | BindingFlags.Instance);
+        Assert.NotNull(field);
+        field!.SetValue(provider, DateTimeOffset.UtcNow.Subtract(TimeSpan.FromHours(1)).UtcTicks);
     }
 
     private static async Task<object?> InvokeFetchClaudeWebUsageAsync(
@@ -264,6 +311,38 @@ public class ClaudeProviderPrivateMethodTests
         {
             ClaudeProvider.ClaudeDesktopCookieHeaderOverride = null;
         }
+    }
+
+    [Fact]
+    public async Task FetchOAuthUsageAsync_StaleAuthoritativeZeroSnapshot_ReturnsFallbackOnFailure()
+    {
+        var requestCount = 0;
+        var factory = CreateFactory((_, _) =>
+        {
+            var response = Interlocked.Increment(ref requestCount) == 1
+                ? new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(
+                        CreateClaudeWebUsageResponseWithoutResets(0, 0),
+                        Encoding.UTF8,
+                        "application/json"),
+                }
+                : new HttpResponseMessage(HttpStatusCode.TooManyRequests)
+                {
+                    Content = new StringContent("rate limited", Encoding.UTF8, "text/plain"),
+                };
+
+            return Task.FromResult(response);
+        });
+        var provider = CreateProvider(factory);
+
+        var first = await InvokeFetchOAuthUsageAsync(provider, "test-token");
+        ExpireCachedLimits(provider);
+        var second = await InvokeFetchOAuthUsageAsync(provider, "test-token");
+
+        Assert.NotNull(first);
+        Assert.Same(first, second);
+        Assert.Equal(2, requestCount);
     }
 
     [Fact]

@@ -615,9 +615,10 @@ public sealed partial class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttp
         // written before the corresponding Volatile.Write in CacheAndReturnLimits.
         var cachedTicks = Volatile.Read(ref this.limitsCachedAtTicks);
         cached = this.cachedLimits;
+        var cachedIsAuthoritative = this.cachedLimitsAreAuthoritative;
         return cached is not null &&
-               (!requireAuthoritative || this.cachedLimitsAreAuthoritative) &&
-               (this.cachedLimitsAreAuthoritative || !IsEmptyRateLimitSnapshot(cached)) &&
+               (!requireAuthoritative || cachedIsAuthoritative) &&
+               (cachedIsAuthoritative || !IsEmptyRateLimitSnapshot(cached)) &&
                cachedTicks > 0 &&
                DateTimeOffset.UtcNow.UtcTicks - cachedTicks < CacheTtl.Ticks;
     }
@@ -625,7 +626,8 @@ public sealed partial class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttp
     private UnifiedRateLimits? GetFallbackCachedLimits()
     {
         var cached = this.cachedLimits;
-        return cached is not null && !IsEmptyRateLimitSnapshot(cached)
+        var cachedIsAuthoritative = this.cachedLimitsAreAuthoritative;
+        return cached is not null && (cachedIsAuthoritative || !IsEmptyRateLimitSnapshot(cached))
             ? cached
             : null;
     }
