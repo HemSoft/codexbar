@@ -43,6 +43,10 @@ public class ClaudeProviderFileIoTests : IDisposable
         ClaudeProvider.CredentialsPathOverride = null;
         ClaudeProvider.StatsCachePathOverride = null;
         ClaudeProvider.ClaudeJsonPathOverride = null;
+        ClaudeProvider.ClaudeDesktopCookiesPathOverride = null;
+        ClaudeProvider.ClaudeDesktopLocalStatePathOverride = null;
+        ClaudeProvider.ClaudeDesktopConfigPathOverride = null;
+        ClaudeProvider.ClaudeDesktopCookieHeaderOverride = null;
         ClaudeProvider.EnvironmentAccessTokenOverride = null;
 
         try
