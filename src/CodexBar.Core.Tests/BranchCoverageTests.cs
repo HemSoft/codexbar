@@ -1103,6 +1103,14 @@ public class BranchCoverageTests
     }
 
     [Fact]
+    public void IsChromiumCookieExpired_OutOfRangeFutureTimestamp_ReturnsFalse()
+    {
+        var result = ClaudeProvider.IsChromiumCookieExpired(long.MaxValue);
+
+        Assert.False(result);
+    }
+
+    [Fact]
     public void IsEmptyRateLimitSnapshot_BothWindowsZero_ReturnsTrue()
     {
         var limits = new ClaudeProvider.UnifiedRateLimits();

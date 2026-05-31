@@ -6,6 +6,7 @@ using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using Microsoft.Extensions.Logging;
 #if WINDOWS
 using Microsoft.Data.Sqlite;
 #endif
@@ -265,7 +266,7 @@ public sealed partial class ClaudeProvider
                 return null;
             }
 
-            var cookies = ReadClaudeDesktopCookies(key);
+            var cookies = ReadClaudeDesktopCookies(key, this.logger);
             return cookies.Count > 0
                 ? string.Join("; ", cookies.Select(cookie => $"{cookie.Name}={cookie.Value}"))
                 : null;
@@ -305,7 +306,7 @@ public sealed partial class ClaudeProvider
         return ProtectedData.Unprotect(encryptedKey[dpapiPrefix.Length..], optionalEntropy: null, DataProtectionScope.CurrentUser);
     }
 
-    private static List<ClaudeWebCookie> ReadClaudeDesktopCookies(byte[] key)
+    private static List<ClaudeWebCookie> ReadClaudeDesktopCookies(byte[] key, ILogger? logger = null)
     {
         var cookies = new List<ClaudeWebCookie>();
         var connectionString = new SqliteConnectionStringBuilder
@@ -328,25 +329,32 @@ public sealed partial class ClaudeProvider
         using var reader = command.ExecuteReader();
         while (reader.Read())
         {
-            var host = reader.GetString(0);
-            var name = reader.GetString(1);
-            var value = reader.IsDBNull(2) ? string.Empty : reader.GetString(2);
-            var encryptedValue = reader.IsDBNull(3) ? [] : (byte[])reader.GetValue(3);
-            var expiresUtc = reader.IsDBNull(4) ? 0 : reader.GetInt64(4);
-
-            if (IsChromiumCookieExpired(expiresUtc))
+            try
             {
-                continue;
+                var host = reader.GetString(0);
+                var name = reader.GetString(1);
+                var value = reader.IsDBNull(2) ? string.Empty : reader.GetString(2);
+                var encryptedValue = reader.IsDBNull(3) ? Array.Empty<byte>() : (byte[])reader.GetValue(3);
+                var expiresUtc = reader.IsDBNull(4) ? 0 : reader.GetInt64(4);
+
+                if (IsChromiumCookieExpired(expiresUtc))
+                {
+                    continue;
+                }
+
+                if (string.IsNullOrEmpty(value) && encryptedValue.Length > 0)
+                {
+                    value = DecryptChromiumCookie(host, encryptedValue, key);
+                }
+
+                if (!string.IsNullOrEmpty(name) && !string.IsNullOrEmpty(value))
+                {
+                    cookies.Add(new ClaudeWebCookie(name, value));
+                }
             }
-
-            if (string.IsNullOrEmpty(value) && encryptedValue.Length > 0)
+            catch (Exception ex) when (IsRecoverableCookieReadException(ex))
             {
-                value = DecryptChromiumCookie(host, encryptedValue, key);
-            }
-
-            if (!string.IsNullOrEmpty(name) && !string.IsNullOrEmpty(value))
-            {
-                cookies.Add(new ClaudeWebCookie(name, value));
+                logger?.LogDebug(ex, "Skipping unreadable Claude Desktop cookie row");
             }
         }
 
@@ -356,7 +364,12 @@ public sealed partial class ClaudeProvider
     private static string DecryptChromiumCookie(string hostKey, byte[] encryptedValue, byte[] key)
     {
         var prefix = Encoding.ASCII.GetString(encryptedValue.AsSpan(0, Math.Min(3, encryptedValue.Length)));
-        if (prefix is "v10" or "v11" or "v20")
+        if (prefix is "v20")
+        {
+            throw new NotSupportedException("Chromium app-bound v20 cookies are not supported.");
+        }
+
+        if (prefix is "v10" or "v11")
         {
             return DecodeChromiumCookiePlaintext(hostKey, DecryptAesGcmBytes(encryptedValue, key));
         }
@@ -364,6 +377,14 @@ public sealed partial class ClaudeProvider
         var plaintext = ProtectedData.Unprotect(encryptedValue, optionalEntropy: null, DataProtectionScope.CurrentUser);
         return Encoding.UTF8.GetString(plaintext);
     }
+
+    private static bool IsRecoverableCookieReadException(Exception ex) =>
+        ex is CryptographicException
+        or FormatException
+        or InvalidCastException
+        or InvalidOperationException
+        or ArgumentOutOfRangeException
+        or NotSupportedException;
 
     private static string DecryptAesGcmString(byte[] encryptedValue, byte[] key) =>
         Encoding.UTF8.GetString(DecryptAesGcmBytes(encryptedValue, key));
@@ -415,7 +436,14 @@ public sealed partial class ClaudeProvider
 
     internal static bool IsChromiumCookieExpired(long expiresUtc)
     {
+        const long maxChromiumCookieExpiresUtc = 265046774399999999;
+
         if (expiresUtc <= 0)
+        {
+            return false;
+        }
+
+        if (expiresUtc > maxChromiumCookieExpiresUtc)
         {
             return false;
         }

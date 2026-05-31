@@ -23,6 +23,9 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 
+# Accepted for parameter splatting compatibility but not used directly
+$null = $ReviewProduct, $ReviewMode
+
 if ($Help) {
     Write-Host ""
     Write-Host "ralph-create-issues.ps1 - Codebase Scanner → GitHub Issues" -ForegroundColor Cyan

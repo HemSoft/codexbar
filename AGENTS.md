@@ -1,6 +1,17 @@
 # AGENTS.md — CodexBar
 
-Coding standards and agent behavior rules for the CodexBar repository.
+## lean_ctx
+
+Always use lean_ctx
+
+## Search online
+
+Always use web search to support your statements. Good sources are:
+
+GitHub (Issues, PR's Releases, Changelogs)
+Reddit
+Microsoft Developer Documentation
+Social Media.
 
 ## Quality Gates
 

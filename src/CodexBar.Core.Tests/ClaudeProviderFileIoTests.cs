@@ -36,6 +36,11 @@ public class ClaudeProviderFileIoTests : IDisposable
         ClaudeProvider.CredentialsPathOverride = this._credentialsPath;
         ClaudeProvider.StatsCachePathOverride = this._statsCachePath;
         ClaudeProvider.ClaudeJsonPathOverride = this._claudeJsonPath;
+        ClaudeProvider.ClaudeDesktopCookiesPathOverride = Path.Combine(this._tempDir, "Cookies");
+        ClaudeProvider.ClaudeDesktopLocalStatePathOverride = Path.Combine(this._tempDir, "Local State");
+        ClaudeProvider.ClaudeDesktopConfigPathOverride = Path.Combine(this._tempDir, "desktop-config.json");
+        ClaudeProvider.ClaudeDesktopCookieHeaderOverride = string.Empty;
+        ClaudeProvider.EnvironmentAccessTokenOverride = null;
     }
 
     public void Dispose()
@@ -43,6 +48,10 @@ public class ClaudeProviderFileIoTests : IDisposable
         ClaudeProvider.CredentialsPathOverride = null;
         ClaudeProvider.StatsCachePathOverride = null;
         ClaudeProvider.ClaudeJsonPathOverride = null;
+        ClaudeProvider.ClaudeDesktopCookiesPathOverride = null;
+        ClaudeProvider.ClaudeDesktopLocalStatePathOverride = null;
+        ClaudeProvider.ClaudeDesktopConfigPathOverride = null;
+        ClaudeProvider.ClaudeDesktopCookieHeaderOverride = null;
         ClaudeProvider.EnvironmentAccessTokenOverride = null;
 
         try
