@@ -274,7 +274,7 @@ for ($i = 1; $i -le $maxIssues; $i++) {
             $providerModelKey = if ($modelKey) { "$providerKey/$modelKey" } else { "$providerKey/(provider-default)" }
             if (-not $accProviderModels.ContainsKey($providerModelKey)) { $accProviderModels[$providerModelKey] = 0 }
             $accProviderModels[$providerModelKey]++
-        } catch {}
+        } catch { $null = $_ }
         Remove-Item $runStatsPath -Force -ErrorAction SilentlyContinue
     }
 

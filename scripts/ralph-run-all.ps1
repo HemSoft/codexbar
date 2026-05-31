@@ -138,7 +138,7 @@ for ($i = 0; $i -lt $scripts.Count; $i++) {
                 break
             }
         }
-        catch { }
+        catch { $null = $_ }
     }
 
     Write-Host ""
