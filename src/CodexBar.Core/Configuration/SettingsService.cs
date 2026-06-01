@@ -96,6 +96,7 @@ public sealed class SettingsService : ISettingsService
             MergeProviders(settings, disk);
             MergeProviderCardOrder(settings, disk);
             MergeWorkspaceId(settings, disk);
+            MergeCopilotBillingSettings(settings, disk);
             MergeSessionBaselines(settings, disk);
             MergeSessionResetTimes(settings, disk);
         }
@@ -148,6 +149,27 @@ public sealed class SettingsService : ISettingsService
         if (string.IsNullOrWhiteSpace(settings.OpenCodeGoWorkspaceId) && !string.IsNullOrWhiteSpace(disk.OpenCodeGoWorkspaceId))
         {
             settings.OpenCodeGoWorkspaceId = disk.OpenCodeGoWorkspaceId;
+        }
+    }
+
+    /// <summary>
+    /// Preserves Copilot billing settings from disk when memory has no override.
+    /// </summary>
+    private static void MergeCopilotBillingSettings(AppSettings settings, AppSettings disk)
+    {
+        if (string.IsNullOrWhiteSpace(settings.CopilotEnterprise) && !string.IsNullOrWhiteSpace(disk.CopilotEnterprise))
+        {
+            settings.CopilotEnterprise = disk.CopilotEnterprise;
+        }
+
+        if (string.IsNullOrWhiteSpace(settings.CopilotOrganization) && !string.IsNullOrWhiteSpace(disk.CopilotOrganization))
+        {
+            settings.CopilotOrganization = disk.CopilotOrganization;
+        }
+
+        if (settings.CopilotPoolTotal is null && disk.CopilotPoolTotal is not null)
+        {
+            settings.CopilotPoolTotal = disk.CopilotPoolTotal;
         }
     }
 
@@ -216,6 +238,9 @@ public sealed class SettingsService : ISettingsService
         {
             RefreshIntervalSeconds = settings.RefreshIntervalSeconds,
             CopilotAccounts = (settings.CopilotAccounts ?? []).ToList(),
+            CopilotEnterprise = NormalizeCopilotEnterprise(settings.CopilotEnterprise),
+            CopilotOrganization = NormalizeCopilotOrganization(settings.CopilotOrganization),
+            CopilotPoolTotal = NormalizeCopilotPoolTotal(settings.CopilotPoolTotal),
             ProviderCardOrder = NormalizeProviderCardOrder(settings.ProviderCardOrder),
             OpenCodeGoWorkspaceId = NullIfWhitespace(settings.OpenCodeGoWorkspaceId),
             ZoomLevel = NormalizeZoom(settings.ZoomLevel),
@@ -231,6 +256,15 @@ public sealed class SettingsService : ISettingsService
 
     private static string? NullIfWhitespace(string? value) =>
         string.IsNullOrWhiteSpace(value) ? null : value;
+
+    private static string NormalizeCopilotEnterprise(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? new AppSettings().CopilotEnterprise : value.Trim();
+
+    private static string NormalizeCopilotOrganization(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? new AppSettings().CopilotOrganization : value.Trim();
+
+    private static decimal? NormalizeCopilotPoolTotal(decimal? value) =>
+        value is > 0 ? value : null;
 
     private static double NormalizeZoom(double? value) =>
         value is > 0 and <= 5 ? value.Value : 1.0;
@@ -372,6 +406,9 @@ public sealed class SettingsService : ISettingsService
             this._cached = JsonSerializer.Deserialize<AppSettings>(json, JsonOptions) ?? CreateDefaults();
             this._cached.Providers ??= [];
             NormalizeProviders(this._cached.Providers);
+            this._cached.CopilotEnterprise = NormalizeCopilotEnterprise(this._cached.CopilotEnterprise);
+            this._cached.CopilotOrganization = NormalizeCopilotOrganization(this._cached.CopilotOrganization);
+            this._cached.CopilotPoolTotal = NormalizeCopilotPoolTotal(this._cached.CopilotPoolTotal);
 
             this.SafeRestrictPermissions();
 
@@ -405,6 +442,9 @@ public sealed class SettingsService : ISettingsService
     {
         RefreshIntervalSeconds = source.RefreshIntervalSeconds,
         CopilotAccounts = (source.CopilotAccounts ?? []).ToList(),
+        CopilotEnterprise = NormalizeCopilotEnterprise(source.CopilotEnterprise),
+        CopilotOrganization = NormalizeCopilotOrganization(source.CopilotOrganization),
+        CopilotPoolTotal = NormalizeCopilotPoolTotal(source.CopilotPoolTotal),
         ProviderCardOrder = NormalizeProviderCardOrder(source.ProviderCardOrder),
         OpenCodeGoWorkspaceId = source.OpenCodeGoWorkspaceId,
         ZoomLevel = source.ZoomLevel,

@@ -13,10 +13,10 @@ using CodexBar.Core.Models;
 using Microsoft.Extensions.Logging;
 
 /// <summary>
-/// Fetches GitHub Copilot usage for one or more accounts via the Copilot internal API.
+/// Fetches GitHub Copilot usage for one or more accounts.
 /// <para>
-/// Multi-account: configured accounts in settings or auto-discovered from <c>gh auth status</c>.
-/// Per-account tokens resolved via <c>gh auth token --user &lt;name&gt;</c>.
+/// Uses the Copilot internal API for compatibility and augments enterprise accounts with
+/// GitHub REST billing data when the configured organization can be resolved.
 /// </para>
 /// </summary>
 public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClientFactory httpClientFactory, ISettingsService settings) : IUsageProvider
@@ -38,6 +38,11 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
         "2025-04-01");
 
     private const decimal OverageCostPerRequest = 0.04m;
+    private const string GitHubRestApiBaseUrl = "https://api.github.com";
+    private const string GitHubRestApiVersion = "2026-03-10";
+    private const string GitHubRestUserAgent = "CodexBar/1.0";
+    private const int PromotionalCreditsPerSeat = 7000;
+    private const int StandardCreditsPerSeat = 3900;
 
     [ExcludeFromCodeCoverage]
     private static string GetConfiguredValue(string environmentVariableName, string fallbackValue)
@@ -126,33 +131,40 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
                 ?? "No Copilot accounts found. Add copilotAccounts to ~/.codexbar/settings.json or run 'gh auth login'.");
         }
 
-        var items = new List<UsageItem>();
-        var accountResults = new List<CopilotAccountResult>();
-
         var tasks = accounts.Select(async username =>
         {
             var result = await this.FetchAccountQuotaAsync(username, ct);
-            return (username, result);
+            return (Username: username, Result: result);
         });
 
-        foreach (var (username, result) in await Task.WhenAll(tasks))
+        var accountResults = (await Task.WhenAll(tasks)).ToList();
+        var billingItems = await this.TryBuildBillingItemsAsync(accountResults, this._settings.Load() ?? new AppSettings(), ct);
+        if (billingItems is not null)
         {
-            accountResults.Add(result);
-            items.Add(ToUsageItem(username, result));
+            return BuildFetchResult(
+                accountResults.Select(pair => pair.Result).ToList(),
+                billingItems.Items,
+                billingItems.SessionUsage);
         }
 
-        return BuildFetchResult(accountResults, items);
+        var items = accountResults
+            .Select(pair => ToUsageItem(pair.Username, pair.Result))
+            .ToList();
+
+        return BuildFetchResult(accountResults.Select(pair => pair.Result).ToList(), items);
     }
 
-    private static ProviderUsageResult BuildFetchResult(List<CopilotAccountResult> accountResults, List<UsageItem> items)
+    private static ProviderUsageResult BuildFetchResult(List<CopilotAccountResult> accountResults, List<UsageItem> items, UsageSnapshot? aggregateSession = null)
     {
-        var firstSuccess = accountResults.FirstOrDefault(r => r.Success && r.PremiumInteractions is not null);
-        UsageSnapshot? aggregateSession = null;
-        if (firstSuccess?.PremiumInteractions is not null)
+        if (aggregateSession is null)
         {
-            aggregateSession = BuildUsageSnapshot(
-                firstSuccess.PremiumInteractions,
-                firstSuccess.QuotaResetDateUtc);
+            var firstSuccess = accountResults.FirstOrDefault(r => r.Success && r.PremiumInteractions is not null);
+            if (firstSuccess?.PremiumInteractions is not null)
+            {
+                aggregateSession = BuildUsageSnapshot(
+                    firstSuccess.PremiumInteractions,
+                    firstSuccess.QuotaResetDateUtc);
+            }
         }
 
         return new ProviderUsageResult
@@ -166,6 +178,263 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
                 : null,
         };
     }
+
+    private async Task<BillingBuildResult?> TryBuildBillingItemsAsync(
+        IReadOnlyList<(string Username, CopilotAccountResult Result)> accountResults,
+        AppSettings appSettings,
+        CancellationToken ct)
+    {
+        var configuration = TryCreateBillingConfiguration(accountResults, appSettings);
+        if (configuration is null)
+        {
+            return null;
+        }
+
+        var orgToken = await this.ResolveTokenForUserAsync(configuration.BillingUsername, ct);
+        if (orgToken is null)
+        {
+            return null;
+        }
+
+        var items = new List<UsageItem>();
+        UsageSnapshot? sessionUsage = null;
+        var usedBilling = false;
+
+        var orgItem = await this.TryBuildOrgBillingItemAsync(configuration, orgToken, ct);
+        if (orgItem is not null)
+        {
+            items.Add(orgItem);
+            sessionUsage = orgItem.PrimaryUsage;
+            usedBilling = true;
+        }
+
+        foreach (var (username, result) in accountResults)
+        {
+            if (!IsBillingEligibleAccount(result, configuration.Organization))
+            {
+                items.Add(ToUsageItem(username, result));
+                continue;
+            }
+
+            var userToken = string.Equals(username, configuration.BillingUsername, StringComparison.OrdinalIgnoreCase)
+                ? orgToken
+                : await this.ResolveTokenForUserAsync(username, ct);
+
+            if (userToken is not null)
+            {
+                var userItem = await this.TryBuildUserBillingItemAsync(username, configuration, userToken, ct);
+                if (userItem is not null)
+                {
+                    items.Add(userItem);
+                    sessionUsage ??= userItem.PrimaryUsage;
+                    usedBilling = true;
+                    continue;
+                }
+            }
+
+            items.Add(ToUsageItem(username, result));
+        }
+
+        return usedBilling ? new BillingBuildResult(items, sessionUsage) : null;
+    }
+
+    private static CopilotBillingConfiguration? TryCreateBillingConfiguration(
+        IReadOnlyList<(string Username, CopilotAccountResult Result)> accountResults,
+        AppSettings appSettings)
+    {
+        var defaults = new AppSettings();
+        var enterprise = NormalizeCopilotSetting(appSettings.CopilotEnterprise, defaults.CopilotEnterprise);
+        var organization = NormalizeCopilotSetting(appSettings.CopilotOrganization, defaults.CopilotOrganization);
+
+        if (string.IsNullOrWhiteSpace(enterprise) || string.IsNullOrWhiteSpace(organization))
+        {
+            return null;
+        }
+
+        foreach (var (username, result) in accountResults)
+        {
+            if (IsBillingEligibleAccount(result, organization))
+            {
+                var now = DateTimeOffset.UtcNow;
+                return new CopilotBillingConfiguration(
+                    enterprise,
+                    organization,
+                    appSettings.CopilotPoolTotal is > 0 ? appSettings.CopilotPoolTotal : null,
+                    username,
+                    now.Year,
+                    now.Month,
+                    GetCreditsPerSeat(now.Year, now.Month));
+            }
+        }
+
+        return null;
+    }
+
+    private static bool IsBillingEligibleAccount(CopilotAccountResult result, string organization)
+    {
+        if (!result.Success || !string.Equals(result.Plan, "enterprise", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        return result.Organizations?.Any(org => string.Equals(org, organization, StringComparison.OrdinalIgnoreCase)) == true;
+    }
+
+    private async Task<UsageItem?> TryBuildOrgBillingItemAsync(CopilotBillingConfiguration configuration, string token, CancellationToken ct)
+    {
+        var response = await this.FetchOrgBillingAsync(configuration, token, ct);
+        if (response is null)
+        {
+            return null;
+        }
+
+        var period = response.TimePeriod is { Year: > 0, Month: > 0 }
+            ? response.TimePeriod
+            : new BillingTimePeriod { Year = configuration.Year, Month = configuration.Month };
+        var consumed = SumGrossQuantity(response.UsageItems);
+        var poolTotal = await this.ResolvePoolTotalAsync(configuration, token, ct);
+        var usageLabel = poolTotal is > 0
+            ? $"{consumed:N0} / {poolTotal.Value:N0} AI credits"
+            : $"{consumed:N0} AI credits";
+
+        return new UsageItem
+        {
+            Key = $"copilot:org:{configuration.Organization.ToLowerInvariant()}",
+            DisplayName = $"Copilot · {configuration.Organization}",
+            PrimaryUsage = BuildMonthlyUsageSnapshot(consumed, poolTotal, usageLabel, period.Year, period.Month),
+            Success = true,
+        };
+    }
+
+    private async Task<UsageItem?> TryBuildUserBillingItemAsync(string username, CopilotBillingConfiguration configuration, string token, CancellationToken ct)
+    {
+        var response = await this.FetchUserBillingAsync(username, configuration, token, ct);
+        if (response is null)
+        {
+            return null;
+        }
+
+        var consumed = SumGrossQuantity(response.UsageItems);
+        var perSeat = configuration.CreditsPerSeat;
+        return new UsageItem
+        {
+            Key = $"copilot:{username}",
+            DisplayName = $"Copilot · {username}",
+            PrimaryUsage = BuildMonthlyUsageSnapshot(
+                consumed,
+                perSeat,
+                $"{consumed:N0} / {perSeat:N0} AI credits",
+                configuration.Year,
+                configuration.Month),
+            Success = true,
+        };
+    }
+
+    private async Task<decimal?> ResolvePoolTotalAsync(CopilotBillingConfiguration configuration, string token, CancellationToken ct)
+    {
+        if (configuration.PoolTotalOverride is > 0)
+        {
+            return configuration.PoolTotalOverride;
+        }
+
+        var seatCount = await this.FetchSeatCountAsync(configuration, token, ct);
+        return seatCount is > 0 ? seatCount.Value * configuration.CreditsPerSeat : null;
+    }
+
+    private Task<BillingUsageSummaryResponse?> FetchOrgBillingAsync(CopilotBillingConfiguration configuration, string token, CancellationToken ct)
+    {
+        var requestUri = $"{GitHubRestApiBaseUrl}/enterprises/{Uri.EscapeDataString(configuration.Enterprise)}/settings/billing/usage/summary?year={configuration.Year}&month={configuration.Month}&product=Copilot&organization={Uri.EscapeDataString(configuration.Organization)}";
+        return this.SendGitHubRestRequestAsync<BillingUsageSummaryResponse>(requestUri, token, $"org billing for {configuration.Organization}", ct);
+    }
+
+    private Task<BillingPremiumRequestResponse?> FetchUserBillingAsync(string username, CopilotBillingConfiguration configuration, string token, CancellationToken ct)
+    {
+        // NOTE: The API does not allow combining user + organization filters (returns 400).
+        // Also, month-level user queries return empty; day-level is required.
+        var now = DateTimeOffset.UtcNow;
+        var day = now.Year == configuration.Year && now.Month == configuration.Month ? now.Day : 1;
+        var requestUri = $"{GitHubRestApiBaseUrl}/enterprises/{Uri.EscapeDataString(configuration.Enterprise)}/settings/billing/premium_request/usage?year={configuration.Year}&month={configuration.Month}&day={day}&user={Uri.EscapeDataString(username)}";
+        return this.SendGitHubRestRequestAsync<BillingPremiumRequestResponse>(requestUri, token, $"user billing for {username}", ct);
+    }
+
+    private async Task<int?> FetchSeatCountAsync(CopilotBillingConfiguration configuration, string token, CancellationToken ct)
+    {
+        var requestUri = $"{GitHubRestApiBaseUrl}/orgs/{Uri.EscapeDataString(configuration.Organization)}/copilot/billing";
+        var response = await this.SendGitHubRestRequestAsync<CopilotBillingSeatsResponse>(requestUri, token, $"seat count for {configuration.Organization}", ct);
+        return response?.SeatBreakdown?.Total;
+    }
+
+    private async Task<T?> SendGitHubRestRequestAsync<T>(string requestUri, string token, string operation, CancellationToken ct)
+    {
+        try
+        {
+            using var request = BuildGitHubRestApiRequest(requestUri, token);
+            using var httpClient = this._httpClientFactory.CreateClient();
+            using var response = await httpClient.SendAsync(request, ct);
+            response.EnsureSuccessStatusCode();
+
+            var json = await response.Content.ReadAsStringAsync(ct);
+            return JsonSerializer.Deserialize<T>(json);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            this._logger.LogDebug(ex, "Copilot {Operation} request failed", operation);
+            return default;
+        }
+    }
+
+    private static HttpRequestMessage BuildGitHubRestApiRequest(string requestUri, string token)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Get, requestUri);
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
+        request.Headers.Add("X-GitHub-Api-Version", GitHubRestApiVersion);
+        request.Headers.UserAgent.ParseAdd(GitHubRestUserAgent);
+        return request;
+    }
+
+    private static string NormalizeCopilotSetting(string? value, string fallbackValue) =>
+        string.IsNullOrWhiteSpace(value) ? fallbackValue : value.Trim();
+
+    private static decimal SumGrossQuantity(IEnumerable<BillingUsageItem>? usageItems) =>
+        (usageItems ?? []).Sum(item => item.GrossQuantity);
+
+    private static UsageSnapshot BuildMonthlyUsageSnapshot(decimal used, decimal? total, string usageLabel, int year, int month)
+    {
+        var resetAt = ComputeBillingResetAt(year, month);
+        var (resetsAt, resetDescription) = ParseReset(resetAt.ToString("O"));
+        var usedPercent = total is > 0 ? (double)(used / total.Value) : 0.0;
+
+        return new UsageSnapshot
+        {
+            UsedPercent = Math.Clamp(usedPercent, 0.0, 1.0),
+            UsageLabel = usageLabel,
+            ResetsAt = resetsAt ?? resetAt,
+            ResetDescription = resetDescription,
+            IsUnlimited = false,
+        };
+    }
+
+    private static DateTimeOffset ComputeBillingResetAt(int year, int month) =>
+        new DateTimeOffset(year, month, 1, 0, 0, 0, TimeSpan.Zero).AddMonths(1);
+
+    private static int GetCreditsPerSeat(int year, int month) =>
+        year == 2026 && month is >= 6 and <= 8 ? PromotionalCreditsPerSeat : StandardCreditsPerSeat;
+
+    private sealed record BillingBuildResult(List<UsageItem> Items, UsageSnapshot? SessionUsage);
+
+    private sealed record CopilotBillingConfiguration(
+        string Enterprise,
+        string Organization,
+        decimal? PoolTotalOverride,
+        string BillingUsername,
+        int Year,
+        int Month,
+        int CreditsPerSeat);
 
     /// <summary>
     /// Returns the list of accounts to fetch: from settings if configured, otherwise auto-discovered.
@@ -325,7 +594,7 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
     {
         try
         {
-            process.Kill();
+            process.Kill(entireProcessTree: true);
         }
         catch
         {
@@ -333,7 +602,7 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
 
         try
         {
-            stderrTask.GetAwaiter().GetResult();
+            stderrTask.Wait(TimeSpan.FromSeconds(1));
         }
         catch
         {
@@ -341,7 +610,7 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
 
         try
         {
-            stdoutTask.GetAwaiter().GetResult();
+            stdoutTask.Wait(TimeSpan.FromSeconds(1));
         }
         catch
         {

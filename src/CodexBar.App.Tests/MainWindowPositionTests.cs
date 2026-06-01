@@ -251,6 +251,8 @@ public sealed class WpfApplicationFixture : IDisposable
 
     public WpfApplicationFixture()
     {
+        EnsureWindowsDirectoryEnvironmentVariable();
+
         this.thread = new Thread(this.InitializeApplicationThread)
         {
             IsBackground = true,
@@ -291,6 +293,20 @@ public sealed class WpfApplicationFixture : IDisposable
         var operation = this.dispatcher.InvokeAsync(action);
         Assert.True(operation.Task.Wait(TimeSpan.FromSeconds(10)), "STA test timed out.");
         operation.Task.GetAwaiter().GetResult();
+    }
+
+    private static void EnsureWindowsDirectoryEnvironmentVariable()
+    {
+        if (!string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("windir")))
+        {
+            return;
+        }
+
+        var systemRoot = Environment.GetEnvironmentVariable("SystemRoot");
+        if (!string.IsNullOrWhiteSpace(systemRoot))
+        {
+            Environment.SetEnvironmentVariable("windir", systemRoot);
+        }
     }
 
     private void InitializeApplicationThread()

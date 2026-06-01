@@ -31,6 +31,25 @@ public sealed class AppSettings
     public List<string> CopilotAccounts { get; set; } = [];
 
     /// <summary>
+    /// Gets or sets the GitHub enterprise slug used for Copilot billing lookups.
+    /// </summary>
+    [JsonPropertyName("copilotEnterprise")]
+    public string CopilotEnterprise { get; set; } = "bertelsmann";
+
+    /// <summary>
+    /// Gets or sets the GitHub organization slug used for Copilot billing lookups.
+    /// </summary>
+    [JsonPropertyName("copilotOrganization")]
+    public string CopilotOrganization { get; set; } = "Relias-Engineering";
+
+    /// <summary>
+    /// Gets or sets an explicit monthly Copilot AI credit pool override.
+    /// When null (default), CodexBar computes the pool from org seat count × credits-per-seat.
+    /// </summary>
+    [JsonPropertyName("copilotPoolTotal")]
+    public decimal? CopilotPoolTotal { get; set; }
+
+    /// <summary>
     /// Gets or sets openCode Go workspace ID used to construct the dashboard scrape URL.
     /// Can also be supplied via the OPENCODE_GO_WORKSPACE_ID environment variable.
     /// </summary>
