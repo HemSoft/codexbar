@@ -200,11 +200,13 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
         UsageSnapshot? sessionUsage = null;
         var usedBilling = false;
 
+        decimal? orgConsumed = null;
         var orgItem = await this.TryBuildOrgBillingItemAsync(configuration, orgToken, ct);
         if (orgItem is not null)
         {
-            items.Add(orgItem);
-            sessionUsage = orgItem.PrimaryUsage;
+            items.Add(orgItem.Value.Item);
+            sessionUsage = orgItem.Value.Item.PrimaryUsage;
+            orgConsumed = orgItem.Value.Consumed;
             usedBilling = true;
         }
 
@@ -222,7 +224,7 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
 
             if (userToken is not null)
             {
-                var userItem = await this.TryBuildUserBillingItemAsync(username, configuration, userToken, ct);
+                var userItem = await this.TryBuildUserBillingItemAsync(username, configuration, orgConsumed, userToken, ct);
                 if (userItem is not null)
                 {
                     items.Add(userItem);
@@ -280,7 +282,7 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
         return result.Organizations?.Any(org => string.Equals(org, organization, StringComparison.OrdinalIgnoreCase)) == true;
     }
 
-    private async Task<UsageItem?> TryBuildOrgBillingItemAsync(CopilotBillingConfiguration configuration, string token, CancellationToken ct)
+    private async Task<(UsageItem Item, decimal Consumed)?> TryBuildOrgBillingItemAsync(CopilotBillingConfiguration configuration, string token, CancellationToken ct)
     {
         var response = await this.FetchOrgBillingAsync(configuration, token, ct);
         if (response is null)
@@ -297,16 +299,18 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
             ? $"{consumed:N0} / {poolTotal.Value:N0} AI credits"
             : $"{consumed:N0} AI credits";
 
-        return new UsageItem
+        var item = new UsageItem
         {
             Key = $"copilot:org:{configuration.Organization.ToLowerInvariant()}",
             DisplayName = $"Copilot · {configuration.Organization}",
             PrimaryUsage = BuildMonthlyUsageSnapshot(consumed, poolTotal, usageLabel, period.Year, period.Month),
             Success = true,
         };
+
+        return (item, consumed);
     }
 
-    private async Task<UsageItem?> TryBuildUserBillingItemAsync(string username, CopilotBillingConfiguration configuration, string token, CancellationToken ct)
+    private async Task<UsageItem?> TryBuildUserBillingItemAsync(string username, CopilotBillingConfiguration configuration, decimal? orgConsumed, string token, CancellationToken ct)
     {
         var response = await this.FetchUserBillingAsync(username, configuration, token, ct);
         if (response is null)
@@ -315,17 +319,51 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
         }
 
         var consumed = SumGrossQuantity(response.UsageItems);
-        var perSeat = configuration.CreditsPerSeat;
+        decimal perSeat = configuration.CreditsPerSeat;
+        var primary = BuildMonthlyUsageSnapshot(
+            consumed,
+            perSeat,
+            $"{consumed:N0} / {perSeat:N0} AI credits",
+            configuration.Year,
+            configuration.Month);
+
+        // When the org's total consumption is known, render two bars: the user's personal
+        // allotment usage and the user's share of the org's total consumption. Without org
+        // data, fall back to the single-bar personal allotment display.
+        if (orgConsumed is > 0)
+        {
+            var sharePercent = Math.Clamp((double)(consumed / orgConsumed.Value), 0.0, 1.0);
+            var bars = new List<UsageBar>
+            {
+                new()
+                {
+                    Label = $"Personal · {consumed:N0} / {perSeat:N0}",
+                    UsedPercent = primary.UsedPercent,
+                    ResetDescription = primary.ResetDescription,
+                    ResetsAt = primary.ResetsAt,
+                },
+                new()
+                {
+                    Label = $"Share of org · {consumed:N0} / {orgConsumed.Value:N0}",
+                    UsedPercent = sharePercent,
+                },
+            };
+
+            return new UsageItem
+            {
+                Key = $"copilot:{username}",
+                DisplayName = $"Copilot · {username}",
+                PrimaryUsage = primary,
+                Bars = bars,
+                Success = true,
+            };
+        }
+
         return new UsageItem
         {
             Key = $"copilot:{username}",
             DisplayName = $"Copilot · {username}",
-            PrimaryUsage = BuildMonthlyUsageSnapshot(
-                consumed,
-                perSeat,
-                $"{consumed:N0} / {perSeat:N0} AI credits",
-                configuration.Year,
-                configuration.Month),
+            PrimaryUsage = primary,
             Success = true,
         };
     }
