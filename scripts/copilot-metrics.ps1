@@ -21,6 +21,36 @@ param(
 $ErrorActionPreference = 'Stop'
 $InformationPreference = 'Continue'
 
+function Get-EasternTimeZone {
+    foreach ($timeZoneId in @('Eastern Standard Time', 'America/New_York')) {
+        try {
+            return [TimeZoneInfo]::FindSystemTimeZoneById($timeZoneId)
+        }
+        catch [TimeZoneNotFoundException] {
+            $null = $_
+        }
+        catch [InvalidTimeZoneException] {
+            $null = $_
+        }
+    }
+
+    throw 'Could not resolve Eastern Time zone.'
+}
+
+function Get-EasternTimestamp {
+    $easternTimeZone = Get-EasternTimeZone
+    $easternNow = [TimeZoneInfo]::ConvertTime([DateTimeOffset]::UtcNow, $easternTimeZone)
+    $easternNow.ToString('dddd, MMMM d, yyyy h:mm tt')
+}
+
+function Show-CopilotMetricsHeader {
+    Write-Information 'Co-pilot Metrics. Copyrights 2024 by Relias LLC.'
+    Write-Information "Displayed at: $(Get-EasternTimestamp) Eastern Time"
+    Write-Information ''
+}
+
+Show-CopilotMetricsHeader
+
 if ($Help) {
     $scriptName = Split-Path -Leaf $PSCommandPath
     @"

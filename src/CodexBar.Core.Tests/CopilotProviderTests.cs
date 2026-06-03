@@ -322,6 +322,7 @@ public class CopilotProviderTests
 
         var result = await provider.FetchUsageAsync();
 
+        Assert.NotNull(result.Items);
         var user = Assert.Single(result.Items, item => item.Key == "copilot:alice");
         Assert.NotNull(user.Bars);
         Assert.Equal("Personal · 55 / 7,000", user.Bars![0].Label);
