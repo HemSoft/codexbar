@@ -359,16 +359,19 @@ internal sealed class ItemCardReconciler
                 existing.UsedPercent = bar.UsedPercent;
                 existing.ResetDescription = bar.ResetDescription;
                 existing.IsHighUsage = bar.UsedPercent >= HighUsageThreshold;
+                ApplyProjection(existing, bar);
             }
             else
             {
-                card.Bars.Add(new UsageBarViewModel
+                var viewModel = new UsageBarViewModel
                 {
                     Label = bar.Label,
                     UsedPercent = bar.UsedPercent,
                     ResetDescription = bar.ResetDescription,
                     IsHighUsage = bar.UsedPercent >= HighUsageThreshold,
-                });
+                };
+                ApplyProjection(viewModel, bar);
+                card.Bars.Add(viewModel);
             }
         }
 
@@ -376,6 +379,15 @@ internal sealed class ItemCardReconciler
         {
             card.Bars.RemoveAt(card.Bars.Count - 1);
         }
+    }
+
+    private static void ApplyProjection(UsageBarViewModel viewModel, UsageBar bar)
+    {
+        viewModel.ProjectionCurrent = bar.ProjectionCurrent;
+        viewModel.ProjectionLimit = bar.ProjectionLimit;
+        viewModel.ProjectionPeriodStart = bar.ProjectionPeriodStart;
+        viewModel.ProjectionPeriodEnd = bar.ProjectionPeriodEnd;
+        viewModel.UpdateProjection(DateTimeOffset.UtcNow);
     }
 
     private void RemoveCard(string key)

@@ -19,4 +19,16 @@ public sealed record UsageBar
 
     /// <summary>Gets when the window resets (UTC).</summary>
     public DateTimeOffset? ResetsAt { get; init; }
+
+    /// <summary>Gets observed current usage for a projected month-end bar.</summary>
+    public decimal? ProjectionCurrent { get; init; }
+
+    /// <summary>Gets limit used for a projected month-end bar.</summary>
+    public decimal? ProjectionLimit { get; init; }
+
+    /// <summary>Gets projection period start timestamp.</summary>
+    public DateTimeOffset? ProjectionPeriodStart { get; init; }
+
+    /// <summary>Gets projection period end timestamp.</summary>
+    public DateTimeOffset? ProjectionPeriodEnd { get; init; }
 }

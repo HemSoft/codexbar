@@ -120,6 +120,24 @@ public sealed class ClampToWorkAreaTests
         Assert.Equal(340, result.Right - result.Left);
         Assert.Equal(400, result.Bottom - result.Top);
     }
+
+    [Fact]
+    public void CalculateMaxHeightFromWorkArea_ConvertsPhysicalPixelsToDipsAndSubtractsPadding()
+    {
+        var transformFromDevice = new Matrix(0.5, 0, 0, 0.5, 0, 0);
+
+        var result = MainWindow.CalculateMaxHeightFromWorkArea(1800, transformFromDevice, minHeight: 180, padding: 16);
+
+        Assert.Equal(884, result);
+    }
+
+    [Fact]
+    public void CalculateMaxHeightFromWorkArea_WhenWorkAreaTooSmall_ReturnsMinHeight()
+    {
+        var result = MainWindow.CalculateMaxHeightFromWorkArea(100, Matrix.Identity, minHeight: 180, padding: 16);
+
+        Assert.Equal(180, result);
+    }
 }
 
 [Collection("WPF UI")]
@@ -231,6 +249,44 @@ public sealed class MainWindowPositionTests : IDisposable
             var saved = settingsService.Load();
             Assert.Equal(500, saved.WindowLeft);
             Assert.Equal(300, saved.WindowTop);
+        });
+    }
+
+    [Fact]
+    public void Constructor_WhenWindowHeightSaved_RestoresManualHeight()
+    {
+        this.wpfApplicationFixture.Run(() =>
+        {
+            var settingsService = this.CreateSettingsService();
+            var settings = settingsService.Load();
+            settings.WindowHeight = 420;
+            settingsService.Save(settings);
+
+            var window = new MainWindow(settingsService);
+
+            Assert.Equal(SizeToContent.Manual, window.SizeToContent);
+            Assert.Equal(420, window.Height);
+        });
+    }
+
+    [Fact]
+    public void SaveWindowState_WhenHeightIsAutoSized_DoesNotPersistHeight()
+    {
+        this.wpfApplicationFixture.Run(() =>
+        {
+            var settingsService = this.CreateSettingsService();
+            var window = new MainWindow(settingsService)
+            {
+                Left = 123,
+                Top = 456,
+                Width = 340,
+                Height = 420,
+            };
+
+            window.SaveWindowState();
+
+            var saved = settingsService.Load();
+            Assert.Null(saved.WindowHeight);
         });
     }
 

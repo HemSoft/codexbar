@@ -293,17 +293,22 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
         var period = response.TimePeriod is { Year: > 0, Month: > 0 }
             ? response.TimePeriod
             : new BillingTimePeriod { Year = configuration.Year, Month = configuration.Month };
+        var periodStart = ComputeBillingPeriodStart(period.Year, period.Month);
+        var periodEnd = periodStart.AddMonths(1);
         var consumed = SumGrossQuantity(response.UsageItems);
         var poolTotal = await this.ResolvePoolTotalAsync(configuration, token, ct);
+        var projectedMonthEnd = ProjectMonthEndCredits(consumed, periodStart, periodEnd, DateTimeOffset.UtcNow);
         var usageLabel = poolTotal is > 0
             ? $"{consumed:N0} / {poolTotal.Value:N0} AI credits"
-            : $"{consumed:N0} AI credits";
+            : $"{consumed:N0} AI credits · month end est. {projectedMonthEnd:N0}";
+        var primaryUsage = BuildMonthlyUsageSnapshot(consumed, poolTotal, usageLabel, period.Year, period.Month);
 
         var item = new UsageItem
         {
             Key = $"copilot:org:{configuration.Organization.ToLowerInvariant()}",
             DisplayName = $"Copilot · {configuration.Organization}",
-            PrimaryUsage = BuildMonthlyUsageSnapshot(consumed, poolTotal, usageLabel, period.Year, period.Month),
+            PrimaryUsage = primaryUsage,
+            Bars = BuildOrgUsageBars(consumed, poolTotal, projectedMonthEnd, primaryUsage, periodStart, periodEnd),
             Success = true,
         };
 
@@ -318,52 +323,25 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
             return null;
         }
 
+        var periodStart = ComputeBillingPeriodStart(configuration.Year, configuration.Month);
+        var periodEnd = periodStart.AddMonths(1);
         var consumed = SumGrossQuantity(response.UsageItems);
         decimal perSeat = configuration.CreditsPerSeat;
+        var projectedMonthEnd = ProjectMonthEndCredits(consumed, periodStart, periodEnd, DateTimeOffset.UtcNow);
         var primary = BuildMonthlyUsageSnapshot(
             consumed,
             perSeat,
             $"{consumed:N0} / {perSeat:N0} AI credits",
             configuration.Year,
             configuration.Month);
-
-        // When the org's total consumption is known, render two bars: the user's personal
-        // allotment usage and the user's share of the org's total consumption. Without org
-        // data, fall back to the single-bar personal allotment display.
-        if (orgConsumed is > 0)
-        {
-            var sharePercent = Math.Clamp((double)(consumed / orgConsumed.Value), 0.0, 1.0);
-            var bars = new List<UsageBar>
-            {
-                new()
-                {
-                    Label = $"Personal · {consumed:N0} / {perSeat:N0}",
-                    UsedPercent = primary.UsedPercent,
-                    ResetDescription = primary.ResetDescription,
-                    ResetsAt = primary.ResetsAt,
-                },
-                new()
-                {
-                    Label = $"Share of org · {consumed:N0} / {orgConsumed.Value:N0}",
-                    UsedPercent = sharePercent,
-                },
-            };
-
-            return new UsageItem
-            {
-                Key = $"copilot:{username}",
-                DisplayName = $"Copilot · {username}",
-                PrimaryUsage = primary,
-                Bars = bars,
-                Success = true,
-            };
-        }
+        var bars = BuildUserUsageBars(consumed, perSeat, projectedMonthEnd, primary, periodStart, periodEnd, response.UsageItems, orgConsumed);
 
         return new UsageItem
         {
             Key = $"copilot:{username}",
             DisplayName = $"Copilot · {username}",
             PrimaryUsage = primary,
+            Bars = bars,
             Success = true,
         };
     }
@@ -385,12 +363,30 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
         return this.SendGitHubRestRequestAsync<BillingUsageSummaryResponse>(requestUri, token, $"org billing for {configuration.Organization}", ct);
     }
 
-    private Task<BillingPremiumRequestResponse?> FetchUserBillingAsync(string username, CopilotBillingConfiguration configuration, string token, CancellationToken ct)
+    private async Task<BillingPremiumRequestResponse?> FetchUserBillingAsync(string username, CopilotBillingConfiguration configuration, string token, CancellationToken ct)
+    {
+        var usageItems = new List<BillingUsageItem>();
+        var foundUsage = false;
+
+        foreach (var day in GetBillingDays(configuration.Year, configuration.Month, DateTimeOffset.UtcNow))
+        {
+            var response = await this.FetchUserBillingDayAsync(username, configuration, day, token, ct);
+            if (response is null)
+            {
+                continue;
+            }
+
+            foundUsage = true;
+            usageItems.AddRange(response.UsageItems);
+        }
+
+        return foundUsage ? new BillingPremiumRequestResponse { UsageItems = usageItems } : null;
+    }
+
+    private Task<BillingPremiumRequestResponse?> FetchUserBillingDayAsync(string username, CopilotBillingConfiguration configuration, int day, string token, CancellationToken ct)
     {
         // NOTE: The API does not allow combining user + organization filters (returns 400).
         // Also, month-level user queries return empty; day-level is required.
-        var now = DateTimeOffset.UtcNow;
-        var day = now.Year == configuration.Year && now.Month == configuration.Month ? now.Day : 1;
         var requestUri = $"{GitHubRestApiBaseUrl}/enterprises/{Uri.EscapeDataString(configuration.Enterprise)}/settings/billing/premium_request/usage?year={configuration.Year}&month={configuration.Month}&day={day}&user={Uri.EscapeDataString(username)}";
         return this.SendGitHubRestRequestAsync<BillingPremiumRequestResponse>(requestUri, token, $"user billing for {username}", ct);
     }
@@ -441,6 +437,145 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
     private static decimal SumGrossQuantity(IEnumerable<BillingUsageItem>? usageItems) =>
         (usageItems ?? []).Sum(item => item.GrossQuantity);
 
+    internal static decimal ProjectMonthEndCredits(decimal consumed, int year, int month, DateTimeOffset now)
+    {
+        var periodStart = ComputeBillingPeriodStart(year, month);
+        return ProjectMonthEndCredits(consumed, periodStart, periodStart.AddMonths(1), now);
+    }
+
+    internal static IReadOnlyList<int> GetBillingDays(int year, int month, DateTimeOffset now)
+    {
+        var lastDay = now.Year == year && now.Month == month
+            ? now.Day
+            : DateTime.DaysInMonth(year, month);
+        return Enumerable.Range(1, lastDay).ToArray();
+    }
+
+    internal static decimal ProjectMonthEndCredits(decimal consumed, DateTimeOffset periodStart, DateTimeOffset periodEnd, DateTimeOffset now)
+    {
+        if (now <= periodStart || now >= periodEnd || consumed <= 0)
+        {
+            return consumed;
+        }
+
+        var elapsed = (decimal)(now - periodStart).TotalSeconds;
+        var total = (decimal)(periodEnd - periodStart).TotalSeconds;
+        return elapsed <= 0 ? consumed : consumed * total / elapsed;
+    }
+
+    private static IReadOnlyList<UsageBar>? BuildOrgUsageBars(
+        decimal consumed,
+        decimal? poolTotal,
+        decimal projectedMonthEnd,
+        UsageSnapshot primaryUsage,
+        DateTimeOffset periodStart,
+        DateTimeOffset periodEnd)
+    {
+        if (poolTotal is not > 0)
+        {
+            return null;
+        }
+
+        return
+        [
+            new UsageBar
+            {
+                Label = $"Current · {consumed:N0} / {poolTotal.Value:N0}",
+                UsedPercent = primaryUsage.UsedPercent,
+                ResetDescription = primaryUsage.ResetDescription,
+                ResetsAt = primaryUsage.ResetsAt,
+            },
+            new UsageBar
+            {
+                Label = $"Month end est. · {projectedMonthEnd:N0} / {poolTotal.Value:N0}",
+                UsedPercent = Math.Clamp((double)(projectedMonthEnd / poolTotal.Value), 0.0, 1.0),
+                ResetDescription = primaryUsage.ResetDescription,
+                ResetsAt = primaryUsage.ResetsAt,
+                ProjectionCurrent = consumed,
+                ProjectionLimit = poolTotal.Value,
+                ProjectionPeriodStart = periodStart,
+                ProjectionPeriodEnd = periodEnd,
+            },
+        ];
+    }
+
+    private static IReadOnlyList<UsageBar> BuildUserUsageBars(
+        decimal consumed,
+        decimal perSeat,
+        decimal projectedMonthEnd,
+        UsageSnapshot primaryUsage,
+        DateTimeOffset periodStart,
+        DateTimeOffset periodEnd,
+        IReadOnlyList<BillingUsageItem> usageItems,
+        decimal? orgConsumed)
+    {
+        var bars = new List<UsageBar>
+        {
+            new()
+            {
+                Label = $"Personal · {consumed:N0} / {perSeat:N0}",
+                UsedPercent = primaryUsage.UsedPercent,
+                ResetDescription = primaryUsage.ResetDescription,
+                ResetsAt = primaryUsage.ResetsAt,
+            },
+            new()
+            {
+                Label = $"Month end est. · {projectedMonthEnd:N0} / {perSeat:N0}",
+                UsedPercent = Math.Clamp((double)(projectedMonthEnd / perSeat), 0.0, 1.0),
+                ResetDescription = primaryUsage.ResetDescription,
+                ResetsAt = primaryUsage.ResetsAt,
+                ProjectionCurrent = consumed,
+                ProjectionLimit = perSeat,
+                ProjectionPeriodStart = periodStart,
+                ProjectionPeriodEnd = periodEnd,
+            },
+        };
+
+        bars.AddRange(BuildUsageCategoryBars(consumed, usageItems));
+
+        if (orgConsumed is > 0)
+        {
+            bars.Add(new UsageBar
+            {
+                Label = $"Share of org · {consumed:N0} / {orgConsumed.Value:N0}",
+                UsedPercent = Math.Clamp((double)(consumed / orgConsumed.Value), 0.0, 1.0),
+            });
+        }
+
+        return bars;
+    }
+
+    private static IReadOnlyList<UsageBar> BuildUsageCategoryBars(decimal consumed, IReadOnlyList<BillingUsageItem> usageItems)
+    {
+        if (consumed <= 0 || usageItems.Count == 0)
+        {
+            return [];
+        }
+
+        var prReviewCredits = usageItems
+            .Where(IsCopilotPrReviewUsage)
+            .Sum(item => item.GrossQuantity);
+        var otherCredits = usageItems
+            .Where(item => !IsCopilotPrReviewUsage(item))
+            .Sum(item => item.GrossQuantity);
+
+        return new[]
+            {
+                new { Label = "Copilot PR Review", Credits = prReviewCredits },
+                new { Label = "Other models", Credits = otherCredits },
+            }
+            .Where(group => group.Credits > 0)
+            .Select(group => new UsageBar
+            {
+                Label = $"{group.Label} · {group.Credits:N1}",
+                UsedPercent = Math.Clamp((double)(group.Credits / consumed), 0.0, 1.0),
+            })
+            .ToArray();
+    }
+
+    private static bool IsCopilotPrReviewUsage(BillingUsageItem item) =>
+        item.Model?.Contains("Code Review", StringComparison.OrdinalIgnoreCase) == true;
+
     private static UsageSnapshot BuildMonthlyUsageSnapshot(decimal used, decimal? total, string usageLabel, int year, int month)
     {
         var resetAt = ComputeBillingResetAt(year, month);
@@ -457,8 +592,11 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
         };
     }
 
+    private static DateTimeOffset ComputeBillingPeriodStart(int year, int month) =>
+        new(year, month, 1, 0, 0, 0, TimeSpan.Zero);
+
     private static DateTimeOffset ComputeBillingResetAt(int year, int month) =>
-        new DateTimeOffset(year, month, 1, 0, 0, 0, TimeSpan.Zero).AddMonths(1);
+        ComputeBillingPeriodStart(year, month).AddMonths(1);
 
     private static int GetCreditsPerSeat(int year, int month) =>
         year == 2026 && month is >= 6 and <= 8 ? PromotionalCreditsPerSeat : StandardCreditsPerSeat;

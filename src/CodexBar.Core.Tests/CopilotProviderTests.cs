@@ -212,6 +212,130 @@ public class CopilotProviderTests
     }
 
     [Fact]
+    public void ProjectMonthEndCredits_MidMonth_ScalesByElapsedMonth()
+    {
+        var now = new DateTimeOffset(2026, 6, 16, 0, 0, 0, TimeSpan.Zero);
+        var projected = CopilotProvider.ProjectMonthEndCredits(1500m, 2026, 6, now);
+
+        Assert.Equal(3000m, projected);
+    }
+
+    [Fact]
+    public void ProjectMonthEndCredits_AfterMonthEnd_ReturnsConsumed()
+    {
+        var now = new DateTimeOffset(2026, 7, 1, 0, 0, 0, TimeSpan.Zero);
+        var projected = CopilotProvider.ProjectMonthEndCredits(1500m, 2026, 6, now);
+
+        Assert.Equal(1500m, projected);
+    }
+
+    [Fact]
+    public void GetBillingDays_CurrentMonth_ReturnsElapsedDays()
+    {
+        var now = new DateTimeOffset(2026, 6, 16, 0, 0, 0, TimeSpan.Zero);
+        var days = CopilotProvider.GetBillingDays(2026, 6, now);
+
+        Assert.Equal(Enumerable.Range(1, 16), days);
+    }
+
+    [Fact]
+    public void GetBillingDays_PastMonth_ReturnsFullMonth()
+    {
+        var now = new DateTimeOffset(2026, 7, 1, 0, 0, 0, TimeSpan.Zero);
+        var days = CopilotProvider.GetBillingDays(2026, 6, now);
+
+        Assert.Equal(Enumerable.Range(1, 30), days);
+    }
+
+    [Fact]
+    public async Task FetchUsageAsync_WhenUserBillingAvailable_AddsPersonalProjectionBar()
+    {
+        var settings = Substitute.For<ISettingsService>();
+        settings.IsProviderEnabled(ProviderId.Copilot).Returns(true);
+        settings.GetCopilotAccounts().Returns(["alice"]);
+        settings.Load().Returns(new AppSettings
+        {
+            CopilotEnterprise = "bertelsmann",
+            CopilotOrganization = "Relias-Engineering",
+        });
+
+        var handler = new MockHttpMessageHandler(request =>
+        {
+            var uri = request.RequestUri!.ToString();
+            if (uri.Contains("/copilot_internal/user", StringComparison.OrdinalIgnoreCase))
+            {
+                return JsonResponse("""
+                    {
+                      "copilot_plan": "enterprise",
+                      "organization_login_list": ["Relias-Engineering"],
+                      "quota_snapshots": {
+                        "premium_interactions": { "entitlement": 300, "remaining": 250 }
+                      }
+                    }
+                    """);
+            }
+
+            if (uri.Contains("/settings/billing/usage/summary", StringComparison.OrdinalIgnoreCase))
+            {
+                return JsonResponse("""
+                    {
+                      "timePeriod": { "year": 2026, "month": 6 },
+                      "usageItems": [{ "grossQuantity": 200 }]
+                    }
+                    """);
+            }
+
+            if (uri.Contains("/copilot/billing", StringComparison.OrdinalIgnoreCase))
+            {
+                return JsonResponse("""{ "seat_breakdown": { "total": 1 } }""");
+            }
+
+            if (uri.Contains("/settings/billing/premium_request/usage", StringComparison.OrdinalIgnoreCase))
+            {
+                if (!uri.Contains("day=1&", StringComparison.OrdinalIgnoreCase))
+                {
+                    return JsonResponse("""{ "usageItems": [] }""");
+                }
+
+                return JsonResponse("""
+                    {
+                      "usageItems": [
+                        { "sku": "Copilot AI Credits", "model": "Claude Opus 4.8", "grossQuantity": 30 },
+                        { "sku": "Copilot AI Credits", "model": "Code Review model", "grossQuantity": 20 },
+                        { "sku": "Copilot Premium Request", "model": "Claude Opus 4.8", "grossQuantity": 5 }
+                      ]
+                    }
+                    """);
+            }
+
+            return new HttpResponseMessage(System.Net.HttpStatusCode.NotFound);
+        });
+        var httpFactory = Substitute.For<IHttpClientFactory>();
+        httpFactory.CreateClient(Arg.Any<string>()).Returns(_ => new HttpClient(handler));
+        var provider = new CopilotProvider(
+            NullLogger<CopilotProvider>.Instance,
+            httpFactory,
+            settings)
+        {
+            TokenResolverOverride = (_, _) => Task.FromResult<string?>("fake-token"),
+        };
+
+        var result = await provider.FetchUsageAsync();
+
+        var user = Assert.Single(result.Items, item => item.Key == "copilot:alice");
+        Assert.NotNull(user.Bars);
+        Assert.Equal("Personal · 55 / 7,000", user.Bars![0].Label);
+        Assert.StartsWith("Month end est. · ", user.Bars[1].Label);
+        Assert.Equal(55m, user.Bars[1].ProjectionCurrent);
+        Assert.Equal(7000m, user.Bars[1].ProjectionLimit);
+        Assert.Equal(new DateTimeOffset(2026, 6, 1, 0, 0, 0, TimeSpan.Zero), user.Bars[1].ProjectionPeriodStart);
+        Assert.Equal(new DateTimeOffset(2026, 7, 1, 0, 0, 0, TimeSpan.Zero), user.Bars[1].ProjectionPeriodEnd);
+        Assert.Equal("Copilot PR Review · 20.0", user.Bars[2].Label);
+        Assert.Equal("Other models · 35.0", user.Bars[3].Label);
+        Assert.Equal("Share of org · 55 / 200", user.Bars[4].Label);
+    }
+
+    [Fact]
     public void Metadata_WhenProviderIsConstructed_ReturnsExpectedMetadata()
     {
         var settings = Substitute.For<ISettingsService>();
@@ -223,5 +347,16 @@ public class CopilotProviderTests
 
         Assert.Equal(ProviderId.Copilot, provider.Metadata.Id);
         Assert.Equal("Copilot", provider.Metadata.DisplayName);
+    }
+
+    private static HttpResponseMessage JsonResponse(string json) => new(System.Net.HttpStatusCode.OK)
+    {
+        Content = new StringContent(json),
+    };
+
+    private sealed class MockHttpMessageHandler(Func<HttpRequestMessage, HttpResponseMessage> handler) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
+            Task.FromResult(handler(request));
     }
 }

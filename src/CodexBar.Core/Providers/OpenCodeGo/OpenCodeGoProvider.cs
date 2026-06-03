@@ -121,8 +121,7 @@ public sealed partial class OpenCodeGoProvider(
         {
             return ProviderUsageResult.Failure(
                 ProviderId.OpenCodeGo,
-                "Could not parse usage data from OpenCode Go dashboard. " +
-                "The dashboard markup may have changed.");
+                GetUnparseableDashboardMessage(html));
         }
 
         this._cached = usage;
@@ -248,6 +247,29 @@ public sealed partial class OpenCodeGoProvider(
 
         return (rolling is null && weekly is null && monthly is null) ? null
             : new ParsedUsage { Rolling = rolling, Weekly = weekly, Monthly = monthly };
+    }
+
+    private static string GetUnparseableDashboardMessage(string html)
+    {
+        if (LooksLikeInactiveSubscriptionPage(html))
+        {
+            return "OpenCode Go subscription appears inactive or expired. " +
+                "Renew the subscription, refresh OPENCODE_GO_AUTH_COOKIE, or disable this provider.";
+        }
+
+        return "Could not parse usage data from OpenCode Go dashboard. " +
+            "The dashboard markup may have changed.";
+    }
+
+    private static bool LooksLikeInactiveSubscriptionPage(string html)
+    {
+        return ContainsAny(html, "subscription", "subscribed", "subscribe", "billing", "payment")
+            && ContainsAny(html, "expired", "inactive", "renew", "failed", "required", "start", "manage");
+    }
+
+    private static bool ContainsAny(string value, params string[] terms)
+    {
+        return terms.Any(term => value.Contains(term, StringComparison.OrdinalIgnoreCase));
     }
 
     private static WindowData? TryParseWindow(

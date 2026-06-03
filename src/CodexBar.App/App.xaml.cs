@@ -6,6 +6,8 @@ using System.Diagnostics;
 using System.Drawing;
 using System.Runtime.InteropServices;
 using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Threading;
 using CodexBar.App.ViewModels;
 using CodexBar.Core.Configuration;
@@ -29,6 +31,7 @@ public partial class App : Application
     private UsageRefreshService? _refreshService;
     private MainViewModel? _viewModel;
     private MainWindow? _mainWindow;
+    private bool _shutdownRequested;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -87,15 +90,15 @@ public partial class App : Application
             Icon = CreateDefaultIcon(),
             ContextMenu = this.CreateContextMenu(),
         };
-        this._trayIcon.TrayMouseMove += (_, _) => this.ShowPopup();
+        this._trayIcon.TrayMouseMove += this.TrayIcon_TrayMouseMove;
         this._trayIcon.ForceCreate();
     }
 
-    private System.Windows.Controls.ContextMenu CreateContextMenu()
+    private ContextMenu CreateContextMenu()
     {
-        var menu = new System.Windows.Controls.ContextMenu();
+        var menu = new ContextMenu();
 
-        var refreshItem = new System.Windows.Controls.MenuItem { Header = "Refresh Now" };
+        var refreshItem = new MenuItem { Header = "Refresh Now" };
         refreshItem.Click += async (_, _) =>
         {
             if (this._refreshService is not null)
@@ -105,7 +108,7 @@ public partial class App : Application
         };
         menu.Items.Add(refreshItem);
 
-        var startupItem = new System.Windows.Controls.MenuItem
+        var startupItem = new MenuItem
         {
             Header = "Start with Windows",
             IsCheckable = true,
@@ -125,32 +128,87 @@ public partial class App : Application
         };
         menu.Items.Add(startupItem);
 
-        menu.Items.Add(new System.Windows.Controls.Separator());
+        menu.Items.Add(new Separator());
 
-        var exitItem = new System.Windows.Controls.MenuItem { Header = "Exit" };
-        exitItem.Click += (_, _) =>
-        {
-            this._mainWindow?.SaveWindowState();
-
-            // Close context menu and remove tray icon BEFORE shutdown
-            // to prevent a ghost icon/menu lingering in the system tray.
-            if (this._trayIcon != null)
-            {
-                if (this._trayIcon.ContextMenu is { IsOpen: true } ctx)
-                {
-                    ctx.IsOpen = false;
-                }
-
-                this._trayIcon.Visibility = System.Windows.Visibility.Collapsed;
-                this._trayIcon.Dispose();
-                this._trayIcon = null;
-            }
-
-            this.Shutdown();
-        };
+        var exitItem = new MenuItem { Header = "Exit" };
+        exitItem.Click += this.ExitItem_Click;
         menu.Items.Add(exitItem);
 
         return menu;
+    }
+
+    private void TrayIcon_TrayMouseMove(object? sender, RoutedEventArgs e) => this.ShowPopup();
+
+    private async void ExitItem_Click(object sender, RoutedEventArgs e)
+    {
+        if (this._shutdownRequested)
+        {
+            return;
+        }
+
+        this._shutdownRequested = true;
+        this._mainWindow?.SaveWindowState();
+        CloseContextMenu(ResolveContextMenu(sender) ?? this._trayIcon?.ContextMenu);
+
+        try
+        {
+            await this.Dispatcher.InvokeAsync(static () => { }, DispatcherPriority.ContextIdle);
+            this.DisposeTrayIcon();
+            if (this._refreshService is not null)
+            {
+                await this._refreshService.StopAsync();
+            }
+        }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"[CodexBar] Graceful shutdown cleanup failed: {ex.Message}");
+        }
+        finally
+        {
+            this.Shutdown();
+        }
+    }
+
+    private static ContextMenu? ResolveContextMenu(object? source) =>
+        (source as FrameworkElement)?.Parent as ContextMenu;
+
+    private static void CloseContextMenu(ContextMenu? menu)
+    {
+        if (menu is null)
+        {
+            return;
+        }
+
+        menu.IsOpen = false;
+        menu.Visibility = Visibility.Collapsed;
+        Keyboard.ClearFocus();
+        Mouse.Capture(null);
+    }
+
+    private void DisposeTrayIcon()
+    {
+        var trayIcon = this._trayIcon;
+        if (trayIcon is null)
+        {
+            return;
+        }
+
+        trayIcon.TrayMouseMove -= this.TrayIcon_TrayMouseMove;
+        var contextMenu = trayIcon.ContextMenu;
+        CloseContextMenu(contextMenu);
+        trayIcon.ContextMenu = null;
+        trayIcon.Visibility = Visibility.Collapsed;
+        trayIcon.Dispose();
+        this._trayIcon = null;
+
+        if (contextMenu is null)
+        {
+            return;
+        }
+
+        contextMenu.Items.Clear();
+        contextMenu.PlacementTarget = null;
+        contextMenu.DataContext = null;
     }
 
     private void ShowPopup()
@@ -213,19 +271,7 @@ public partial class App : Application
     protected override void OnExit(ExitEventArgs e)
     {
         this._mainWindow?.SaveWindowState();
-
-        if (this._trayIcon != null)
-        {
-            if (this._trayIcon.ContextMenu is { IsOpen: true } menu)
-            {
-                menu.IsOpen = false;
-            }
-
-            this._trayIcon.Visibility = System.Windows.Visibility.Collapsed;
-            this._trayIcon.Dispose();
-            this._trayIcon = null;
-        }
-
+        this.DisposeTrayIcon();
         this._services?.Dispose();
         base.OnExit(e);
     }

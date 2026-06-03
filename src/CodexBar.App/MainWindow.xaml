@@ -9,13 +9,13 @@
         d:DataContext="{d:DesignInstance Type=vm:MainViewModel, IsDesignTimeCreatable=False}"
         Title="CodexBar"
         SizeToContent="Height" Width="340"
-        MaxHeight="1400"
+        MinWidth="280" MinHeight="180"
         WindowStyle="None"
         AllowsTransparency="True"
         Background="#01000000"
         ShowInTaskbar="False"
         Topmost="True"
-        ResizeMode="CanResizeWithGrip"
+        ResizeMode="CanResize"
         Deactivated="Window_Deactivated">
 
     <Window.Resources>
@@ -48,11 +48,12 @@
         </ContextMenu>
     </Window.ContextMenu>
 
-    <Border Background="{StaticResource BackgroundBrush}"
-            CornerRadius="12"
-            BorderBrush="#3F3F5F"
-            BorderThickness="1"
-            Margin="8">
+    <Grid>
+        <Border Background="{StaticResource BackgroundBrush}"
+                CornerRadius="12"
+                BorderBrush="#3F3F5F"
+                BorderThickness="1"
+                Margin="8">
         <Border.LayoutTransform>
             <ScaleTransform x:Name="ZoomTransform" ScaleX="1" ScaleY="1" />
         </Border.LayoutTransform>
@@ -399,6 +400,17 @@
                            Foreground="{StaticResource TextSecondaryBrush}"
                            FontSize="12" />
             </StackPanel>
-        </Grid>
-    </Border>
+            </Grid>
+        </Border>
+
+        <ResizeGrip Width="18"
+                    Height="18"
+                    Margin="0,0,9,9"
+                    HorizontalAlignment="Right"
+                    VerticalAlignment="Bottom"
+                    Cursor="SizeNWSE"
+                    Panel.ZIndex="10"
+                    ToolTip="Resize"
+                    PreviewMouseLeftButtonDown="ResizeGrip_PreviewMouseLeftButtonDown" />
+    </Grid>
 </Window>

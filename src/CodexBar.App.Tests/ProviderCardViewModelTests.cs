@@ -123,6 +123,42 @@ public sealed class ProviderCardViewModelTests
     }
 
     [Fact]
+    public void UpdateProjection_WhenProjectedUsageExceedsLimit_ShowsEasternLimitHitTime()
+    {
+        var bar = new UsageBarViewModel
+        {
+            ProjectionCurrent = 50m,
+            ProjectionLimit = 100m,
+            ProjectionPeriodStart = new DateTimeOffset(2026, 6, 1, 0, 0, 0, TimeSpan.Zero),
+            ProjectionPeriodEnd = new DateTimeOffset(2026, 7, 1, 0, 0, 0, TimeSpan.Zero),
+        };
+
+        bar.UpdateProjection(new DateTimeOffset(2026, 6, 11, 0, 0, 0, TimeSpan.Zero));
+
+        Assert.Equal("Month end est. · 150 / 100", bar.Label);
+        Assert.Equal(1.0, bar.UsedPercent);
+        Assert.Equal("Limit hit Jun 20 8:00 PM ET", bar.ResetDescription);
+    }
+
+    [Fact]
+    public void UpdateProjection_WhenProjectedUsageStaysUnderLimit_ShowsLimitNotReached()
+    {
+        var bar = new UsageBarViewModel
+        {
+            ProjectionCurrent = 10m,
+            ProjectionLimit = 100m,
+            ProjectionPeriodStart = new DateTimeOffset(2026, 6, 1, 0, 0, 0, TimeSpan.Zero),
+            ProjectionPeriodEnd = new DateTimeOffset(2026, 7, 1, 0, 0, 0, TimeSpan.Zero),
+        };
+
+        bar.UpdateProjection(new DateTimeOffset(2026, 6, 11, 0, 0, 0, TimeSpan.Zero));
+
+        Assert.Equal("Month end est. · 30 / 100", bar.Label);
+        Assert.Equal(0.3, bar.UsedPercent, 3);
+        Assert.Equal("Limit not reached", bar.ResetDescription);
+    }
+
+    [Fact]
     public void SessionSpending_DefaultIsNull()
     {
         var card = new ProviderCardViewModel();

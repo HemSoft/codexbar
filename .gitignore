@@ -70,3 +70,7 @@ CoverageReport/
 
 # Local dotnet tools (tool-path installs)
 .tools/
+
+# Local Copilot metrics snapshots
+data/copilot-metrics*.json
+data/top10*.json

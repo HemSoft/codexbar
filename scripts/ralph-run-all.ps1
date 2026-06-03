@@ -103,18 +103,6 @@ if ($Pick) {
 
 # --- Banner ---
 $runStart = Get-Date
-$deadline = $null
-if ($WorkUntil) {
-    try {
-        $parsed = [DateTime]::ParseExact($WorkUntil, 'HH:mm', $null)
-        $deadline = Get-Date -Hour $parsed.Hour -Minute $parsed.Minute -Second 0
-        if ($deadline -le $runStart) { $deadline = $deadline.AddDays(1) }
-    }
-    catch {
-        Write-Host "Invalid -WorkUntil format. Use HH:mm (e.g. 08:00)." -ForegroundColor Red
-        exit 1
-    }
-}
 Write-Host ""
 Write-Host "====================================" -ForegroundColor Cyan
 Write-Host "  RALPH RUN-ALL" -ForegroundColor Cyan
@@ -139,9 +127,18 @@ for ($i = 0; $i -lt $scripts.Count; $i++) {
     $script = $scripts[$i]
     $stepStart = Get-Date
 
-    if ($deadline -and (Get-Date) -ge $deadline) {
-        Write-Host "Deadline reached ($WorkUntil). Stopping before $($script.Name)." -ForegroundColor Yellow
-        break
+    # Check deadline
+    if ($WorkUntil) {
+        try {
+            $parsed = [DateTime]::ParseExact($WorkUntil, 'HH:mm', $null)
+            $deadline = Get-Date -Hour $parsed.Hour -Minute $parsed.Minute -Second 0
+            if ($deadline -le $runStart) { $deadline = $deadline.AddDays(1) }
+            if ((Get-Date) -ge $deadline) {
+                Write-Host "Deadline reached ($WorkUntil). Stopping before $($script.Name)." -ForegroundColor Yellow
+                break
+            }
+        }
+        catch { $null = $_ }
     }
 
     Write-Host ""

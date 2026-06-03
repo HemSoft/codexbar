@@ -175,6 +175,24 @@ public class OpenCodeGoProviderTests
         Assert.Contains("parse", result.ErrorMessage);
     }
 
+    [Theory]
+    [InlineData("<html><body>Your OpenCode Go subscription expired. Renew now.</body></html>")]
+    [InlineData("<html><body>Subscribe to OpenCode Go to start using this workspace.</body></html>")]
+    [InlineData("<html><body>Payment failed. Manage billing to continue.</body></html>")]
+    public async Task FetchUsageAsync_InactiveSubscriptionPage_ReturnsSubscriptionFailure(string html)
+    {
+        var response = new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(html, System.Text.Encoding.UTF8, "text/html"),
+        };
+        var provider = CreateProvider(response: response);
+        var result = await provider.FetchUsageAsync();
+
+        Assert.False(result.Success);
+        Assert.Contains("subscription", result.ErrorMessage, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("parse", result.ErrorMessage, StringComparison.OrdinalIgnoreCase);
+    }
+
     [Fact]
     public async Task FetchUsageAsync_CachesResult()
     {

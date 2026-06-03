@@ -1009,6 +1009,43 @@ public sealed class ItemCardReconcilerTests
     }
 
     [Fact]
+    public void Reconcile_MultiBarWithProjection_CopiesProjectionAndCalculatesLimitHit()
+    {
+        this._sut.Reconcile(ProviderId.Copilot, "copilot:", new ProviderUsageResult
+        {
+            Provider = ProviderId.Copilot,
+            Success = true,
+            Items =
+            [
+                new UsageItem
+                {
+                    Key = "copilot:org:relias-engineering",
+                    DisplayName = "Copilot · Relias-Engineering",
+                    Success = true,
+                    Bars =
+                    [
+                        new UsageBar
+                        {
+                            Label = "Month end est. · 150 / 100",
+                            UsedPercent = 1,
+                            ProjectionCurrent = 50m,
+                            ProjectionLimit = 100m,
+                            ProjectionPeriodStart = new DateTimeOffset(2026, 6, 1, 0, 0, 0, TimeSpan.Zero),
+                            ProjectionPeriodEnd = new DateTimeOffset(2026, 7, 1, 0, 0, 0, TimeSpan.Zero),
+                        },
+                    ],
+                    PrimaryUsage = new UsageSnapshot { UsedPercent = 0.5, UsageLabel = "50 / 100" },
+                },
+            ],
+        });
+
+        var bar = this._providers[0].Bars[0];
+        Assert.Equal(50m, bar.ProjectionCurrent);
+        Assert.Equal(100m, bar.ProjectionLimit);
+        Assert.NotNull(bar.ResetDescription);
+    }
+
+    [Fact]
     public void Reconcile_OverageToNoOverage_ClearsSpending()
     {
         this._sut.Reconcile(ProviderId.Copilot, "copilot:", new ProviderUsageResult

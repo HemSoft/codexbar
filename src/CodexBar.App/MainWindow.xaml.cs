@@ -18,21 +18,30 @@ using CodexBar.Core.Services;
 public partial class MainWindow : Window
 {
     private const int WMNCHITTEST = 0x0084;
+    private const int WMNCLBUTTONDOWN = 0x00A1;
     private const int WMENTERSIZEMOVE = 0x0231;
     private const int WMEXITSIZEMOVE = 0x0232;
     private const int WMSETCURSOR = 0x0020;
     private const int WMMOVE = 0x0003;
     private const int HTCAPTION = 2;
+    private const int HTBOTTOMRIGHT = 17;
     private const uint MONITORDEFAULTTONEAREST = 2;
     private const uint SWPNOSIZE = 0x0001;
     private const uint SWPNOZORDER = 0x0004;
     private const uint SWPNOACTIVATE = 0x0010;
+    private const double WorkAreaEdgePadding = 16;
 
     [DllImport("user32.dll")]
     private static extern IntPtr LoadCursor(IntPtr hInstance, IntPtr lpCursorName);
 
     [DllImport("user32.dll")]
     private static extern IntPtr SetCursor(IntPtr hCursor);
+
+    [DllImport("user32.dll")]
+    private static extern bool ReleaseCapture();
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
 
     [DllImport("user32.dll")]
     private static extern bool GetWindowRect(IntPtr hwnd, out RECT lpRect);
@@ -60,6 +69,7 @@ public partial class MainWindow : Window
     private readonly DispatcherTimer hideTimer;
     private double zoomLevel = 1.0;
     private double lastWidth;
+    private double? lastHeight;
     private Point providerCardDragStart;
     private ProviderCardViewModel? providerCardDragCandidate;
 
@@ -74,6 +84,8 @@ public partial class MainWindow : Window
     private int lastDragY;
 
     private bool isDragging;
+    private bool isResizeInProgress;
+    private bool hasManualWindowHeight;
     private bool isConfigurationOpen;
     private DateTime dragEndedAtUtc = DateTime.MinValue;
     private HwndSource? hwndSource;
@@ -96,6 +108,14 @@ public partial class MainWindow : Window
         if (appSettings.WindowWidth is > 0)
         {
             this.Width = appSettings.WindowWidth.Value;
+        }
+
+        if (appSettings.WindowHeight is > 0)
+        {
+            this.SizeToContent = SizeToContent.Manual;
+            this.Height = appSettings.WindowHeight.Value;
+            this.lastHeight = appSettings.WindowHeight.Value;
+            this.hasManualWindowHeight = true;
         }
 
         this.lastWidth = appSettings.WindowWidth ?? this.Width;
@@ -124,6 +144,11 @@ public partial class MainWindow : Window
         if (this.IsLoaded && this.IsVisible)
         {
             this.lastWidth = this.ActualWidth;
+            if (this.hasManualWindowHeight)
+            {
+                this.lastHeight = this.ActualHeight;
+            }
+
             this.EnsureOnScreen();
         }
     }
@@ -274,6 +299,8 @@ public partial class MainWindow : Window
 
     private void EnsureOnScreen()
     {
+        this.UpdateMaxHeightFromCurrentMonitor();
+
         var hwnd = new WindowInteropHelper(this).Handle;
         if (hwnd == IntPtr.Zero)
         {
@@ -345,6 +372,7 @@ public partial class MainWindow : Window
         base.OnSourceInitialized(e);
         this.hwndSource = PresentationSource.FromVisual(this) as HwndSource;
         this.hwndSource?.AddHook(this.WndProc);
+        this.UpdateMaxHeightFromCurrentMonitor();
     }
 
     private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
@@ -371,12 +399,21 @@ public partial class MainWindow : Window
                 this.isDragging = false;
                 this.dragEndedAtUtc = DateTime.UtcNow;
 
-                // WPF layered windows (AllowsTransparency=True) never commit the final
-                // drag position to the native HWND — GetWindowRect returns stale pre-drag
-                // coordinates. Track the real position from the last WM_MOVE instead.
-                this.physicalLeft = this.lastDragX;
-                this.physicalTop = this.lastDragY;
-                LogPosition($"DRAG: WM_EXITSIZEMOVE — saved position ({this.lastDragX},{this.lastDragY})");
+                if (this.isResizeInProgress)
+                {
+                    this.SaveCurrentWindowRect();
+                    this.isResizeInProgress = false;
+                    LogPosition($"RESIZE: WM_EXITSIZEMOVE — saved size ({this.lastWidth},{this.lastHeight})");
+                }
+                else
+                {
+                    // WPF layered windows (AllowsTransparency=True) never commit the final
+                    // drag position to the native HWND — GetWindowRect returns stale pre-drag
+                    // coordinates. Track the real position from the last WM_MOVE instead.
+                    this.physicalLeft = this.lastDragX;
+                    this.physicalTop = this.lastDragY;
+                    LogPosition($"DRAG: WM_EXITSIZEMOVE — saved position ({this.lastDragX},{this.lastDragY})");
+                }
 
                 this.SaveWindowState();
                 break;
@@ -426,6 +463,117 @@ public partial class MainWindow : Window
         }
 
         return IntPtr.Zero;
+    }
+
+    private void ResizeGrip_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (e.ChangedButton != MouseButton.Left)
+        {
+            return;
+        }
+
+        e.Handled = true;
+        this.BeginManualResize();
+
+        var hwnd = new WindowInteropHelper(this).Handle;
+        if (hwnd == IntPtr.Zero)
+        {
+            return;
+        }
+
+        ReleaseCapture();
+        SendMessage(hwnd, WMNCLBUTTONDOWN, (IntPtr)HTBOTTOMRIGHT, IntPtr.Zero);
+    }
+
+    private void BeginManualResize()
+    {
+        this.UpdateMaxHeightFromCurrentMonitor();
+
+        if (this.ActualWidth > 0)
+        {
+            this.Width = this.ActualWidth;
+            this.lastWidth = this.ActualWidth;
+        }
+
+        if (this.ActualHeight > 0)
+        {
+            this.Height = this.ActualHeight;
+            this.lastHeight = this.ActualHeight;
+        }
+
+        this.SizeToContent = SizeToContent.Manual;
+        this.hasManualWindowHeight = true;
+        this.isResizeInProgress = true;
+        this.hideTimer.Stop();
+    }
+
+    private void SaveCurrentWindowRect()
+    {
+        this.UpdateMaxHeightFromCurrentMonitor();
+
+        var hwnd = new WindowInteropHelper(this).Handle;
+        if (hwnd != IntPtr.Zero && GetWindowRect(hwnd, out var rect))
+        {
+            this.physicalLeft = rect.Left;
+            this.physicalTop = rect.Top;
+        }
+
+        this.lastWidth = this.ActualWidth;
+        this.lastHeight = this.ActualHeight;
+    }
+
+    private void UpdateMaxHeightFromCurrentMonitor()
+    {
+        var maxHeight = this.TryGetCurrentMonitorMaxHeight();
+        if (maxHeight is null)
+        {
+            return;
+        }
+
+        this.MaxHeight = maxHeight.Value;
+        if (this.hasManualWindowHeight && !double.IsNaN(this.Height) && this.Height > maxHeight.Value)
+        {
+            this.Height = maxHeight.Value;
+            this.lastHeight = maxHeight.Value;
+        }
+    }
+
+    private double? TryGetCurrentMonitorMaxHeight()
+    {
+        var hwnd = new WindowInteropHelper(this).Handle;
+        if (hwnd == IntPtr.Zero || this.hwndSource?.CompositionTarget is null)
+        {
+            return null;
+        }
+
+        var hMonitor = MonitorFromWindow(hwnd, MONITORDEFAULTTONEAREST);
+        var info = new MONITORINFO { CbSize = Marshal.SizeOf<MONITORINFO>() };
+        if (!GetMonitorInfo(hMonitor, ref info))
+        {
+            return null;
+        }
+
+        var workAreaHeightPixels = info.RcWork.Bottom - info.RcWork.Top;
+        return CalculateMaxHeightFromWorkArea(
+            workAreaHeightPixels,
+            this.hwndSource.CompositionTarget.TransformFromDevice,
+            this.MinHeight,
+            WorkAreaEdgePadding);
+    }
+
+    internal static double CalculateMaxHeightFromWorkArea(
+        int workAreaHeightPixels,
+        Matrix transformFromDevice,
+        double minHeight,
+        double padding)
+    {
+        if (workAreaHeightPixels <= 0)
+        {
+            return minHeight;
+        }
+
+        var workAreaHeight = transformFromDevice.Transform(new Vector(0, workAreaHeightPixels)).Y;
+        return Math.Max(minHeight, workAreaHeight - padding);
     }
 
     private static short LowWord(long value) => (short)(value & 0xFFFF);
@@ -642,7 +790,7 @@ public partial class MainWindow : Window
             var appSettings = this.settings.Load();
             appSettings.ZoomLevel = this.zoomLevel;
             appSettings.WindowWidth = this.lastWidth;
-            appSettings.WindowHeight = null;
+            appSettings.WindowHeight = this.hasManualWindowHeight ? this.lastHeight : null;
             appSettings.WindowLeft = this.physicalLeft;
             appSettings.WindowTop = this.physicalTop;
 

@@ -272,11 +272,23 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         }
 
         this.UpdateRefreshIndicator();
+        this.UpdateDynamicBarProjections(DateTimeOffset.UtcNow);
     }
 
     private void UpdateRefreshIndicator() =>
         this.ApplyRefreshIndicatorState(
             RefreshIndicatorState.Calculate(DateTimeOffset.UtcNow, this.nextRefreshAtUtc, this.refreshService.RefreshInterval));
+
+    private void UpdateDynamicBarProjections(DateTimeOffset nowUtc)
+    {
+        foreach (var card in this.Providers)
+        {
+            foreach (var bar in card.Bars)
+            {
+                bar.UpdateProjection(nowUtc);
+            }
+        }
+    }
 
     private void ApplyRefreshIndicatorState(RefreshIndicatorSnapshot state)
     {
@@ -493,6 +505,9 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
 public sealed class UsageBarViewModel : INotifyPropertyChanged
 {
+    private static readonly string[] EasternTimeZoneIds = ["Eastern Standard Time", "America/New_York"];
+    private static readonly Lazy<TimeZoneInfo?> EasternTimeZone = new(ResolveEasternTimeZone);
+
     private string label = string.Empty;
 
     public string Label
@@ -517,6 +532,38 @@ public sealed class UsageBarViewModel : INotifyPropertyChanged
         set => this.SetField(ref this.resetDescription, value);
     }
 
+    private decimal? projectionCurrent;
+
+    public decimal? ProjectionCurrent
+    {
+        get => this.projectionCurrent;
+        set => this.SetField(ref this.projectionCurrent, value);
+    }
+
+    private decimal? projectionLimit;
+
+    public decimal? ProjectionLimit
+    {
+        get => this.projectionLimit;
+        set => this.SetField(ref this.projectionLimit, value);
+    }
+
+    private DateTimeOffset? projectionPeriodStart;
+
+    public DateTimeOffset? ProjectionPeriodStart
+    {
+        get => this.projectionPeriodStart;
+        set => this.SetField(ref this.projectionPeriodStart, value);
+    }
+
+    private DateTimeOffset? projectionPeriodEnd;
+
+    public DateTimeOffset? ProjectionPeriodEnd
+    {
+        get => this.projectionPeriodEnd;
+        set => this.SetField(ref this.projectionPeriodEnd, value);
+    }
+
     private bool isHighUsage;
 
     public bool IsHighUsage
@@ -526,6 +573,94 @@ public sealed class UsageBarViewModel : INotifyPropertyChanged
     }
 
     public event PropertyChangedEventHandler? PropertyChanged;
+
+    public void UpdateProjection(DateTimeOffset nowUtc)
+    {
+        if (this.ProjectionCurrent is not > 0
+            || this.ProjectionLimit is not > 0
+            || this.ProjectionPeriodStart is not { } periodStart
+            || this.ProjectionPeriodEnd is not { } periodEnd)
+        {
+            return;
+        }
+
+        var projected = ProjectMonthEnd(this.ProjectionCurrent.Value, periodStart, periodEnd, nowUtc);
+        this.Label = $"Month end est. · {projected:N0} / {this.ProjectionLimit.Value:N0}";
+        this.UsedPercent = Math.Clamp((double)(projected / this.ProjectionLimit.Value), 0.0, 1.0);
+        this.ResetDescription = FormatLimitHit(this.ProjectionCurrent.Value, this.ProjectionLimit.Value, periodStart, periodEnd, nowUtc);
+    }
+
+    private static decimal ProjectMonthEnd(decimal current, DateTimeOffset periodStart, DateTimeOffset periodEnd, DateTimeOffset nowUtc)
+    {
+        if (nowUtc <= periodStart || nowUtc >= periodEnd)
+        {
+            return current;
+        }
+
+        var elapsed = (decimal)(nowUtc - periodStart).TotalSeconds;
+        var total = (decimal)(periodEnd - periodStart).TotalSeconds;
+        return elapsed <= 0 ? current : current * total / elapsed;
+    }
+
+    private static string FormatLimitHit(decimal current, decimal limit, DateTimeOffset periodStart, DateTimeOffset periodEnd, DateTimeOffset nowUtc)
+    {
+        if (current >= limit)
+        {
+            return "Limit reached";
+        }
+
+        if (nowUtc <= periodStart)
+        {
+            return "Limit hit unknown";
+        }
+
+        var elapsed = (decimal)(nowUtc - periodStart).TotalSeconds;
+        if (elapsed <= 0)
+        {
+            return "Limit hit unknown";
+        }
+
+        var ratePerSecond = current / elapsed;
+        if (ratePerSecond <= 0)
+        {
+            return "Limit hit unknown";
+        }
+
+        var secondsToLimit = (double)(limit / ratePerSecond);
+        var hitAt = periodStart.AddSeconds(secondsToLimit);
+        return hitAt >= periodEnd ? "Limit not reached" : $"Limit hit {FormatEasternTime(hitAt)}";
+    }
+
+    private static string FormatEasternTime(DateTimeOffset timestamp)
+    {
+        var easternTimeZone = EasternTimeZone.Value;
+        if (easternTimeZone is null)
+        {
+            return $"{timestamp.ToUniversalTime():MMM d h:mm tt} UTC";
+        }
+
+        var easternTime = TimeZoneInfo.ConvertTime(timestamp, easternTimeZone);
+        return $"{easternTime:MMM d h:mm tt} ET";
+    }
+
+    private static TimeZoneInfo? ResolveEasternTimeZone()
+    {
+        foreach (var timeZoneId in EasternTimeZoneIds)
+        {
+            try
+            {
+                return TimeZoneInfo.FindSystemTimeZoneById(timeZoneId);
+            }
+            catch (TimeZoneNotFoundException)
+            {
+            }
+            catch (InvalidTimeZoneException)
+            {
+            }
+        }
+
+        return null;
+    }
 
     private void SetField<T>(ref T field, T value, [CallerMemberName] string? name = null)
     {
