@@ -393,6 +393,45 @@ function Get-UsageItem {
     @($Response)
 }
 
+function Format-UsagePercent {
+    param(
+        [Parameter(Mandatory)][double]$Value,
+        [Parameter(Mandatory)][double]$Total
+    )
+
+    if ($Total -le 0) {
+        return '0.0%'
+    }
+
+    '{0:N1}%' -f (($Value / $Total) * 100)
+}
+
+function Test-CopilotPrReviewModel {
+    param([string]$Model)
+
+    $Model -and $Model.IndexOf('Code Review', [StringComparison]::OrdinalIgnoreCase) -ge 0
+}
+
+function Get-TopModelUsage {
+    param([Parameter(Mandatory)][hashtable]$ModelUsage)
+
+    $topModel = $ModelUsage.GetEnumerator() |
+        Sort-Object -Property @{ Expression = { [double]$_.Value }; Descending = $true }, Name |
+        Select-Object -First 1
+
+    if (-not $topModel) {
+        return [pscustomobject]@{
+            Model    = ''
+            Quantity = 0.0
+        }
+    }
+
+    [pscustomobject]@{
+        Model    = [string]$topModel.Name
+        Quantity = [double]$topModel.Value
+    }
+}
+
 function Convert-ResponseToUserUsage {
     param(
         [Parameter(Mandatory)][string]$Login,
@@ -403,7 +442,8 @@ function Convert-ResponseToUserUsage {
     $grossAmount = 0.0
     $netAmount = 0.0
     $daysWithUsage = 0
-    $models = [System.Collections.Generic.HashSet[string]]::new()
+    $modelUsage = @{}
+    $prReviewQuantity = 0.0
 
     foreach ($response in @($Responses)) {
         if (-not $response.Success) { continue }
@@ -416,23 +456,39 @@ function Convert-ResponseToUserUsage {
                 $quantity = [double]$item.grossQuantity
                 $grossQuantity += $quantity
                 $dayQuantity += $quantity
+
+                if ($item.model) {
+                    $model = [string]$item.model
+                    if (-not $modelUsage.ContainsKey($model)) {
+                        $modelUsage[$model] = 0.0
+                    }
+
+                    $modelUsage[$model] = [double]$modelUsage[$model] + $quantity
+
+                    if (Test-CopilotPrReviewModel -Model $model) {
+                        $prReviewQuantity += $quantity
+                    }
+                }
             }
 
             if ($null -ne $item.grossAmount) { $grossAmount += [double]$item.grossAmount }
             if ($null -ne $item.netAmount) { $netAmount += [double]$item.netAmount }
-            if ($item.model) { $null = $models.Add([string]$item.model) }
         }
 
         if ($dayQuantity -gt 0) { $daysWithUsage++ }
     }
 
+    $topModel = Get-TopModelUsage -ModelUsage $modelUsage
+
     [pscustomobject]@{
         User          = $Login
         AICredits     = [math]::Round($grossQuantity, 3)
+        PRReviewPct   = Format-UsagePercent -Value $prReviewQuantity -Total $grossQuantity
+        TopModel      = $topModel.Model
+        TopModelPct   = Format-UsagePercent -Value $topModel.Quantity -Total $grossQuantity
         GrossCostUsd  = [math]::Round($grossAmount, 2)
         NetCostUsd    = [math]::Round($netAmount, 2)
         DaysWithUsage = $daysWithUsage
-        Models        = ($models | Sort-Object) -join ', '
     }
 }
 
@@ -784,6 +840,13 @@ foreach ($login in $logins) {
 }
 
 Write-Progress -Activity 'Querying per-user Copilot billing usage' -Completed
+
+$failedUsers = @($runUsers | Where-Object { -not $_.Success })
+if ($failedUsers.Count -gt 0) {
+    $sampleErrors = $failedUsers |
+        Select-Object -First 5 -ExpandProperty Error
+    throw "Refresh failed for $($failedUsers.Count) user(s); not overwriting copilot-metrics.json. Sample errors: $($sampleErrors -join '; ')"
+}
 
 $cachePath = Get-CopilotMetricsOutputPath
 $runData = [pscustomobject]@{
