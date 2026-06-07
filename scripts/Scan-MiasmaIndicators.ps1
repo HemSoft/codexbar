@@ -38,6 +38,95 @@ function Invoke-Ripgrep {
     return @($output)
 }
 
+function Test-ExcludedPath {
+    param([Parameter(Mandatory)][string]$Path)
+
+    $normalized = $Path.Replace('/', '\')
+    $excludedSegments = @(
+        '\.git\',
+        '\node_modules\',
+        '\.next\',
+        '\dist\',
+        '\bin\',
+        '\obj\',
+        '\coverage\',
+        '\CoverageReport\',
+        '\TestResults\',
+        '\StrykerOutput\',
+        '\vendor\'
+    )
+
+    foreach ($segment in $excludedSegments) {
+        if ($normalized.Contains($segment, [StringComparison]::OrdinalIgnoreCase)) {
+            return $true
+        }
+    }
+
+    return $normalized.EndsWith('\scripts\Scan-MiasmaIndicators.ps1', [StringComparison]::OrdinalIgnoreCase) -or
+        $normalized.EndsWith('\nul', [StringComparison]::OrdinalIgnoreCase)
+}
+
+function Get-RelativePath {
+    param(
+        [Parameter(Mandatory)][string]$BasePath,
+        [Parameter(Mandatory)][string]$Path
+    )
+
+    [System.IO.Path]::GetRelativePath($BasePath, $Path).Replace('\', '/')
+}
+
+function Find-CandidateFile {
+    param(
+        [Parameter(Mandatory)][string]$SearchRoot,
+        [Parameter(Mandatory)][string[]]$RelativePatterns
+    )
+
+    if (Test-CommandAvailable -Name 'rg') {
+        $rgGlobs = foreach ($pattern in $RelativePatterns) {
+            @('--glob', "**/$pattern")
+        }
+
+        return Invoke-Ripgrep -Arguments (@('--files', $SearchRoot) + $commonGlobs + $rgGlobs) -AllowNoMatches
+    }
+
+    $files = Get-ChildItem -LiteralPath $SearchRoot -Recurse -Force -File -ErrorAction SilentlyContinue |
+        Where-Object { -not (Test-ExcludedPath -Path $_.FullName) }
+
+    foreach ($file in $files) {
+        $relative = Get-RelativePath -BasePath $SearchRoot -Path $file.FullName
+        foreach ($pattern in $RelativePatterns) {
+            if ($relative -like $pattern) {
+                $file.FullName
+                break
+            }
+        }
+    }
+}
+
+function Find-PatternMatch {
+    param(
+        [Parameter(Mandatory)][string]$SearchRoot,
+        [Parameter(Mandatory)][string]$Pattern
+    )
+
+    if (Test-CommandAvailable -Name 'rg') {
+        return Invoke-Ripgrep -Arguments (@('-n') + $commonGlobs + @($Pattern, $SearchRoot)) -AllowNoMatches
+    }
+
+    $files = Get-ChildItem -LiteralPath $SearchRoot -Recurse -Force -File -ErrorAction SilentlyContinue |
+        Where-Object { -not (Test-ExcludedPath -Path $_.FullName) }
+
+    foreach ($file in $files) {
+        try {
+            Select-String -LiteralPath $file.FullName -Pattern $Pattern -ErrorAction Stop |
+                ForEach-Object { "$($_.Path):$($_.LineNumber):$($_.Line)" }
+        }
+        catch {
+            continue
+        }
+    }
+}
+
 function Add-Finding {
     param(
         [Parameter()][System.Collections.Generic.List[object]]$Findings,
@@ -59,10 +148,6 @@ if (-not (Test-Path -LiteralPath $Root)) {
     throw "Root not found: $Root"
 }
 
-if (-not (Test-CommandAvailable -Name 'rg')) {
-    throw 'ripgrep (rg) is required for the fast read-only scan.'
-}
-
 $resolvedRoot = (Resolve-Path -LiteralPath $Root).Path
 $findings = [System.Collections.Generic.List[object]]::new()
 $commonGlobs = @(
@@ -82,19 +167,15 @@ $commonGlobs = @(
     '--glob', '!**/nul'
 )
 
-$exactPathGlobs = @(
-    '--files',
-    $resolvedRoot,
-    '--glob', '**/.github/setup.js',
-    '--glob', '**/.claude/settings.json',
-    '--glob', '**/.gemini/settings.json',
-    '--glob', '**/.cursor/rules/setup.mdc',
-    '--glob', '**/.vscode/tasks.json',
-    '--glob', '**/binding.gyp',
-    '--glob', '**/Gemfile'
-) + $commonGlobs
-
-$exactFiles = Invoke-Ripgrep -Arguments $exactPathGlobs -AllowNoMatches
+$exactFiles = Find-CandidateFile -SearchRoot $resolvedRoot -RelativePatterns @(
+    '.github/setup.js',
+    '.claude/settings.json',
+    '.gemini/settings.json',
+    '.cursor/rules/setup.mdc',
+    '.vscode/tasks.json',
+    'binding.gyp',
+    'Gemfile'
+)
 foreach ($file in $exactFiles) {
     $normalized = $file.Replace('/', '\')
     if ($normalized -match '\\\.github\\setup\.js$') {
@@ -112,14 +193,13 @@ $patternChecks = @(
 )
 
 foreach ($check in $patternChecks) {
-    $rgArgs = @('-n') + $commonGlobs + @($check.Pattern, $resolvedRoot)
-    $rgMatches = Invoke-Ripgrep -Arguments $rgArgs -AllowNoMatches
-    foreach ($match in $rgMatches) {
+    $patternMatches = Find-PatternMatch -SearchRoot $resolvedRoot -Pattern $check.Pattern
+    foreach ($match in $patternMatches) {
         Add-Finding -Findings $findings -Severity $check.Severity -Type $check.Type -Path $match
     }
 }
 
-$packageFiles = Invoke-Ripgrep -Arguments (@('--files', $resolvedRoot, '--glob', '**/package.json') + $commonGlobs) -AllowNoMatches
+$packageFiles = Find-CandidateFile -SearchRoot $resolvedRoot -RelativePatterns @('package.json')
 foreach ($file in $packageFiles) {
     try {
         $packageJson = Get-Content -LiteralPath $file -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop

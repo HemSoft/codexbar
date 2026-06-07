@@ -126,10 +126,6 @@ if (-not (Test-CommandAvailable -Name 'git')) {
     throw 'git is required for the security scan.'
 }
 
-if (-not (Test-CommandAvailable -Name 'rg')) {
-    throw 'ripgrep (rg) is required for the Miasma scan.'
-}
-
 $gitleaksExe = Get-GitleaksExecutable `
     -Version $GitleaksVersion `
     -ExpectedSha256 $GitleaksWindowsX64Sha256 `
