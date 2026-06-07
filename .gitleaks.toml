@@ -1,0 +1,20 @@
+title = "CodexBar Gitleaks configuration"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+targetRules = ["generic-api-key"]
+description = "Invalid Chromium encryption-key test fixture."
+condition = "AND"
+regexTarget = "line"
+paths = ['''src/CodexBar\.App\.Tests/ClaudeDesktopCookieTests\.cs''']
+regexes = ['''encrypted_key":"bm90LWRwYXBp"''']
+
+[[allowlists]]
+targetRules = ["generic-api-key"]
+description = "OpenRouter provider dummy API key used by unit tests."
+condition = "AND"
+regexTarget = "line"
+paths = ['''src/CodexBar\.Core\.Tests/OpenRouterProviderTests\.cs''']
+regexes = ['''ValidApiKey = "test-api-key-12345"''']

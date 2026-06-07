@@ -1,6 +1,7 @@
 {
   "scripts": {
     "lint:md": "markdownlint \"**/*.md\" --ignore node_modules",
+    "security:scan": "pwsh -NoProfile -ExecutionPolicy Bypass -File ./scripts/Invoke-SecurityScan.ps1",
     "postinstall": "git config core.hooksPath .githooks 2>nul || exit 0"
   },
   "devDependencies": {
