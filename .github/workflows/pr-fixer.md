@@ -3,8 +3,8 @@ description: |
   PR Fixer — Authority model. Reads all analyzer review comments on a draft
   PR labeled agent:pr, implements all blocking and non-blocking fixes, commits
   to the PR branch, increments the cycle label, and exits. Does NOT un-draft
-  the PR — that is the Promoter's job. Intended model: claude-opus-4
-  (set via GH_AW_MODEL_AGENT_COPILOT repo variable).
+  the PR — that is the Promoter's job. This repo runs SFL on Codex gpt-5.5
+  and expects OPENAI_API_KEY.
 
 on:
   workflow_dispatch:
@@ -15,8 +15,8 @@ permissions:
   pull-requests: read
 
 engine:
-  id: copilot
-  model: claude-opus-4.6
+  id: codex
+  model: gpt-5.5
 
 network: defaults
 

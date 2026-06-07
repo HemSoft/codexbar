@@ -9,6 +9,10 @@ on:
   schedule: "0 6 * * *"   # 1:00 AM EST
   workflow_dispatch:
 
+engine:
+  id: codex
+  model: gpt-5.5
+
 permissions:
   contents: read
   issues: read

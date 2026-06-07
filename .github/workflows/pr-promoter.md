@@ -14,8 +14,8 @@ permissions:
   pull-requests: read
 
 engine:
-  id: copilot
-  model: claude-sonnet-4.6
+  id: codex
+  model: gpt-5.5
 
 network: defaults
 
@@ -140,12 +140,11 @@ Before running `gh pr ready`, ensure gh CLI is authenticated in this runtime.
 Use:
 
 ```bash
-export GH_TOKEN="${GITHUB_TOKEN:-$COPILOT_GITHUB_TOKEN}"
+export GH_TOKEN="$GITHUB_TOKEN"
 gh auth status
 ```
 
-If `gh auth status` fails or both `$GITHUB_TOKEN` and `$COPILOT_GITHUB_TOKEN`
-are unavailable, call `noop` with message
+If `gh auth status` fails or `$GITHUB_TOKEN` is unavailable, call `noop` with message
 "PR #<number> cannot promote: gh auth unavailable" and exit.
 
 ## Step 7 — Convert PR to ready-for-review
@@ -275,7 +274,7 @@ Before running `gh pr merge`, ensure gh CLI is authenticated in this runtime.
 Use:
 
 ```bash
-export GH_TOKEN="${GITHUB_TOKEN:-$COPILOT_GITHUB_TOKEN}"
+export GH_TOKEN="$GITHUB_TOKEN"
 gh auth status
 ```
 

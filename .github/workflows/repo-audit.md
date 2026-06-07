@@ -7,6 +7,10 @@ on:
   schedule: daily
   workflow_dispatch:
 
+engine:
+  id: codex
+  model: gpt-5.5
+
 permissions:
   contents: read
   issues: read

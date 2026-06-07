@@ -1,10 +1,10 @@
 ---
 description: |
   PR Analyzer C — Full-Spectrum Review. One of three analyzer agents that
-  independently review draft PRs labeled agent:pr using different AI models.
+  independently review draft PRs labeled agent:pr using separate review passes.
   Each analyzer reviews the ENTIRE PR across all dimensions (correctness,
-  security, performance, style, maintainability). The value comes from model
-  diversity — different models catch different things. Model: claude-opus-4.6
+  security, performance, style, maintainability). This repo runs the SFL
+  pipeline on Codex and expects OPENAI_API_KEY. Model: gpt-5.5
   (set via engine.model frontmatter).
 
 on:
@@ -16,8 +16,8 @@ permissions:
   pull-requests: read
 
 engine:
-  id: copilot
-  model: claude-opus-4.6
+  id: codex
+  model: gpt-5.5
 
 network: defaults
 
@@ -40,8 +40,8 @@ not yet been reviewed by this analyzer in the current cycle. Post a structured
 full-spectrum review comment. Exit after reviewing one PR per run.
 
 You are one of three independent analyzers. All three review the same
-dimensions; the value comes from **model diversity** — different AI models
-catch different issues.
+dimensions; the value comes from independent review passes with separate
+comments, markers, and cycle tracking.
 
 ## Your review perspective
 

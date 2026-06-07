@@ -1,5 +1,7 @@
 # CodexBar 🎚️ for Windows
 
+[![Set it Free Loop](https://img.shields.io/badge/dynamic/json?url=https%3A%2F%2Fraw.githubusercontent.com%2FHemSoft%2Fcodexbar%2Fmain%2F.sfl%2Fsfl.json&query=%24.version&prefix=v&label=Set%20it%20Free%20Loop&color=FFD700&style=flat&logo=githubactions&logoColor=white)](docs/SFL_ONBOARDING.md)
+
 A Windows system tray app that keeps your AI provider usage limits visible. Inspired by [steipete/CodexBar](https://github.com/steipete/CodexBar) (macOS).
 
 Built with C# / WPF / .NET 9 — native Windows, no Electron overhead.
