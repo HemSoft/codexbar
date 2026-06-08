@@ -130,7 +130,7 @@ public sealed class CodexProviderTests : IDisposable
 
     [Theory]
     [InlineData("plus", "ChatGPT / Codex (Plus)")]
-    [InlineData("prolite", "ChatGPT / Codex (Max)")]
+    [InlineData("prolite", "ChatGPT / Codex (Pro)")]
     [InlineData("some_custom_plan", "ChatGPT / Codex (Some Custom Plan)")]
     public void FormatDisplayName_MapsKnownPlanCodes(string planType, string expected)
     {

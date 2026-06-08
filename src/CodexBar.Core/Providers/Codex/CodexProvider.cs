@@ -265,7 +265,7 @@ public sealed class CodexProvider : IUsageProvider
         "free" => "Free",
         "plus" => "Plus",
         "pro" => "Pro",
-        "prolite" => "Max",
+        "prolite" => "Pro",
         "team" => "Team",
         "enterprise" => "Enterprise",
         _ => FormatUnknownPlanName(planType),
