@@ -130,18 +130,35 @@ public class ClaudeProviderFileIoTests : IDisposable
     }
 
     [Fact]
-    public void ReadCredentials_EnvironmentTokenExists_ReturnsEnvironmentCredentials()
+    public void ReadCredentials_FileAndEnvironmentTokenExist_ReturnsFileCredentials()
     {
         ClaudeProvider.EnvironmentAccessTokenOverride = "env-access-token";
         var json = """
         {
             "claudeAiOauth": {
                 "subscriptionType": "pro",
+                "expiresAt": 1780929880500,
                 "accessToken": "file-access-token"
             }
         }
         """;
         File.WriteAllText(this._credentialsPath, json);
+        var provider = CreateProvider();
+
+        var result = InvokePrivateMethod(provider, "ReadCredentials");
+
+        Assert.NotNull(result);
+        var credType = result!.GetType();
+        Assert.Equal("pro", credType.GetProperty("SubscriptionType")!.GetValue(result) as string);
+        Assert.Equal("file-access-token", credType.GetProperty("AccessToken")!.GetValue(result) as string);
+        Assert.Equal(1780929880500L, (long)credType.GetProperty("ExpiresAt")!.GetValue(result)!);
+    }
+
+    [Fact]
+    public void ReadCredentials_FileMissingAndEnvironmentTokenExists_ReturnsEnvironmentCredentials()
+    {
+        ClaudeProvider.EnvironmentAccessTokenOverride = "env-access-token";
+        ClaudeProvider.CredentialsPathOverride = Path.Combine(this._tempDir, "missing-credentials.json");
         var provider = CreateProvider();
 
         var result = InvokePrivateMethod(provider, "ReadCredentials");
@@ -393,7 +410,7 @@ public class ClaudeProviderFileIoTests : IDisposable
     }
 
     [Fact]
-    public async Task EnsureTokenFreshAsync_TokenExpired_NoRefreshToken_ReturnsNull()
+    public async Task EnsureTokenFreshAsync_TokenExpired_NoRefreshToken_ReturnsOriginalCredentials()
     {
         var pastExpiry = DateTimeOffset.UtcNow.AddHours(-1).ToUnixTimeSeconds();
         var httpFactory = Substitute.For<IHttpClientFactory>();
@@ -406,7 +423,8 @@ public class ClaudeProviderFileIoTests : IDisposable
 
         var result = await InvokePrivateAsyncMethod(provider, "EnsureTokenFreshAsync", cred, CancellationToken.None);
 
-        Assert.Null(result);
+        Assert.NotNull(result);
+        Assert.Same(cred, result);
     }
 
     [Fact]
@@ -427,7 +445,7 @@ public class ClaudeProviderFileIoTests : IDisposable
         var handler = new TestResponseHandler(response);
         var httpClient = new HttpClient(handler);
         var httpFactory = Substitute.For<IHttpClientFactory>();
-        httpFactory.CreateClient(Arg.Any<string>()).Returns(httpClient);
+        httpFactory.CreateClient(Arg.Any<string>()).Returns(_ => new HttpClient(handler, disposeHandler: false));
 
         // PersistCredentials will check for the file
         ClaudeProvider.CredentialsPathOverride = Path.Combine(this._tempDir, "nonexistent-for-persist.json");
@@ -539,9 +557,8 @@ public class ClaudeProviderFileIoTests : IDisposable
         };
 
         var handler = new TestResponseHandler(apiResponse);
-        var httpClient = new HttpClient(handler);
         var httpFactory = Substitute.For<IHttpClientFactory>();
-        httpFactory.CreateClient(Arg.Any<string>()).Returns(httpClient);
+        httpFactory.CreateClient(Arg.Any<string>()).Returns(_ => new HttpClient(handler, disposeHandler: false));
 
         var settings = Substitute.For<ISettingsService>();
         settings.IsProviderEnabled(ProviderId.Claude).Returns(true);
@@ -585,7 +602,7 @@ public class ClaudeProviderFileIoTests : IDisposable
     }
 
     [Fact]
-    public async Task FetchUsageAsync_TokenExpiredRefreshFails_ReturnsFailure()
+    public async Task FetchUsageAsync_TokenExpiredRefreshFails_UsesExistingToken()
     {
         var pastExpiry = DateTimeOffset.UtcNow.AddHours(-1).ToUnixTimeSeconds();
         var credsJson = $$"""
@@ -600,14 +617,15 @@ public class ClaudeProviderFileIoTests : IDisposable
         """;
         File.WriteAllText(this._credentialsPath, credsJson);
 
-        var response = new HttpResponseMessage(HttpStatusCode.BadRequest)
-        {
-            Content = new StringContent("bad request", Encoding.UTF8, "text/plain"),
-        };
-        var handler = new TestResponseHandler(response);
-        var httpClient = new HttpClient(handler);
+        var handler = new DelegatingHandlerFunc(request =>
+            request.RequestUri?.AbsolutePath == "/v1/oauth/token"
+                ? new HttpResponseMessage(HttpStatusCode.BadRequest)
+                {
+                    Content = new StringContent("bad request", Encoding.UTF8, "text/plain"),
+                }
+                : CreateRateLimitResponse("0.12", "0.02"));
         var httpFactory = Substitute.For<IHttpClientFactory>();
-        httpFactory.CreateClient(Arg.Any<string>()).Returns(httpClient);
+        httpFactory.CreateClient(Arg.Any<string>()).Returns(_ => new HttpClient(handler, disposeHandler: false));
 
         var settings = Substitute.For<ISettingsService>();
         settings.IsProviderEnabled(ProviderId.Claude).Returns(true);
@@ -619,8 +637,20 @@ public class ClaudeProviderFileIoTests : IDisposable
 
         var result = await provider.FetchUsageAsync();
 
-        Assert.False(result.Success);
-        Assert.Contains("expired", result.ErrorMessage);
+        Assert.True(result.Success);
+        Assert.Equal(0.12, result.SessionUsage!.UsedPercent, 0.01);
+        Assert.Equal(0.02, result.WeeklyUsage!.UsedPercent, 0.01);
+    }
+
+    private static HttpResponseMessage CreateRateLimitResponse(string fiveHour, string sevenDay)
+    {
+        var response = new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("""{"id":"msg_123","type":"message","content":[]}""", Encoding.UTF8, "application/json"),
+        };
+        response.Headers.TryAddWithoutValidation("anthropic-ratelimit-unified-5h-utilization", fiveHour);
+        response.Headers.TryAddWithoutValidation("anthropic-ratelimit-unified-7d-utilization", sevenDay);
+        return response;
     }
 
     [Fact]
@@ -866,7 +896,7 @@ public class ClaudeProviderFileIoTests : IDisposable
     }
 
     [Fact]
-    public async Task FetchUsageAsync_ExpiredToken_RefreshFails_ReturnsError()
+    public async Task FetchUsageAsync_ExpiredToken_RefreshFails_UsesExistingToken()
     {
         var tempDir = Path.Combine(Path.GetTempPath(), $"claude-test-{Guid.NewGuid():N}");
         Directory.CreateDirectory(tempDir);
@@ -895,7 +925,13 @@ public class ClaudeProviderFileIoTests : IDisposable
                     };
                 }
 
-                return new HttpResponseMessage(HttpStatusCode.Unauthorized);
+                var response = new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent("""{"id":"msg_123","type":"message","content":[]}""", Encoding.UTF8, "application/json"),
+                };
+                response.Headers.TryAddWithoutValidation("anthropic-ratelimit-unified-5h-utilization", "0.3");
+                response.Headers.TryAddWithoutValidation("anthropic-ratelimit-unified-7d-utilization", "0.1");
+                return response;
             });
 
             var httpFactory = Substitute.For<IHttpClientFactory>();
@@ -908,8 +944,8 @@ public class ClaudeProviderFileIoTests : IDisposable
 
             var result = await provider.FetchUsageAsync();
 
-            Assert.False(result.Success);
-            Assert.Contains("expired", result.ErrorMessage, StringComparison.OrdinalIgnoreCase);
+            Assert.True(result.Success);
+            Assert.Equal(0.3, result.SessionUsage!.UsedPercent, 0.01);
         }
         finally
         {

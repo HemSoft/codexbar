@@ -18,8 +18,35 @@ using NSubstitute;
 /// through <see cref="ClaudeProvider.FetchUsageAsync"/> which depends on filesystem credentials.
 /// </summary>
 [Collection("ClaudeProviderFileIo")]
-public class ClaudeProviderPrivateMethodTests
+public class ClaudeProviderPrivateMethodTests : IDisposable
 {
+    private readonly string _tempDir;
+
+    public ClaudeProviderPrivateMethodTests()
+    {
+        this._tempDir = Path.Combine(Path.GetTempPath(), $"claude_private_{Guid.NewGuid():N}");
+        Directory.CreateDirectory(this._tempDir);
+        ClaudeProvider.CredentialsPathOverride = Path.Combine(this._tempDir, "credentials.json");
+        ClaudeProvider.StatsCachePathOverride = Path.Combine(this._tempDir, "stats-cache.json");
+        ClaudeProvider.ClaudeJsonPathOverride = Path.Combine(this._tempDir, "claude.json");
+    }
+
+    public void Dispose()
+    {
+        ClaudeProvider.CredentialsPathOverride = null;
+        ClaudeProvider.StatsCachePathOverride = null;
+        ClaudeProvider.ClaudeJsonPathOverride = null;
+        try
+        {
+            Directory.Delete(this._tempDir, recursive: true);
+        }
+        catch
+        {
+        }
+
+        GC.SuppressFinalize(this);
+    }
+
     private static ClaudeProvider CreateProvider(IHttpClientFactory httpFactory)
     {
         var settings = Substitute.For<ISettingsService>();

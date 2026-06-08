@@ -223,7 +223,7 @@ public sealed partial class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttp
             }
 
             this.logger.LogWarning("Claude OAuth token expired at {Expiry}, attempting refresh", tokenExpiry);
-            return await this.TryRefreshTokenAsync(credentials, ct);
+            return await this.TryRefreshTokenAsync(credentials, ct) ?? credentials;
         }
         catch (Exception ex)
         {
@@ -969,15 +969,20 @@ public sealed partial class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttp
 
     private ClaudeCredentials? ReadCredentials()
     {
-        var environmentCredentials = ReadEnvironmentCredentials();
-        if (environmentCredentials is not null)
+        var fileCredentials = this.ReadCredentialsFile();
+        if (fileCredentials is not null)
         {
-            return environmentCredentials;
+            return fileCredentials;
         }
 
+        return ReadEnvironmentCredentials() ?? this.ReadClaudeDesktopTokenCacheCredentials();
+    }
+
+    private ClaudeCredentials? ReadCredentialsFile()
+    {
         if (!File.Exists(CredentialsPath))
         {
-            return this.ReadClaudeDesktopTokenCacheCredentials();
+            return null;
         }
 
         try
@@ -988,7 +993,7 @@ public sealed partial class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttp
 
             if (!root.TryGetProperty("claudeAiOauth", out var oauth))
             {
-                return this.ReadClaudeDesktopTokenCacheCredentials();
+                return null;
             }
 
             return ParseCredentials(oauth);
@@ -996,7 +1001,7 @@ public sealed partial class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttp
         catch (Exception ex)
         {
             this.logger.LogDebug(ex, "Failed to read Claude credentials from {Path}", CredentialsPath);
-            return this.ReadClaudeDesktopTokenCacheCredentials();
+            return null;
         }
     }
 

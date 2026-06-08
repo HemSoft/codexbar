@@ -690,25 +690,25 @@ public class ClaudeProviderFullCoverageTests : IDisposable
     }
 
     [Fact]
-    public async Task FetchUsageAsync_ExpiredTokenNoRefreshToken_ReturnsFailure()
+    public async Task FetchUsageAsync_ExpiredTokenNoRefreshToken_UsesExistingToken()
     {
         this.SetupOverrides();
         var expiredEpoch = DateTimeOffset.UtcNow.AddHours(-1).ToUnixTimeSeconds();
         this.WriteCredentials(expiredEpoch, "expired-token", null);
 
         var factory = CreateFactory(new DelegatingHandlerFunc((_, _) =>
-            Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK))));
+            Task.FromResult(CreateRateLimitResponse("0.2", "0.4"))));
         var settings = CreateSettings();
         var provider = new ClaudeProvider(NullLogger<ClaudeProvider>.Instance, factory, settings);
 
         var result = await provider.FetchUsageAsync();
 
-        Assert.False(result.Success);
-        Assert.Contains("expired", result.ErrorMessage!, StringComparison.OrdinalIgnoreCase);
+        Assert.True(result.Success);
+        Assert.Equal(0.2, result.SessionUsage!.UsedPercent, 0.01);
     }
 
     [Fact]
-    public async Task FetchUsageAsync_RefreshFails_ReturnsExpiredError()
+    public async Task FetchUsageAsync_RefreshFails_UsesExistingToken()
     {
         this.SetupOverrides();
         var expiredEpoch = DateTimeOffset.UtcNow.AddHours(-1).ToUnixTimeSeconds();
@@ -724,7 +724,7 @@ public class ClaudeProviderFullCoverageTests : IDisposable
                 });
             }
 
-            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK));
+            return Task.FromResult(CreateRateLimitResponse("0.21", "0.41"));
         });
 
         var factory = CreateFactory(handler);
@@ -733,12 +733,12 @@ public class ClaudeProviderFullCoverageTests : IDisposable
 
         var result = await provider.FetchUsageAsync();
 
-        Assert.False(result.Success);
-        Assert.Contains("expired", result.ErrorMessage!, StringComparison.OrdinalIgnoreCase);
+        Assert.True(result.Success);
+        Assert.Equal(0.21, result.SessionUsage!.UsedPercent, 0.01);
     }
 
     [Fact]
-    public async Task FetchUsageAsync_RefreshReturnsNoAccessToken_ReturnsError()
+    public async Task FetchUsageAsync_RefreshReturnsNoAccessToken_UsesExistingToken()
     {
         this.SetupOverrides();
         var expiredEpoch = DateTimeOffset.UtcNow.AddHours(-1).ToUnixTimeSeconds();
@@ -754,7 +754,7 @@ public class ClaudeProviderFullCoverageTests : IDisposable
                 });
             }
 
-            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK));
+            return Task.FromResult(CreateRateLimitResponse("0.22", "0.42"));
         });
 
         var factory = CreateFactory(handler);
@@ -763,11 +763,12 @@ public class ClaudeProviderFullCoverageTests : IDisposable
 
         var result = await provider.FetchUsageAsync();
 
-        Assert.False(result.Success);
+        Assert.True(result.Success);
+        Assert.Equal(0.22, result.SessionUsage!.UsedPercent, 0.01);
     }
 
     [Fact]
-    public async Task FetchUsageAsync_RefreshThrows_ReturnsError()
+    public async Task FetchUsageAsync_RefreshThrows_UsesExistingToken()
     {
         this.SetupOverrides();
         var expiredEpoch = DateTimeOffset.UtcNow.AddHours(-1).ToUnixTimeSeconds();
@@ -780,7 +781,7 @@ public class ClaudeProviderFullCoverageTests : IDisposable
                 throw new HttpRequestException("Connection refused");
             }
 
-            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK));
+            return Task.FromResult(CreateRateLimitResponse("0.23", "0.43"));
         });
 
         var factory = CreateFactory(handler);
@@ -789,7 +790,8 @@ public class ClaudeProviderFullCoverageTests : IDisposable
 
         var result = await provider.FetchUsageAsync();
 
-        Assert.False(result.Success);
+        Assert.True(result.Success);
+        Assert.Equal(0.23, result.SessionUsage!.UsedPercent, 0.01);
     }
 
     [Fact]
@@ -1351,6 +1353,14 @@ public class ClaudeProviderFullCoverageTests : IDisposable
         var factory = Substitute.For<IHttpClientFactory>();
         factory.CreateClient(Arg.Any<string>()).Returns(_ => new HttpClient(handler, disposeHandler: false));
         return factory;
+    }
+
+    private static HttpResponseMessage CreateRateLimitResponse(string fiveHour, string sevenDay)
+    {
+        var response = new HttpResponseMessage(HttpStatusCode.OK);
+        response.Headers.TryAddWithoutValidation("anthropic-ratelimit-unified-5h-utilization", fiveHour);
+        response.Headers.TryAddWithoutValidation("anthropic-ratelimit-unified-7d-utilization", sevenDay);
+        return response;
     }
 
     private sealed class DelegatingHandlerFunc(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> handler) : HttpMessageHandler
