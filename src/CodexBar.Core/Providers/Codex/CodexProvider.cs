@@ -18,6 +18,7 @@ public sealed class CodexProvider : IUsageProvider
 {
     private const string UsageEndpoint = "https://chatgpt.com/backend-api/wham/usage";
     private static readonly TimeSpan CacheTtl = TimeSpan.FromSeconds(90);
+    private static readonly TimeZoneInfo EasternTimeZone = ResolveEasternTimeZone();
 
     private readonly ILogger<CodexProvider> _logger;
     private readonly IHttpClientFactory _httpClientFactory;
@@ -189,22 +190,56 @@ public sealed class CodexProvider : IUsageProvider
     internal static string FormatReset(DateTimeOffset resetAt)
     {
         var remaining = resetAt - DateTimeOffset.UtcNow;
+        var easternReset = FormatEasternResetTime(resetAt, remaining);
         if (remaining <= TimeSpan.Zero)
         {
-            return "Resets now";
+            return $"Resets now ({easternReset})";
         }
 
+        string relativeReset;
         if (remaining.TotalDays >= 1)
         {
-            return $"Resets {(int)remaining.TotalDays}d {remaining.Hours}h";
+            relativeReset = $"Resets {(int)remaining.TotalDays}d {remaining.Hours}h";
         }
-
-        if (remaining.TotalHours >= 1)
+        else if (remaining.TotalHours >= 1)
         {
-            return $"Resets {(int)remaining.TotalHours}h {remaining.Minutes}m";
+            relativeReset = $"Resets {(int)remaining.TotalHours}h {remaining.Minutes}m";
+        }
+        else
+        {
+            relativeReset = $"Resets {Math.Max(1, (int)remaining.TotalMinutes)}m";
         }
 
-        return $"Resets {Math.Max(1, (int)remaining.TotalMinutes)}m";
+        return $"{relativeReset} ({easternReset})";
+    }
+
+    private static string FormatEasternResetTime(DateTimeOffset resetAt, TimeSpan remaining)
+    {
+        var eastern = TimeZoneInfo.ConvertTime(resetAt, EasternTimeZone);
+        var timeFormat = remaining.TotalDays >= 1 ? "ddd h:mm tt" : "h:mm tt";
+        return $"{eastern.ToString(timeFormat, CultureInfo.InvariantCulture)} {GetEasternTimeZoneAbbreviation(eastern)}";
+    }
+
+    private static string GetEasternTimeZoneAbbreviation(DateTimeOffset easternTime) => easternTime.Offset switch
+    {
+        { Hours: -4 } => "EDT",
+        { Hours: -5 } => "EST",
+        _ => "ET",
+    };
+
+    private static TimeZoneInfo ResolveEasternTimeZone()
+    {
+        if (TimeZoneInfo.TryFindSystemTimeZoneById("Eastern Standard Time", out var windowsEasternTimeZone))
+        {
+            return windowsEasternTimeZone;
+        }
+
+        if (TimeZoneInfo.TryFindSystemTimeZoneById("America/New_York", out var ianaEasternTimeZone))
+        {
+            return ianaEasternTimeZone;
+        }
+
+        return TimeZoneInfo.Local;
     }
 
     private static void AddWindow(JsonElement rateLimit, string propertyName, List<WindowData> windows)
