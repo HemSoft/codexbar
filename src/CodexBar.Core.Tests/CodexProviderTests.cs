@@ -323,8 +323,14 @@ public sealed class CodexProviderTests : IDisposable
     public void FormatReset_FormatsShortAndExpiredWindows()
     {
         Assert.Equal("Resets now", CodexProvider.FormatReset(DateTimeOffset.UtcNow.AddMinutes(-1)));
-        Assert.StartsWith("Resets 2h", CodexProvider.FormatReset(DateTimeOffset.UtcNow.AddHours(2.5)));
+        Assert.StartsWith("Resets 2h 29m", CodexProvider.FormatReset(DateTimeOffset.UtcNow.AddHours(2.5)));
         Assert.StartsWith("Resets 4m", CodexProvider.FormatReset(DateTimeOffset.UtcNow.AddMinutes(4).AddSeconds(30)));
+    }
+
+    [Fact]
+    public void FormatReset_DayWindow_IncludesRemainingHours()
+    {
+        Assert.StartsWith("Resets 2d 5h", CodexProvider.FormatReset(DateTimeOffset.UtcNow.AddDays(2).AddHours(5.5)));
     }
 
     public void Dispose()

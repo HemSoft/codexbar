@@ -196,12 +196,12 @@ public sealed class CodexProvider : IUsageProvider
 
         if (remaining.TotalDays >= 1)
         {
-            return $"Resets {(int)remaining.TotalDays}d";
+            return $"Resets {(int)remaining.TotalDays}d {remaining.Hours}h";
         }
 
         if (remaining.TotalHours >= 1)
         {
-            return $"Resets {(int)remaining.TotalHours}h";
+            return $"Resets {(int)remaining.TotalHours}h {remaining.Minutes}m";
         }
 
         return $"Resets {Math.Max(1, (int)remaining.TotalMinutes)}m";
