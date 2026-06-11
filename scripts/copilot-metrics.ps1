@@ -8,7 +8,8 @@ param(
     [int]$Top = 25,
     [string[]]$User,
     [string]$ApiVersion = '2026-03-10',
-    [string]$Token = $env:EnterpriseBillingToken,
+    [string]$Token,
+    [string]$GitHubUser,
     [string]$DataDir = (Join-Path (Split-Path -Parent $PSScriptRoot) 'data'),
     [string]$RunStamp = (Get-Date -Format 'yyyyMMdd-HHmmss'),
     [string]$InputPath,
@@ -62,6 +63,7 @@ USAGE
   .\scripts\$scriptName -InputPath .\data\copilot-metrics.json
   .\scripts\$scriptName -Refresh -Year 2026 -Month 6
   .\scripts\$scriptName -Refresh -Org Relias-Engineering -Top 25
+  .\scripts\$scriptName -Refresh -GitHubUser fhemmerrelias -Top 25
   .\scripts\$scriptName -Refresh -User fhemmerrelias -StartDay 1 -EndDay 1
   .\scripts\$scriptName -RepairInputFile .\data\copilot-metrics.json
 
@@ -90,6 +92,9 @@ SCOPE PARAMETERS
                            queries. By default, the script queries enterprise
                            user usage and scopes users by current org seats.
                            Only applies with -Refresh or -RepairInputFile.
+  -GitHubUser <login>      GitHub CLI account used when token environment
+                           variables are not set. Default: fhemmerrelias for
+                           the default Relias-Engineering scope.
 
 PERIOD PARAMETERS
   -Year <yyyy>             Billing year. Default: current local year.
@@ -132,10 +137,12 @@ AUTHENTICATION
   Not required for default or -InputPath mode.
 
   Token lookup order:
-    1. EnterpriseBillingToken
-    2. GH_TOKEN
-    3. GITHUB_TOKEN
-    4. gh auth token
+    1. -Token
+    2. EnterpriseBillingToken
+    3. GH_TOKEN
+    4. GITHUB_TOKEN
+    5. gh auth token --user <GitHubUser>
+    6. gh auth token for the active account
 
 EXTENSION NOTES
   Keep this -Help output current when new modes or output contracts are added.
@@ -159,7 +166,9 @@ $runStampValue = $RunStamp
 $inputPathValue = $InputPath
 $repairInputFileValue = $RepairInputFile
 $refreshValue = $Refresh.IsPresent
+$githubUserValue = $GitHubUser
 $usingDefaultInputPath = $false
+$tokenSource = if ($Token) { '-Token' } else { $null }
 
 if ($inputPathValue -and $repairInputFileValue) {
     throw 'Use either -InputPath or -RepairInputFile, not both.'
@@ -174,11 +183,79 @@ if (-not $refreshValue -and -not $inputPathValue -and -not $repairInputFileValue
     $usingDefaultInputPath = $true
 }
 
-if (-not $inputPathValue -and -not $Token) { $Token = $env:GH_TOKEN }
-if (-not $inputPathValue -and -not $Token) { $Token = $env:GITHUB_TOKEN }
-if (-not $inputPathValue -and -not $Token) { $Token = (gh auth token 2>$null) }
+function Get-DefaultGitHubUser {
+    if ($enterpriseName -eq 'bertelsmann' -and $Org -eq 'Relias-Engineering') {
+        return 'fhemmerrelias'
+    }
+
+    $null
+}
+
+function Get-GitHubCliToken {
+    param([string]$UserName)
+
+    if ($UserName) {
+        try {
+            $userToken = gh auth token --user $UserName 2>$null
+            if ($userToken) {
+                return [pscustomobject]@{
+                    Token  = [string]$userToken
+                    Source = "gh auth token --user $UserName"
+                }
+            }
+        }
+        catch {
+            throw "No GitHub CLI token found for -GitHubUser $UserName. Run 'gh auth login --user $UserName' or pass -Token."
+        }
+
+        throw "No GitHub CLI token found for -GitHubUser $UserName. Run 'gh auth login --user $UserName' or pass -Token."
+    }
+
+    try {
+        $activeToken = gh auth token 2>$null
+        if ($activeToken) {
+            return [pscustomobject]@{
+                Token  = [string]$activeToken
+                Source = 'gh auth token for the active account'
+            }
+        }
+    }
+    catch {
+        $null = $_
+    }
+
+    $null
+}
+
+if (-not $githubUserValue) {
+    $githubUserValue = Get-DefaultGitHubUser
+}
+
+if (-not $inputPathValue -and -not $Token -and $env:EnterpriseBillingToken) {
+    $Token = $env:EnterpriseBillingToken
+    $tokenSource = 'EnterpriseBillingToken'
+}
+
+if (-not $inputPathValue -and -not $Token -and $env:GH_TOKEN) {
+    $Token = $env:GH_TOKEN
+    $tokenSource = 'GH_TOKEN'
+}
+
+if (-not $inputPathValue -and -not $Token -and $env:GITHUB_TOKEN) {
+    $Token = $env:GITHUB_TOKEN
+    $tokenSource = 'GITHUB_TOKEN'
+}
+
 if (-not $inputPathValue -and -not $Token) {
-    throw 'No GitHub token found. Set EnterpriseBillingToken, GH_TOKEN, or run gh auth login.'
+    $githubCliToken = Get-GitHubCliToken -UserName $githubUserValue
+    if ($githubCliToken) {
+        $Token = $githubCliToken.Token
+        $tokenSource = $githubCliToken.Source
+    }
+}
+
+if (-not $inputPathValue -and -not $Token) {
+    throw 'No GitHub token found. Set EnterpriseBillingToken, GH_TOKEN, GITHUB_TOKEN, run gh auth login, or pass -Token.'
 }
 
 $headers = @{
@@ -210,6 +287,10 @@ function Invoke-GitHubApi {
             catch {
                 $null = $_
             }
+        }
+
+        if ($Path -like '*/copilot/billing*' -and $detail -match '404|Not Found') {
+            $detail = "$detail. Copilot billing endpoints require an organization-owner token for '$Org'. Token source: $tokenSource"
         }
 
         throw [System.InvalidOperationException]::new("$detail [$Path]", $_.Exception)
