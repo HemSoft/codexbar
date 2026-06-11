@@ -61,6 +61,21 @@ When invoked, systematically run all quality gates and fix every finding.
 
 Default command. Run all quality gates and produce a consolidated report.
 
+**Preferred repo command:**
+
+```powershell
+npm run perfection:audit
+```
+
+This runs `.agents/skills/perfection/scripts/Invoke-PerfectionCheck.ps1`, which
+performs the required preflight before the quality gates:
+
+- stops and later restarts only the repo-local Debug `CodexBar.App.exe` if it is
+  locking build output;
+- removes stale WPF `*_wpftmp*` temporary artifacts before coverage collection;
+- removes stale ignored coverage outputs (`TestResults/` and `CoverageReport/`)
+  before using the `**/coverage.cobertura.xml` ReportGenerator glob.
+
 **Steps:**
 
 1. Run each gate in this order (fail-fast: NO — run all, report all):
