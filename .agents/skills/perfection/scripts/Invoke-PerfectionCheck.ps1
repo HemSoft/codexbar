@@ -109,16 +109,23 @@ function Start-RepoLocalCodexBarProcess {
 }
 
 function Invoke-WpfTemporaryArtifactPreflight {
-    $wpfObjPath = Join-Path -Path $repoRoot -ChildPath 'src\CodexBar.App\obj\Debug\net9.0-windows'
-    if (-not (Test-Path -LiteralPath $wpfObjPath)) {
+    $scanRoots = @(
+        (Join-Path -Path $repoRoot -ChildPath 'src\CodexBar.App')
+        (Join-Path -Path $repoRoot -ChildPath 'src\CodexBar.App\obj\Debug\net9.0-windows')
+    ) | Where-Object { Test-Path -LiteralPath $_ }
+
+    if ($scanRoots.Count -eq 0) {
         return 0
     }
 
-    if (-not (Test-IsRepoChildPath -Path $wpfObjPath)) {
-        throw "Refusing to clean WPF temp artifacts outside the repo: $wpfObjPath"
+    $items = foreach ($scanRoot in $scanRoots) {
+        if (-not (Test-IsRepoChildPath -Path $scanRoot)) {
+            throw "Refusing to clean WPF temp artifacts outside the repo: $scanRoot"
+        }
+
+        Get-ChildItem -LiteralPath $scanRoot -Filter '*_wpftmp*' -Force -ErrorAction SilentlyContinue
     }
 
-    $items = @(Get-ChildItem -LiteralPath $wpfObjPath -Filter '*_wpftmp*' -Force -ErrorAction SilentlyContinue)
     foreach ($item in $items) {
         if (-not (Test-IsRepoChildPath -Path $item.FullName)) {
             throw "Refusing to remove WPF temp artifact outside the repo: $($item.FullName)"
@@ -170,6 +177,11 @@ function Get-CrapRow {
             }
 
             foreach ($class in @($package.classes.class)) {
+                $sourceFile = [string]$class.filename
+                if ($sourceFile -like '*.g.cs' -or $sourceFile -like '*GeneratedRegex*.cs') {
+                    continue
+                }
+
                 foreach ($method in @($class.methods.method)) {
                     $complexity = [double]$method.complexity
                     $lineCoverage = [double]$method.'line-rate'
