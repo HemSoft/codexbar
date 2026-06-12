@@ -1,5 +1,6 @@
 {
   "scripts": {
+    "perfection:audit": "pwsh -NoProfile -ExecutionPolicy Bypass -File ./.agents/skills/perfection/scripts/Invoke-PerfectionCheck.ps1",
     "lint:md": "markdownlint \"**/*.md\" --ignore node_modules",
     "security:scan": "pwsh -NoProfile -ExecutionPolicy Bypass -File ./scripts/Invoke-SecurityScan.ps1",
     "postinstall": "git config core.hooksPath .githooks 2>nul || exit 0"
