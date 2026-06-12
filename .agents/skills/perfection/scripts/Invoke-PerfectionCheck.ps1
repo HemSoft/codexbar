@@ -43,9 +43,19 @@ function Write-Gate {
 function Test-IsRepoChildPath {
     param([string]$Path)
 
-    $resolvedPath = Resolve-Path -LiteralPath $Path -ErrorAction Stop
+    $resolvedPath = (Resolve-Path -LiteralPath $Path -ErrorAction Stop).Path.TrimEnd('\', '/')
     $root = $repoRoot.Path.TrimEnd('\', '/')
-    return $resolvedPath.Path.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)
+    $isRepoChild =
+        [string]::Equals($resolvedPath, $root, [StringComparison]::OrdinalIgnoreCase) -or
+        $resolvedPath.StartsWith("$root\", [StringComparison]::OrdinalIgnoreCase) -or
+        $resolvedPath.StartsWith("$root/", [StringComparison]::OrdinalIgnoreCase)
+
+    if (-not $isRepoChild) {
+        return $false
+    }
+
+    $item = Get-Item -LiteralPath $resolvedPath -Force -ErrorAction Stop
+    return ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -eq 0
 }
 
 function Get-RepoLocalCodexBarProcess {
@@ -214,20 +224,14 @@ try {
 
     # 1. Build
     Write-Section -Name 'Build'
-    $buildOutput = & dotnet build --verbosity minimal 2>&1
+    $buildOutput = & dotnet build --verbosity minimal -p:TreatWarningsAsErrors=true 2>&1
     $buildExitCode = $LASTEXITCODE
     $buildPass = $buildExitCode -eq 0
-    $warnCount = 0
-    if ($buildPass) {
-        $warnMatch = $buildOutput | Select-String '(\d+) Warning\(s\)' | Select-Object -Last 1
-        if ($warnMatch) {
-            $null = $warnMatch.Matches.Value -match '(\d+) Warning'
-            $warnCount = [int]$matches[1]
-            $buildPass = $warnCount -eq 0
-        }
+    if (-not $buildPass) {
+        Write-Information ($buildOutput | Out-String)
     }
 
-    Write-Gate -Name 'Build' -Pass $buildPass -Detail $(if ($buildPass) { '0 warnings' } else { "$warnCount warning(s) or build failed" })
+    Write-Gate -Name 'Build' -Pass $buildPass -Detail $(if ($buildPass) { '0 warnings' } else { 'Build failed or emitted warnings' })
     if ($buildPass) { $passCount++ }
 
     # 2. Format
