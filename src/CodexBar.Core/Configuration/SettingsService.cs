@@ -157,21 +157,28 @@ public sealed class SettingsService : ISettingsService
     /// </summary>
     private static void MergeCopilotBillingSettings(AppSettings settings, AppSettings disk)
     {
-        if (string.IsNullOrWhiteSpace(settings.CopilotEnterprise) && !string.IsNullOrWhiteSpace(disk.CopilotEnterprise))
+        if (ShouldPreserveStringSetting(settings.CopilotEnterprise, disk.CopilotEnterprise))
         {
             settings.CopilotEnterprise = disk.CopilotEnterprise;
         }
 
-        if (string.IsNullOrWhiteSpace(settings.CopilotOrganization) && !string.IsNullOrWhiteSpace(disk.CopilotOrganization))
+        if (ShouldPreserveStringSetting(settings.CopilotOrganization, disk.CopilotOrganization))
         {
             settings.CopilotOrganization = disk.CopilotOrganization;
         }
 
-        if (settings.CopilotPoolTotal is null && disk.CopilotPoolTotal is not null)
+        if (ShouldPreserveValue(settings.CopilotPoolTotal, disk.CopilotPoolTotal))
         {
             settings.CopilotPoolTotal = disk.CopilotPoolTotal;
         }
     }
+
+    private static bool ShouldPreserveStringSetting(string? settingsValue, string? diskValue) =>
+        string.IsNullOrWhiteSpace(settingsValue) && !string.IsNullOrWhiteSpace(diskValue);
+
+    private static bool ShouldPreserveValue<T>(T? settingsValue, T? diskValue)
+        where T : struct =>
+        settingsValue is null && diskValue is not null;
 
     /// <summary>
     /// Preserves session spending baselines from disk that are not in memory.

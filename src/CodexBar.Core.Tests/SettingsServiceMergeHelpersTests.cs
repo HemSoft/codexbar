@@ -166,6 +166,124 @@ public class SettingsServiceMergeHelpersTests : IDisposable
         Assert.Null(loaded.OpenCodeGoWorkspaceId);
     }
 
+    // --- MergeCopilotBillingSettings: memory is missing values → disk values are preserved ---
+    [Fact]
+    public void Save_MissingCopilotBillingSettings_PreservesDiskValues()
+    {
+        var diskSettings = new AppSettings
+        {
+            Providers = [],
+            CopilotEnterprise = "disk-enterprise",
+            CopilotOrganization = "disk-org",
+            CopilotPoolTotal = 1234.50m,
+        };
+        this.WriteDisk(diskSettings);
+
+        var service = this.CreateService();
+        var memSettings = new AppSettings
+        {
+            Providers = [],
+            CopilotEnterprise = string.Empty,
+            CopilotOrganization = " ",
+            CopilotPoolTotal = null,
+        };
+        service.Save(memSettings);
+
+        var loaded = this.CreateService().Load();
+        Assert.Equal("disk-enterprise", loaded.CopilotEnterprise);
+        Assert.Equal("disk-org", loaded.CopilotOrganization);
+        Assert.Equal(1234.50m, loaded.CopilotPoolTotal);
+    }
+
+    // --- MergeCopilotBillingSettings: partial memory values → only missing values are preserved ---
+    [Fact]
+    public void Save_PartialCopilotBillingSettings_PreservesOnlyMissingValues()
+    {
+        var diskSettings = new AppSettings
+        {
+            Providers = [],
+            CopilotEnterprise = "disk-enterprise",
+            CopilotOrganization = "disk-org",
+            CopilotPoolTotal = 1234.50m,
+        };
+        this.WriteDisk(diskSettings);
+
+        var service = this.CreateService();
+        var memSettings = new AppSettings
+        {
+            Providers = [],
+            CopilotEnterprise = "memory-enterprise",
+            CopilotOrganization = string.Empty,
+            CopilotPoolTotal = null,
+        };
+        service.Save(memSettings);
+
+        var loaded = this.CreateService().Load();
+        Assert.Equal("memory-enterprise", loaded.CopilotEnterprise);
+        Assert.Equal("disk-org", loaded.CopilotOrganization);
+        Assert.Equal(1234.50m, loaded.CopilotPoolTotal);
+    }
+
+    // --- MergeCopilotBillingSettings: memory has values → disk does not replace them ---
+    [Fact]
+    public void Save_ConfiguredCopilotBillingSettings_KeepsMemoryValues()
+    {
+        var diskSettings = new AppSettings
+        {
+            Providers = [],
+            CopilotEnterprise = "disk-enterprise",
+            CopilotOrganization = "disk-org",
+            CopilotPoolTotal = 1234.50m,
+        };
+        this.WriteDisk(diskSettings);
+
+        var service = this.CreateService();
+        var memSettings = new AppSettings
+        {
+            Providers = [],
+            CopilotEnterprise = "memory-enterprise",
+            CopilotOrganization = "memory-org",
+            CopilotPoolTotal = 42m,
+        };
+        service.Save(memSettings);
+
+        var loaded = this.CreateService().Load();
+        Assert.Equal("memory-enterprise", loaded.CopilotEnterprise);
+        Assert.Equal("memory-org", loaded.CopilotOrganization);
+        Assert.Equal(42m, loaded.CopilotPoolTotal);
+    }
+
+    // --- MergeCopilotBillingSettings: disk has null or blank values → save falls back normally ---
+    [Fact]
+    public void Save_NullOrBlankDiskCopilotBillingSettings_UsesNormalizedDefaults()
+    {
+        File.WriteAllText(
+            this.SettingsPath,
+            """
+            {
+              "providers": {},
+              "copilotEnterprise": null,
+              "copilotOrganization": " ",
+              "copilotPoolTotal": null
+            }
+            """);
+
+        var service = this.CreateService();
+        var memSettings = new AppSettings
+        {
+            Providers = [],
+            CopilotEnterprise = string.Empty,
+            CopilotOrganization = string.Empty,
+            CopilotPoolTotal = null,
+        };
+        service.Save(memSettings);
+
+        var loaded = this.CreateService().Load();
+        Assert.Equal("bertelsmann", loaded.CopilotEnterprise);
+        Assert.Equal("Relias-Engineering", loaded.CopilotOrganization);
+        Assert.Null(loaded.CopilotPoolTotal);
+    }
+
     // --- MergeSessionBaselines: memory has baseline, disk has same key → memory wins ---
     [Fact]
     public void Save_MemoryBaseline_TakesPrecedenceOverDisk()
