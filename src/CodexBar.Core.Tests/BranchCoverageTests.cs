@@ -1000,16 +1000,8 @@ public class BranchCoverageTests
     {
         var usage = new ClaudeProvider.ClaudeOAuthUsageResponse
         {
-            FiveHour = new ClaudeProvider.ClaudeOAuthUsageWindow
-            {
-                Utilization = 42.5,
-                ResetsAt = "2026-05-25T15:00:00Z",
-            },
-            SevenDay = new ClaudeProvider.ClaudeOAuthUsageWindow
-            {
-                Utilization = 75,
-                ResetsAt = "2026-05-29T15:00:00Z",
-            },
+            FiveHour = CreateOAuthUsageWindow(42.5, "2026-05-25T15:00:00Z"),
+            SevenDay = CreateOAuthUsageWindow(75, "2026-05-29T15:00:00Z"),
         };
 
         var result = ClaudeProvider.MapOAuthUsageToRateLimits(usage);
@@ -1020,6 +1012,81 @@ public class BranchCoverageTests
         Assert.True(result.FiveHourReset > 0);
         Assert.True(result.SevenDayReset > 0);
     }
+
+    [Theory]
+    [InlineData("seven_day", 0.60)]
+    [InlineData("seven_day_oauth_apps", 0.61)]
+    [InlineData("seven_day_sonnet", 0.62)]
+    [InlineData("seven_day_opus", 0.63)]
+    public void MapOAuthUsageToRateLimits_SevenDayVariant_MapsKnownWindow(
+        string windowName,
+        double expectedUtilization)
+    {
+        var usage = new ClaudeProvider.ClaudeOAuthUsageResponse
+        {
+            FiveHour = CreateOAuthUsageWindow(0.25, "2026-05-25T15:00:00Z"),
+            SevenDay = windowName == "seven_day"
+                ? CreateOAuthUsageWindow(expectedUtilization, "2026-05-29T15:00:00Z")
+                : null,
+            SevenDayOAuthApps = windowName == "seven_day_oauth_apps"
+                ? CreateOAuthUsageWindow(expectedUtilization, "2026-05-29T15:00:00Z")
+                : null,
+            SevenDaySonnet = windowName == "seven_day_sonnet"
+                ? CreateOAuthUsageWindow(expectedUtilization, "2026-05-29T15:00:00Z")
+                : null,
+            SevenDayOpus = windowName == "seven_day_opus"
+                ? CreateOAuthUsageWindow(expectedUtilization, "2026-05-29T15:00:00Z")
+                : null,
+        };
+
+        var result = ClaudeProvider.MapOAuthUsageToRateLimits(usage);
+
+        Assert.NotNull(result);
+        Assert.Equal(0.25, result!.FiveHourUtilization, 4);
+        Assert.Equal(expectedUtilization, result.SevenDayUtilization, 4);
+        Assert.True(result.FiveHourReset > 0);
+        Assert.True(result.SevenDayReset > 0);
+        Assert.Equal("active", result.FiveHourStatus);
+        Assert.Equal("active", result.SevenDayStatus);
+    }
+
+    [Fact]
+    public void MapOAuthUsageToRateLimits_MultipleSevenDayVariants_UsesFirstKnownWindow()
+    {
+        var usage = new ClaudeProvider.ClaudeOAuthUsageResponse
+        {
+            SevenDay = CreateOAuthUsageWindow(0.50, null),
+            SevenDayOAuthApps = CreateOAuthUsageWindow(0.60, null),
+            SevenDaySonnet = CreateOAuthUsageWindow(0.70, null),
+            SevenDayOpus = CreateOAuthUsageWindow(0.80, null),
+        };
+
+        var result = ClaudeProvider.MapOAuthUsageToRateLimits(usage);
+
+        Assert.NotNull(result);
+        Assert.Equal(0.50, result!.SevenDayUtilization, 4);
+    }
+
+    [Fact]
+    public void MapOAuthUsageToRateLimits_NoUtilization_ReturnsNull()
+    {
+        var usage = new ClaudeProvider.ClaudeOAuthUsageResponse
+        {
+            FiveHour = CreateOAuthUsageWindow(null, "2026-05-25T15:00:00Z"),
+            SevenDay = CreateOAuthUsageWindow(null, "2026-05-29T15:00:00Z"),
+        };
+
+        var result = ClaudeProvider.MapOAuthUsageToRateLimits(usage);
+
+        Assert.Null(result);
+    }
+
+    private static ClaudeProvider.ClaudeOAuthUsageWindow CreateOAuthUsageWindow(double? utilization, string? resetsAt) =>
+        new()
+        {
+            Utilization = utilization,
+            ResetsAt = resetsAt,
+        };
 
     [Fact]
     public void BuildOAuthUsageRequest_UsesClaudeCodeUsageEndpoint()
