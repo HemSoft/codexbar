@@ -506,7 +506,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 public sealed class UsageBarViewModel : INotifyPropertyChanged
 {
     private static readonly string[] EasternTimeZoneIds = ["Eastern Standard Time", "America/New_York"];
-    private static readonly Lazy<TimeZoneInfo?> EasternTimeZone = new(ResolveEasternTimeZone);
+    private static readonly Lazy<TimeZoneInfo?> EasternTimeZone = new(
+        () => ResolveEasternTimeZone(EasternTimeZoneIds, TimeZoneInfo.FindSystemTimeZoneById));
 
     private string label = string.Empty;
 
@@ -592,26 +593,21 @@ public sealed class UsageBarViewModel : INotifyPropertyChanged
 
     private static decimal ProjectMonthEnd(decimal current, DateTimeOffset periodStart, DateTimeOffset periodEnd, DateTimeOffset nowUtc)
     {
-        if (nowUtc <= periodStart || nowUtc >= periodEnd)
+        var elapsed = (decimal)(nowUtc - periodStart).TotalSeconds;
+        if (elapsed <= 0 || nowUtc >= periodEnd)
         {
             return current;
         }
 
-        var elapsed = (decimal)(nowUtc - periodStart).TotalSeconds;
         var total = (decimal)(periodEnd - periodStart).TotalSeconds;
-        return elapsed <= 0 ? current : current * total / elapsed;
+        return current * total / elapsed;
     }
 
-    private static string FormatLimitHit(decimal current, decimal limit, DateTimeOffset periodStart, DateTimeOffset periodEnd, DateTimeOffset nowUtc)
+    internal static string FormatLimitHit(decimal current, decimal limit, DateTimeOffset periodStart, DateTimeOffset periodEnd, DateTimeOffset nowUtc)
     {
         if (current >= limit)
         {
             return "Limit reached";
-        }
-
-        if (nowUtc <= periodStart)
-        {
-            return "Limit hit unknown";
         }
 
         var elapsed = (decimal)(nowUtc - periodStart).TotalSeconds;
@@ -631,9 +627,8 @@ public sealed class UsageBarViewModel : INotifyPropertyChanged
         return hitAt >= periodEnd ? "Limit not reached" : $"Limit hit {FormatEasternTime(hitAt)}";
     }
 
-    private static string FormatEasternTime(DateTimeOffset timestamp)
+    internal static string FormatEasternTime(DateTimeOffset timestamp, TimeZoneInfo? easternTimeZone)
     {
-        var easternTimeZone = EasternTimeZone.Value;
         if (easternTimeZone is null)
         {
             return $"{timestamp.ToUniversalTime():MMM d h:mm tt} UTC";
@@ -643,13 +638,15 @@ public sealed class UsageBarViewModel : INotifyPropertyChanged
         return $"{easternTime:MMM d h:mm tt} ET";
     }
 
-    private static TimeZoneInfo? ResolveEasternTimeZone()
+    private static string FormatEasternTime(DateTimeOffset timestamp) => FormatEasternTime(timestamp, EasternTimeZone.Value);
+
+    internal static TimeZoneInfo? ResolveEasternTimeZone(IEnumerable<string> timeZoneIds, Func<string, TimeZoneInfo> findTimeZoneById)
     {
-        foreach (var timeZoneId in EasternTimeZoneIds)
+        foreach (var timeZoneId in timeZoneIds)
         {
             try
             {
-                return TimeZoneInfo.FindSystemTimeZoneById(timeZoneId);
+                return findTimeZoneById(timeZoneId);
             }
             catch (TimeZoneNotFoundException)
             {
