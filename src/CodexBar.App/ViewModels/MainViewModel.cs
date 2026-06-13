@@ -765,7 +765,6 @@ public sealed class ProviderCardViewModel : INotifyPropertyChanged
             this.hasBars = value;
             this.PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(this.HasBars)));
             this.PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(this.ShowProgressBar)));
-            this.PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(this.ShowStatusTextLine)));
         }
     }
 
@@ -796,7 +795,7 @@ public sealed class ProviderCardViewModel : INotifyPropertyChanged
     public bool ShowSingleCreditsDisplay => this.IsCreditsDisplay && !this.IsPairedCredits;
 
     /// <summary>Gets a value indicating whether the compact status text line should render for usage cards.</summary>
-    public bool ShowStatusTextLine => !this.HasBars && !this.IsCreditsDisplay && !this.IsPairedCredits;
+    public bool ShowStatusTextLine => !this.IsCreditsDisplay && !this.IsPairedCredits;
 
     private bool isCompactCard;
 

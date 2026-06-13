@@ -1002,6 +1002,7 @@ public class BranchCoverageTests
         {
             FiveHour = CreateOAuthUsageWindow(42.5, "2026-05-25T15:00:00Z"),
             SevenDay = CreateOAuthUsageWindow(75, "2026-05-29T15:00:00Z"),
+            ExtraUsage = new ClaudeProvider.ClaudeOAuthExtraUsage { IsEnabled = false },
         };
 
         var result = ClaudeProvider.MapOAuthUsageToRateLimits(usage);
@@ -1011,6 +1012,7 @@ public class BranchCoverageTests
         Assert.Equal(0.75, result.SevenDayUtilization, 0.001);
         Assert.True(result.FiveHourReset > 0);
         Assert.True(result.SevenDayReset > 0);
+        Assert.False(result.ExtraUsageEnabled);
     }
 
     [Theory]

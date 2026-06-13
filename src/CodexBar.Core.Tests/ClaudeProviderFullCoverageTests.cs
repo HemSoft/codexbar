@@ -236,6 +236,15 @@ public class ClaudeProviderFullCoverageTests : IDisposable
         Assert.Equal("Free plan", result);
     }
 
+    [Fact]
+    public void BuildStatusLabel_WhenOAuthExtraUsageDisabled_OverridesStaleAccountInfo()
+    {
+        var accountInfo = new ClaudeProvider.ClaudeAccountInfo { HasExtraUsageEnabled = true };
+        var result = ClaudeProvider.BuildStatusLabel("Pro", 0, 0, accountInfo, extraUsageEnabled: false);
+
+        Assert.DoesNotContain("extra usage on", result);
+    }
+
     // --- BuildSessionSnapshotFromLimits ---
     [Fact]
     public void BuildSessionSnapshotFromLimits_WithResetTime_IncludesResetDescription()

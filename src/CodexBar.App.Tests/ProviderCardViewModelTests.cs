@@ -110,7 +110,7 @@ public sealed class ProviderCardViewModelTests
     }
 
     [Fact]
-    public void ShowStatusTextLine_WhenCardHasBars_ReturnsFalse()
+    public void ShowStatusTextLine_WhenCardHasBars_ReturnsTrue()
     {
         var card = new ProviderCardViewModel
         {
@@ -119,7 +119,7 @@ public sealed class ProviderCardViewModelTests
             IsPairedCredits = false,
         };
 
-        Assert.False(card.ShowStatusTextLine);
+        Assert.True(card.ShowStatusTextLine);
     }
 
     [Fact]
@@ -201,7 +201,7 @@ public sealed class ProviderCardViewModelTests
 
     // --- HasBars property-changed fanout ---
     [Fact]
-    public void HasBars_SetTrue_NotifiesShowProgressBarAndShowStatusTextLine()
+    public void HasBars_SetTrue_NotifiesShowProgressBar()
     {
         var card = new ProviderCardViewModel();
         var notifications = new List<string>();
@@ -211,7 +211,7 @@ public sealed class ProviderCardViewModelTests
 
         Assert.Contains(nameof(ProviderCardViewModel.HasBars), notifications);
         Assert.Contains(nameof(ProviderCardViewModel.ShowProgressBar), notifications);
-        Assert.Contains(nameof(ProviderCardViewModel.ShowStatusTextLine), notifications);
+        Assert.DoesNotContain(nameof(ProviderCardViewModel.ShowStatusTextLine), notifications);
     }
 
     [Fact]

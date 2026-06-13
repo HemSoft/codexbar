@@ -154,7 +154,7 @@
                                              Visibility="{Binding ShowProgressBar, Converter={StaticResource BoolToVis}}"
                                              Margin="0,6,0,4" />
 
-                                <!-- Status text for legacy single-bar usage cards -->
+                                <!-- Status text for usage cards, including multi-bar providers -->
                                 <TextBlock Text="{Binding StatusText}"
                                            FontSize="13"
                                            Foreground="{StaticResource TextSecondaryBrush}"

@@ -317,7 +317,7 @@ public sealed partial class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttp
         ClaudeAccountInfo? accountInfo)
     {
         var usedPercent = limits.FiveHourUtilization;
-        var usageLabel = BuildStatusLabel(subscriptionType, totalTokens, equivalentCost, accountInfo);
+        var usageLabel = BuildStatusLabel(subscriptionType, totalTokens, equivalentCost, accountInfo, limits.ExtraUsageEnabled);
 
         var resetDesc = limits.FiveHourReset > 0
             ? FormatResetCountdown(limits.FiveHourReset, "5-hour limit")
@@ -340,7 +340,15 @@ public sealed partial class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttp
         string subscriptionType,
         long totalTokens,
         double equivalentCost,
-        ClaudeAccountInfo? accountInfo)
+        ClaudeAccountInfo? accountInfo) =>
+        BuildStatusLabel(subscriptionType, totalTokens, equivalentCost, accountInfo, null);
+
+    internal static string BuildStatusLabel(
+        string subscriptionType,
+        long totalTokens,
+        double equivalentCost,
+        ClaudeAccountInfo? accountInfo,
+        bool? extraUsageEnabled)
     {
         var statusParts = new List<string> { $"{subscriptionType} plan" };
         if (equivalentCost > 0)
@@ -352,7 +360,7 @@ public sealed partial class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttp
             statusParts.Add(FormatTokenCount(totalTokens));
         }
 
-        if (accountInfo?.HasExtraUsageEnabled == true)
+        if ((extraUsageEnabled ?? accountInfo?.HasExtraUsageEnabled) == true)
         {
             statusParts.Add("extra usage on");
         }
@@ -954,7 +962,7 @@ public sealed partial class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttp
         var sevenDay = SelectSevenDayOAuthUsageWindow(usage);
 
         return HasOAuthUsage(fiveHour, sevenDay)
-            ? BuildOAuthRateLimits(fiveHour, sevenDay)
+            ? BuildOAuthRateLimits(fiveHour, sevenDay, usage.ExtraUsage)
             : null;
     }
 
@@ -989,7 +997,10 @@ public sealed partial class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttp
     private static bool HasOAuthUsage(ClaudeOAuthUsageWindow? window) =>
         window?.Utilization is not null;
 
-    private static UnifiedRateLimits BuildOAuthRateLimits(ClaudeOAuthUsageWindow? fiveHour, ClaudeOAuthUsageWindow? sevenDay)
+    private static UnifiedRateLimits BuildOAuthRateLimits(
+        ClaudeOAuthUsageWindow? fiveHour,
+        ClaudeOAuthUsageWindow? sevenDay,
+        ClaudeOAuthExtraUsage? extraUsage)
     {
         return new UnifiedRateLimits
         {
@@ -999,6 +1010,7 @@ public sealed partial class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttp
             SevenDayUtilization = NormalizeUtilization(sevenDay?.Utilization),
             SevenDayReset = ParseOAuthResetToEpochSeconds(sevenDay?.ResetsAt),
             SevenDayStatus = "active",
+            ExtraUsageEnabled = extraUsage?.IsEnabled,
         };
     }
 
@@ -1288,6 +1300,8 @@ public sealed partial class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttp
         public long SevenDayReset { get; init; }
 
         public string SevenDayStatus { get; init; } = "unknown";
+
+        public bool? ExtraUsageEnabled { get; init; }
     }
 
     internal sealed record ClaudeOAuthUsageResponse
@@ -1306,6 +1320,15 @@ public sealed partial class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttp
 
         [JsonPropertyName("seven_day_sonnet")]
         public ClaudeOAuthUsageWindow? SevenDaySonnet { get; init; }
+
+        [JsonPropertyName("extra_usage")]
+        public ClaudeOAuthExtraUsage? ExtraUsage { get; init; }
+    }
+
+    internal sealed record ClaudeOAuthExtraUsage
+    {
+        [JsonPropertyName("is_enabled")]
+        public bool? IsEnabled { get; init; }
     }
 
     internal sealed record ClaudeOAuthUsageWindow
