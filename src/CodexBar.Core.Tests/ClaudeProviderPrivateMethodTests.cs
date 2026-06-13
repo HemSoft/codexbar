@@ -552,7 +552,7 @@ public class ClaudeProviderPrivateMethodTests : IDisposable
         var credType = result!.GetType();
         Assert.Equal("new-access-token", credType.GetProperty("AccessToken")!.GetValue(result) as string);
         Assert.Equal("new-refresh-token", credType.GetProperty("RefreshToken")!.GetValue(result) as string);
-        Assert.Equal(1750000000L, (long)credType.GetProperty("ExpiresAt")!.GetValue(result)!);
+        Assert.Equal(1750000000000L, (long)credType.GetProperty("ExpiresAt")!.GetValue(result)!);
     }
 
     [Fact]

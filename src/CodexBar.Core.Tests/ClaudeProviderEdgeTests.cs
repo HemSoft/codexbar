@@ -28,10 +28,10 @@ public class ClaudeProviderEdgeTests
     }
 
     [Fact]
-    public void NormalizeEpochToSeconds_ExactBoundary_TreatsAsSeconds()
+    public void NormalizeEpochToSeconds_ExactBoundary_TreatsAsMilliseconds()
     {
         // 1_000_000_000_000 is exactly the threshold; it should be treated as ms
-        var result = ClaudeProvider.NormalizeEpochToSeconds(1_000_000_000_001);
+        var result = ClaudeProvider.NormalizeEpochToSeconds(1_000_000_000_000);
         Assert.Equal(1_000_000_000, result);
     }
 
