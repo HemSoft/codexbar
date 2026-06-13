@@ -436,7 +436,19 @@ public class ClaudeProviderFullCoverageTests : IDisposable
 
         Assert.Equal("new-at", at);
         Assert.Equal("new-rt", rt);
-        Assert.Equal(9999999L, ea);
+        Assert.Equal(9999999000L, ea);
+    }
+
+    [Fact]
+    public void ParseTokenRefreshExpiresAt_ExpiresIn_ReturnsFutureEpochMilliseconds()
+    {
+        var now = DateTimeOffset.Parse("2026-06-13T03:00:00Z");
+        var json = """{"expires_in":28800}""";
+        using var doc = JsonDocument.Parse(json);
+
+        var expiresAt = ClaudeProvider.ParseTokenRefreshExpiresAt(doc.RootElement, now);
+
+        Assert.Equal(now.AddHours(8).ToUnixTimeMilliseconds(), expiresAt);
     }
 
     [Fact]
@@ -665,6 +677,16 @@ public class ClaudeProviderFullCoverageTests : IDisposable
             Interlocked.Increment(ref callCount);
             if (req.RequestUri?.AbsolutePath == "/v1/oauth/token")
             {
+                var body = req.Content!.ReadAsStringAsync(ct).GetAwaiter().GetResult();
+                using var bodyDoc = JsonDocument.Parse(body);
+                var root = bodyDoc.RootElement;
+
+                Assert.Equal("refresh_token", root.GetProperty("grant_type").GetString());
+                Assert.Equal("refresh-token-1", root.GetProperty("refresh_token").GetString());
+                Assert.Equal(
+                    string.Concat("9d1c250a", "-e61b-44d9", "-88ed-5944d1962f5e"),
+                    root.GetProperty("client_id").GetString());
+
                 var refreshResponse = $$"""{"access_token":"new-token","refresh_token":"new-refresh","expires_at":{{newExpiry}}}""";
                 return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
                 {
@@ -1313,6 +1335,17 @@ public class ClaudeProviderFullCoverageTests : IDisposable
         var seconds = 1_750_000_000L;
         var result = ClaudeProvider.NormalizeEpochToSeconds(seconds);
         Assert.Equal(1_750_000_000L, result);
+    }
+
+    [Theory]
+    [InlineData(1_750_000_000L, 1_750_000_000_000L)]
+    [InlineData(1_750_000_000_000L, 1_750_000_000_000L)]
+    [InlineData(1_000_000_000_000L, 1_000_000_000_000L)]
+    public void NormalizeEpochToMilliseconds_ConvertsCorrectly(long input, long expected)
+    {
+        var result = ClaudeProvider.NormalizeEpochToMilliseconds(input);
+
+        Assert.Equal(expected, result);
     }
 
     // --- Helpers ---

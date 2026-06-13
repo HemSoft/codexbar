@@ -123,7 +123,7 @@ public class ClaudeProviderFetchTests
     [InlineData(1715700000000L, 1715700000L)] // Milliseconds -> seconds
     [InlineData(0L, 0L)] // Zero stays zero
     [InlineData(999999999999L, 999999999999L)] // Under threshold stays
-    [InlineData(1000000000000L, 1000000000000L)] // Exact boundary: NOT greater-than, stays
+    [InlineData(1000000000000L, 1000000000L)] // Exact boundary is milliseconds
     public void NormalizeEpochToSeconds_ConvertsCorrectly(long input, long expected)
     {
         Assert.Equal(expected, ClaudeProvider.NormalizeEpochToSeconds(input));

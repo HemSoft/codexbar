@@ -52,6 +52,10 @@ public sealed partial class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttp
     private static readonly TimeSpan ApiTimeout = TimeSpan.FromSeconds(15);
     private const string UsageApiUrl = "https://api.anthropic.com/api/oauth/usage";
     private const string TokenRefreshUrl = "https://platform.claude.com/v1/oauth/token";
+    private static readonly string _claudeCodeOAuthClientId = string.Concat(
+        "9d1c250a",
+        "-e61b-44d9",
+        "-88ed-5944d1962f5e");
 
     // Minimal request body: haiku model, 1 token, trivial prompt — just enough to trigger rate-limit headers
     private static readonly string ProbeRequestBody = JsonSerializer.Serialize(new
@@ -104,7 +108,10 @@ public sealed partial class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttp
     /// Normalises a Unix epoch that may be in milliseconds to seconds.
     /// </summary>
     internal static long NormalizeEpochToSeconds(long value) =>
-        value > 1_000_000_000_000 ? value / 1000 : value;
+        value >= 1_000_000_000_000 ? value / 1000 : value;
+
+    internal static long NormalizeEpochToMilliseconds(long value) =>
+        value >= 1_000_000_000_000 ? value : value * 1000;
 
     public Task<bool> IsAvailableAsync(CancellationToken ct = default)
     {
@@ -778,6 +785,7 @@ public sealed partial class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttp
         {
             grant_type = "refresh_token",
             refresh_token = refreshToken,
+            client_id = _claudeCodeOAuthClientId,
         });
 
         var request = new HttpRequestMessage(HttpMethod.Post, TokenRefreshUrl)
@@ -818,7 +826,19 @@ public sealed partial class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttp
     internal static (string? AccessToken, string? RefreshToken, long ExpiresAt) ParseTokenRefreshResponse(JsonElement root) =>
         (root.TryGetProperty("access_token", out var at) ? at.GetString() : null,
          root.TryGetProperty("refresh_token", out var rt) ? rt.GetString() : null,
-         root.TryGetProperty("expires_at", out var ea) ? ea.GetInt64() : 0);
+         ParseTokenRefreshExpiresAt(root, DateTimeOffset.UtcNow));
+
+    internal static long ParseTokenRefreshExpiresAt(JsonElement root, DateTimeOffset now)
+    {
+        if (root.TryGetProperty("expires_at", out var expiresAt))
+        {
+            return NormalizeEpochToMilliseconds(expiresAt.GetInt64());
+        }
+
+        return root.TryGetProperty("expires_in", out var expiresIn)
+            ? now.AddSeconds(expiresIn.GetInt64()).ToUnixTimeMilliseconds()
+            : 0;
+    }
 
     private void PersistCredentials(ClaudeCredentials credentials)
     {

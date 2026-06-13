@@ -19,7 +19,7 @@ public class ClaudeProviderMutationTests
     [Theory]
     [InlineData(1_000_000_000_001, 1_000_000_000)] // just above threshold → divide by 1000
     [InlineData(1_700_000_000_000, 1_700_000_000)] // typical millisecond timestamp
-    [InlineData(1_000_000_000_000, 1_000_000_000_000)] // exactly at threshold, returned as-is
+    [InlineData(1_000_000_000_000, 1_000_000_000)] // exactly at threshold → divide by 1000
     [InlineData(999_999_999_999, 999_999_999_999)] // below threshold, returned as-is
     [InlineData(1_000_000_000, 1_000_000_000)] // seconds value, returned as-is
     [InlineData(0, 0)]
