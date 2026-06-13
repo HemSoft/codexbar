@@ -925,17 +925,52 @@ public sealed partial class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttp
 
     internal static UnifiedRateLimits? MapOAuthUsageToRateLimits(ClaudeOAuthUsageResponse? usage)
     {
-        var fiveHour = usage?.FiveHour;
-        var sevenDay = usage?.SevenDay
-            ?? usage?.SevenDayOAuthApps
-            ?? usage?.SevenDaySonnet
-            ?? usage?.SevenDayOpus;
-
-        if (fiveHour?.Utilization is null && sevenDay?.Utilization is null)
+        if (usage is null)
         {
             return null;
         }
 
+        var fiveHour = usage.FiveHour;
+        var sevenDay = SelectSevenDayOAuthUsageWindow(usage);
+
+        return HasOAuthUsage(fiveHour, sevenDay)
+            ? BuildOAuthRateLimits(fiveHour, sevenDay)
+            : null;
+    }
+
+    private static ClaudeOAuthUsageWindow? SelectSevenDayOAuthUsageWindow(ClaudeOAuthUsageResponse usage)
+    {
+        if (usage.SevenDay is not null)
+        {
+            return usage.SevenDay;
+        }
+
+        return SelectFallbackSevenDayOAuthUsageWindow(usage);
+    }
+
+    private static ClaudeOAuthUsageWindow? SelectFallbackSevenDayOAuthUsageWindow(ClaudeOAuthUsageResponse usage)
+    {
+        if (usage.SevenDayOAuthApps is not null)
+        {
+            return usage.SevenDayOAuthApps;
+        }
+
+        if (usage.SevenDaySonnet is not null)
+        {
+            return usage.SevenDaySonnet;
+        }
+
+        return usage.SevenDayOpus;
+    }
+
+    private static bool HasOAuthUsage(ClaudeOAuthUsageWindow? fiveHour, ClaudeOAuthUsageWindow? sevenDay) =>
+        HasOAuthUsage(fiveHour) || HasOAuthUsage(sevenDay);
+
+    private static bool HasOAuthUsage(ClaudeOAuthUsageWindow? window) =>
+        window?.Utilization is not null;
+
+    private static UnifiedRateLimits BuildOAuthRateLimits(ClaudeOAuthUsageWindow? fiveHour, ClaudeOAuthUsageWindow? sevenDay)
+    {
         return new UnifiedRateLimits
         {
             FiveHourUtilization = NormalizeUtilization(fiveHour?.Utilization),
