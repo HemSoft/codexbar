@@ -25,6 +25,8 @@ public sealed class CursorProviderTests : IDisposable
         CursorProvider.LocalAppDataPathOverride = null;
         CursorProvider.CommandTimeout = TimeSpan.FromSeconds(10);
         CursorProvider.KillProcess = static process => process.Kill();
+        CursorProvider.WaitForExitAsync = static (process, cancellationToken) =>
+            process.WaitForExitAsync(cancellationToken);
     }
 
     [Fact]
@@ -511,10 +513,11 @@ public sealed class CursorProviderTests : IDisposable
     public async Task RunCommandAsync_WhenCommandTimesOut_ReturnsTimeoutResultAsync()
     {
         CursorProvider.CursorAgentCommandOverride = ResolveShellCommand();
+        CursorProvider.WaitForExitAsync = (_, _) => throw new OperationCanceledException();
         CursorProvider.CommandTimeout = TimeSpan.FromMilliseconds(100);
 
         var result = await CursorProvider.RunCommandAsync(
-            CreateShellArguments("ping -n 6 127.0.0.1 > nul", "sleep 5"),
+            CreateShellArguments("echo timeout", "echo timeout"),
             CancellationToken.None);
 
         Assert.Equal(-1, result.ExitCode);
@@ -526,11 +529,12 @@ public sealed class CursorProviderTests : IDisposable
     public async Task RunCommandAsync_WhenCanceledAndKillFails_RethrowsAsync()
     {
         CursorProvider.CursorAgentCommandOverride = ResolveShellCommand();
+        CursorProvider.WaitForExitAsync = (_, cancellationToken) => Task.FromCanceled(cancellationToken);
         CursorProvider.KillProcess = _ => throw new InvalidOperationException("kill failed");
         using var cts = new CancellationTokenSource();
         cts.Cancel();
 
-        await Assert.ThrowsAsync<OperationCanceledException>(
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
             () => CursorProvider.RunCommandAsync(
                 CreateShellArguments("echo canceled", "echo canceled"),
                 cts.Token));

@@ -43,6 +43,9 @@ public sealed class CursorProvider(
 
     internal static Action<Process> KillProcess { get; set; } = static process => process.Kill();
 
+    internal static Func<Process, CancellationToken, Task> WaitForExitAsync { get; set; } =
+        static (process, cancellationToken) => process.WaitForExitAsync(cancellationToken);
+
     public ProviderMetadata Metadata { get; } = new()
     {
         Id = ProviderId.Cursor,
@@ -374,7 +377,7 @@ public sealed class CursorProvider(
 
         try
         {
-            await process.WaitForExitAsync(timeoutCts.Token);
+            await WaitForExitAsync(process, timeoutCts.Token);
             return new CommandResult(process.ExitCode, await stdoutTask, await stderrTask);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
