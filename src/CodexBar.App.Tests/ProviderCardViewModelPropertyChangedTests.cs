@@ -27,14 +27,14 @@ public sealed class ProviderCardViewModelPropertyChangedTests
     }
 
     [Fact]
-    public void HasBars_WhenChanged_FiresShowStatusTextLineChanged()
+    public void HasBars_WhenChanged_DoesNotFireShowStatusTextLineChanged()
     {
         var card = new ProviderCardViewModel();
         var firedProperties = CapturePropertyChanges(card);
 
         card.HasBars = true;
 
-        Assert.Contains(nameof(ProviderCardViewModel.ShowStatusTextLine), firedProperties);
+        Assert.DoesNotContain(nameof(ProviderCardViewModel.ShowStatusTextLine), firedProperties);
     }
 
     [Fact]
@@ -354,10 +354,10 @@ public sealed class ProviderCardViewModelPropertyChangedTests
     }
 
     [Fact]
-    public void ShowStatusTextLine_WhenHasBars_IsFalse()
+    public void ShowStatusTextLine_WhenHasBars_IsTrue()
     {
         var card = new ProviderCardViewModel { HasBars = true };
-        Assert.False(card.ShowStatusTextLine);
+        Assert.True(card.ShowStatusTextLine);
     }
 
     [Fact]
