@@ -29,12 +29,22 @@ public sealed class CursorProvider(
     private const string CursorAuthFileName = "auth.json";
 
     private static readonly TimeSpan ApiTimeout = TimeSpan.FromSeconds(15);
-    private static readonly TimeSpan CommandTimeout = TimeSpan.FromSeconds(10);
+
+    internal static TimeSpan CommandTimeout { get; set; } = TimeSpan.FromSeconds(10);
 
     internal static Func<string, CancellationToken, Task<CommandResult>> RunCommandAsync { get; set; } =
         RunCursorAgentAsync;
 
     internal static string? AuthPathOverride { get; set; }
+
+    internal static string? CursorAgentCommandOverride { get; set; }
+
+    internal static string? LocalAppDataPathOverride { get; set; }
+
+    internal static Action<Process> KillProcess { get; set; } = static process => process.Kill();
+
+    internal static Func<Process, CancellationToken, Task> WaitForExitAsync { get; set; } =
+        static (process, cancellationToken) => process.WaitForExitAsync(cancellationToken);
 
     public ProviderMetadata Metadata { get; } = new()
     {
@@ -367,11 +377,12 @@ public sealed class CursorProvider(
 
         try
         {
-            await process.WaitForExitAsync(timeoutCts.Token);
+            await WaitForExitAsync(process, timeoutCts.Token);
             return new CommandResult(process.ExitCode, await stdoutTask, await stderrTask);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
+            BestEffortKill(process);
             throw;
         }
         catch (OperationCanceledException)
@@ -385,7 +396,7 @@ public sealed class CursorProvider(
     {
         try
         {
-            process.Kill();
+            KillProcess(process);
         }
         catch
         {
@@ -394,7 +405,12 @@ public sealed class CursorProvider(
 
     internal static string ResolveCursorAgentCommand()
     {
-        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        if (CursorAgentCommandOverride is not null)
+        {
+            return CursorAgentCommandOverride;
+        }
+
+        var localAppData = LocalAppDataPathOverride ?? Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
         var localCommand = Path.Combine(localAppData, "cursor-agent", "cursor-agent.cmd");
         return File.Exists(localCommand) ? localCommand : "cursor-agent";
     }
