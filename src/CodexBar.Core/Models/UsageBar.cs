@@ -31,4 +31,7 @@ public sealed record UsageBar
 
     /// <summary>Gets projection period end timestamp.</summary>
     public DateTimeOffset? ProjectionPeriodEnd { get; init; }
+
+    /// <summary>Gets a value indicating whether projection should render on the current usage bar.</summary>
+    public bool ShowProjectionOnCurrentBar { get; init; }
 }

@@ -120,11 +120,21 @@ public sealed class CodexProviderTests : IDisposable
             {
                 Assert.Equal("5 hour usage limit", bar.Label);
                 Assert.Equal(0.05, bar.UsedPercent);
+                Assert.InRange(bar.ProjectionCurrent!.Value, 0.049m, 0.051m);
+                Assert.Equal(1m, bar.ProjectionLimit);
+                Assert.Equal(DateTimeOffset.FromUnixTimeSeconds(1893456000 - 18000), bar.ProjectionPeriodStart);
+                Assert.Equal(DateTimeOffset.FromUnixTimeSeconds(1893456000), bar.ProjectionPeriodEnd);
+                Assert.True(bar.ShowProjectionOnCurrentBar);
             },
             bar =>
             {
                 Assert.Equal("Weekly usage limit", bar.Label);
                 Assert.Equal(0.01, bar.UsedPercent);
+                Assert.InRange(bar.ProjectionCurrent!.Value, 0.009m, 0.011m);
+                Assert.Equal(1m, bar.ProjectionLimit);
+                Assert.Equal(DateTimeOffset.FromUnixTimeSeconds(1893974400 - 604800), bar.ProjectionPeriodStart);
+                Assert.Equal(DateTimeOffset.FromUnixTimeSeconds(1893974400), bar.ProjectionPeriodEnd);
+                Assert.True(bar.ShowProjectionOnCurrentBar);
             });
     }
 

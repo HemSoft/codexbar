@@ -123,3 +123,45 @@ public sealed class RefreshProgressToBrushConverter : IValueConverter
             (byte)(start.G + ((end.G - start.G) * progress)),
             (byte)(start.B + ((end.B - start.B) * progress)));
 }
+
+/// <summary>
+/// Converts usage progress (0-1) into green, yellow, or red usage brushes.
+/// </summary>
+public sealed class UsagePercentToBrushConverter : IValueConverter
+{
+    private static readonly Color ActualLow = Color.FromRgb(0x22, 0xC5, 0x5E);
+    private static readonly Color ActualWarning = Color.FromRgb(0xEA, 0xB3, 0x08);
+    private static readonly Color ActualHigh = Color.FromRgb(0xEF, 0x44, 0x44);
+    private static readonly Color ProjectedLow = Color.FromRgb(0x86, 0xEF, 0xAC);
+    private static readonly Color ProjectedWarning = Color.FromRgb(0xFA, 0xCC, 0x15);
+    private static readonly Color ProjectedHigh = Color.FromRgb(0xF8, 0x71, 0x71);
+
+    public static readonly UsagePercentToBrushConverter Instance = new();
+
+    public object Convert(object? value, Type targetType, object? parameter, CultureInfo culture)
+    {
+        var progress = Math.Clamp(System.Convert.ToDouble(value ?? 0, CultureInfo.InvariantCulture), 0, 1);
+        var projected = string.Equals(parameter?.ToString(), "Projected", StringComparison.OrdinalIgnoreCase);
+        var brush = new SolidColorBrush(SelectColor(progress, projected));
+        brush.Freeze();
+        return brush;
+    }
+
+    public object ConvertBack(object? value, Type targetType, object? parameter, CultureInfo culture) =>
+        throw new NotSupportedException();
+
+    private static Color SelectColor(double progress, bool projected)
+    {
+        if (progress >= UsageSeverityThresholds.High)
+        {
+            return projected ? ProjectedHigh : ActualHigh;
+        }
+
+        if (progress >= UsageSeverityThresholds.Warning)
+        {
+            return projected ? ProjectedWarning : ActualWarning;
+        }
+
+        return projected ? ProjectedLow : ActualLow;
+    }
+}
