@@ -7,6 +7,7 @@ using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using System.Windows.Input;
 using System.Windows.Threading;
+using CodexBar.App;
 using CodexBar.Core.Configuration;
 using CodexBar.Core.Models;
 using CodexBar.Core.Services;
@@ -381,7 +382,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             card.UsedPercent = result.SessionUsage.UsedPercent;
             card.StatusText = result.SessionUsage.UsageLabel ?? $"{result.SessionUsage.UsedPercent:P0} used";
             card.ResetText = result.SessionUsage.ResetDescription;
-            card.IsHighUsage = result.SessionUsage.UsedPercent >= 0.8;
+            card.IsHighUsage = result.SessionUsage.UsedPercent >= UsageSeverityThresholds.High;
             card.ShowUsagePercent = !result.SessionUsage.IsUnlimited;
         }
         else if (result.CreditsRemaining is not null)

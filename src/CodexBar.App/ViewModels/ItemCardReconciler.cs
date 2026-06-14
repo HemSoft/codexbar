@@ -3,6 +3,7 @@
 namespace CodexBar.App.ViewModels;
 
 using System.Collections.ObjectModel;
+using CodexBar.App;
 using CodexBar.Core.Models;
 
 /// <summary>
@@ -11,8 +12,6 @@ using CodexBar.Core.Models;
 /// </summary>
 internal sealed class ItemCardReconciler
 {
-    private const double HighUsageThreshold = 0.8;
-
     private readonly Dictionary<string, ProviderCardViewModel> _cardsByKey;
     private readonly ObservableCollection<ProviderCardViewModel> _providers;
     private readonly Action<ProviderCardViewModel> _updateOverageSessionSpending;
@@ -242,7 +241,7 @@ internal sealed class ItemCardReconciler
         {
             card.StatusText = item.PrimaryUsage.UsageLabel ?? "No data";
             card.UsedPercent = item.PrimaryUsage.UsedPercent;
-            card.IsHighUsage = item.PrimaryUsage.UsedPercent >= HighUsageThreshold;
+            card.IsHighUsage = item.PrimaryUsage.UsedPercent >= UsageSeverityThresholds.High;
         }
         else
         {
@@ -279,7 +278,7 @@ internal sealed class ItemCardReconciler
             card.UsedPercent = item.PrimaryUsage.UsedPercent;
             card.StatusText = item.PrimaryUsage.UsageLabel ?? $"{item.PrimaryUsage.UsedPercent:P0} used";
             card.ResetText = item.PrimaryUsage.ResetDescription;
-            card.IsHighUsage = item.PrimaryUsage.UsedPercent >= HighUsageThreshold;
+            card.IsHighUsage = item.PrimaryUsage.UsedPercent >= UsageSeverityThresholds.High;
             card.ShowUsagePercent = !item.PrimaryUsage.IsUnlimited;
         }
         else if (item.CreditsRemaining is not null)
@@ -296,7 +295,7 @@ internal sealed class ItemCardReconciler
             card.UsedPercent = item.SecondaryUsage.UsedPercent;
             card.StatusText = item.SecondaryUsage.UsageLabel ?? $"{item.SecondaryUsage.UsedPercent:P0} used";
             card.ResetText = item.SecondaryUsage.ResetDescription;
-            card.IsHighUsage = item.SecondaryUsage.UsedPercent >= HighUsageThreshold;
+            card.IsHighUsage = item.SecondaryUsage.UsedPercent >= UsageSeverityThresholds.High;
             card.ShowUsagePercent = !item.SecondaryUsage.IsUnlimited;
         }
         else
@@ -358,7 +357,7 @@ internal sealed class ItemCardReconciler
                 existing.Label = bar.Label;
                 existing.UsedPercent = bar.UsedPercent;
                 existing.ResetDescription = bar.ResetDescription;
-                existing.IsHighUsage = bar.UsedPercent >= HighUsageThreshold;
+                existing.IsHighUsage = bar.UsedPercent >= UsageSeverityThresholds.High;
                 ApplyProjection(existing, bar);
             }
             else
@@ -368,7 +367,7 @@ internal sealed class ItemCardReconciler
                     Label = bar.Label,
                     UsedPercent = bar.UsedPercent,
                     ResetDescription = bar.ResetDescription,
-                    IsHighUsage = bar.UsedPercent >= HighUsageThreshold,
+                    IsHighUsage = bar.UsedPercent >= UsageSeverityThresholds.High,
                 };
                 ApplyProjection(viewModel, bar);
                 card.Bars.Add(viewModel);

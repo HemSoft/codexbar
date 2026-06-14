@@ -129,9 +129,6 @@ public sealed class RefreshProgressToBrushConverter : IValueConverter
 /// </summary>
 public sealed class UsagePercentToBrushConverter : IValueConverter
 {
-    private const double WarningThreshold = 0.7;
-    private const double HighThreshold = 0.9;
-
     private static readonly Color ActualLow = Color.FromRgb(0x22, 0xC5, 0x5E);
     private static readonly Color ActualWarning = Color.FromRgb(0xEA, 0xB3, 0x08);
     private static readonly Color ActualHigh = Color.FromRgb(0xEF, 0x44, 0x44);
@@ -155,12 +152,12 @@ public sealed class UsagePercentToBrushConverter : IValueConverter
 
     private static Color SelectColor(double progress, bool projected)
     {
-        if (progress >= HighThreshold)
+        if (progress >= UsageSeverityThresholds.High)
         {
             return projected ? ProjectedHigh : ActualHigh;
         }
 
-        if (progress >= WarningThreshold)
+        if (progress >= UsageSeverityThresholds.Warning)
         {
             return projected ? ProjectedWarning : ActualWarning;
         }

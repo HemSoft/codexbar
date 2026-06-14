@@ -257,7 +257,7 @@ public sealed class ConvertersTests
     [Theory]
     [InlineData(0.69, 0x22, 0xC5, 0x5E)]
     [InlineData(0.70, 0xEA, 0xB3, 0x08)]
-    [InlineData(0.90, 0xEF, 0x44, 0x44)]
+    [InlineData(0.80, 0xEF, 0x44, 0x44)]
     public void UsagePercentToBrushConverter_Actual_UsesGreenYellowRedThresholds(
         double progress,
         byte red,
@@ -274,7 +274,7 @@ public sealed class ConvertersTests
     [Theory]
     [InlineData(0.69, 0x86, 0xEF, 0xAC)]
     [InlineData(0.70, 0xFA, 0xCC, 0x15)]
-    [InlineData(0.90, 0xF8, 0x71, 0x71)]
+    [InlineData(0.80, 0xF8, 0x71, 0x71)]
     public void UsagePercentToBrushConverter_Projected_UsesLighterGreenYellowRedThresholds(
         double progress,
         byte red,
