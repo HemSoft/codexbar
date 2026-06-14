@@ -18,6 +18,7 @@ public sealed class CursorProviderTests : IDisposable
 
     public void Dispose()
     {
+        DeleteTempFile(CursorProvider.AuthPathOverride);
         CursorProvider.RunCommandAsync = this._originalRunner;
         CursorProvider.AuthPathOverride = null;
         CursorProvider.CursorAgentCommandOverride = null;
@@ -110,7 +111,7 @@ public sealed class CursorProviderTests : IDisposable
     }
 
     [Fact]
-    public async Task FetchUsageAsync_WhenCredentialFileMalformed_ReturnsFailureMessage()
+    public async Task FetchUsageAsync_WhenCredentialFileMalformed_ReturnsFailureMessageAsync()
     {
         CursorProvider.AuthPathOverride = WriteTempFile("{");
 
@@ -123,7 +124,7 @@ public sealed class CursorProviderTests : IDisposable
     }
 
     [Fact]
-    public async Task FetchUsageAsync_WhenDashboardReturnsHttpError_ReturnsFailureMessage()
+    public async Task FetchUsageAsync_WhenDashboardReturnsHttpError_ReturnsFailureMessageAsync()
     {
         CursorProvider.AuthPathOverride = WriteAuthFile("test-token");
 
@@ -136,7 +137,7 @@ public sealed class CursorProviderTests : IDisposable
     }
 
     [Fact]
-    public async Task FetchUsageAsync_WhenCanceled_RethrowsOperationCanceledException()
+    public async Task FetchUsageAsync_WhenCanceled_RethrowsOperationCanceledExceptionAsync()
     {
         CursorProvider.AuthPathOverride = WriteAuthFile("test-token");
         var provider = CreateProvider(new CanceledHttpMessageHandler());
@@ -196,7 +197,7 @@ public sealed class CursorProviderTests : IDisposable
     [Theory]
     [InlineData(1, "{}")]
     [InlineData(0, " ")]
-    public async Task FetchUsageAsync_WhenStatusCommandCannotBeRead_UsesAboutMetadata(int exitCode, string stdout)
+    public async Task FetchUsageAsync_WhenStatusCommandCannotBeRead_UsesAboutMetadataAsync(int exitCode, string stdout)
     {
         CursorProvider.AuthPathOverride = WriteAuthFile("test-token");
         CursorProvider.RunCommandAsync = (arguments, _) =>
@@ -226,7 +227,7 @@ public sealed class CursorProviderTests : IDisposable
     }
 
     [Fact]
-    public async Task FetchUsageAsync_WhenStatusCommandReturnsMalformedJson_UsesAboutMetadata()
+    public async Task FetchUsageAsync_WhenStatusCommandReturnsMalformedJson_UsesAboutMetadataAsync()
     {
         CursorProvider.AuthPathOverride = WriteAuthFile("test-token");
         CursorProvider.RunCommandAsync = (arguments, _) =>
@@ -246,7 +247,7 @@ public sealed class CursorProviderTests : IDisposable
     }
 
     [Fact]
-    public async Task FetchUsageAsync_WhenStatusCommandThrowsWin32Exception_UsesAboutMetadata()
+    public async Task FetchUsageAsync_WhenStatusCommandThrowsWin32Exception_UsesAboutMetadataAsync()
     {
         CursorProvider.AuthPathOverride = WriteAuthFile("test-token");
         CursorProvider.RunCommandAsync = (arguments, _) =>
@@ -268,7 +269,7 @@ public sealed class CursorProviderTests : IDisposable
     [Theory]
     [InlineData(1, "{}")]
     [InlineData(0, " ")]
-    public async Task FetchUsageAsync_WhenAboutCommandCannotBeRead_UsesStatusMetadata(int exitCode, string stdout)
+    public async Task FetchUsageAsync_WhenAboutCommandCannotBeRead_UsesStatusMetadataAsync(int exitCode, string stdout)
     {
         CursorProvider.AuthPathOverride = WriteAuthFile("test-token");
         CursorProvider.RunCommandAsync = (arguments, _) =>
@@ -288,7 +289,7 @@ public sealed class CursorProviderTests : IDisposable
     }
 
     [Fact]
-    public async Task FetchUsageAsync_WhenAboutCommandThrowsWin32Exception_UsesStatusMetadata()
+    public async Task FetchUsageAsync_WhenAboutCommandThrowsWin32Exception_UsesStatusMetadataAsync()
     {
         CursorProvider.AuthPathOverride = WriteAuthFile("test-token");
         CursorProvider.RunCommandAsync = (arguments, _) =>
@@ -491,69 +492,48 @@ public sealed class CursorProviderTests : IDisposable
     }
 
     [Fact]
-    public async Task RunCommandAsync_WhenCommandSucceeds_ReturnsExitCodeAndStreams()
+    public async Task RunCommandAsync_WhenCommandSucceeds_ReturnsExitCodeAndStreamsAsync()
     {
-        var script = WriteCommandScript(
-            """
-            echo stdout-value
-            echo stderr-value 1>&2
-            exit /b 7
-            """);
-        CursorProvider.CursorAgentCommandOverride = script;
+        CursorProvider.CursorAgentCommandOverride = ResolveShellCommand();
 
-        try
-        {
-            var result = await CursorProvider.RunCommandAsync("ignored arguments", CancellationToken.None);
+        var result = await CursorProvider.RunCommandAsync(
+            CreateShellArguments(
+                "echo stdout-value && echo stderr-value 1>&2 && exit /b 7",
+                "echo stdout-value; echo stderr-value >&2; exit 7"),
+            CancellationToken.None);
 
-            Assert.Equal(7, result.ExitCode);
-            Assert.Contains("stdout-value", result.Stdout);
-            Assert.Contains("stderr-value", result.Stderr);
-        }
-        finally
-        {
-            File.Delete(script);
-        }
+        Assert.Equal(7, result.ExitCode);
+        Assert.Contains("stdout-value", result.Stdout);
+        Assert.Contains("stderr-value", result.Stderr);
     }
 
     [Fact]
-    public async Task RunCommandAsync_WhenCommandTimesOut_ReturnsTimeoutResult()
+    public async Task RunCommandAsync_WhenCommandTimesOut_ReturnsTimeoutResultAsync()
     {
-        var script = WriteCommandScript("ping -n 6 127.0.0.1 > nul");
-        CursorProvider.CursorAgentCommandOverride = script;
+        CursorProvider.CursorAgentCommandOverride = ResolveShellCommand();
         CursorProvider.CommandTimeout = TimeSpan.FromMilliseconds(100);
 
-        try
-        {
-            var result = await CursorProvider.RunCommandAsync("ignored arguments", CancellationToken.None);
+        var result = await CursorProvider.RunCommandAsync(
+            CreateShellArguments("ping -n 6 127.0.0.1 > nul", "sleep 5"),
+            CancellationToken.None);
 
-            Assert.Equal(-1, result.ExitCode);
-            Assert.Equal(string.Empty, result.Stdout);
-            Assert.Equal("cursor-agent timed out.", result.Stderr);
-        }
-        finally
-        {
-            File.Delete(script);
-        }
+        Assert.Equal(-1, result.ExitCode);
+        Assert.Equal(string.Empty, result.Stdout);
+        Assert.Equal("cursor-agent timed out.", result.Stderr);
     }
 
     [Fact]
-    public async Task RunCommandAsync_WhenCanceledAndKillFails_Rethrows()
+    public async Task RunCommandAsync_WhenCanceledAndKillFails_RethrowsAsync()
     {
-        var script = WriteCommandScript("echo canceled");
-        CursorProvider.CursorAgentCommandOverride = script;
+        CursorProvider.CursorAgentCommandOverride = ResolveShellCommand();
         CursorProvider.KillProcess = _ => throw new InvalidOperationException("kill failed");
         using var cts = new CancellationTokenSource();
         cts.Cancel();
 
-        try
-        {
-            await Assert.ThrowsAsync<OperationCanceledException>(
-                () => CursorProvider.RunCommandAsync("ignored arguments", cts.Token));
-        }
-        finally
-        {
-            File.Delete(script);
-        }
+        await Assert.ThrowsAsync<OperationCanceledException>(
+            () => CursorProvider.RunCommandAsync(
+                CreateShellArguments("echo canceled", "echo canceled"),
+                cts.Token));
     }
 
     private static CursorProvider CreateProvider(HttpResponseMessage response)
@@ -589,11 +569,19 @@ public sealed class CursorProviderTests : IDisposable
         return path;
     }
 
-    private static string WriteCommandScript(string contents)
+    private static void DeleteTempFile(string? path)
     {
-        var path = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.cmd");
-        File.WriteAllText(path, $"@echo off{Environment.NewLine}{contents}");
-        return path;
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return;
+        }
+
+        var fullPath = Path.GetFullPath(path);
+        var tempPath = Path.GetFullPath(Path.GetTempPath());
+        if (fullPath.StartsWith(tempPath, StringComparison.OrdinalIgnoreCase) && File.Exists(fullPath))
+        {
+            File.Delete(fullPath);
+        }
     }
 
     private static string CreatePlanUsageJson() =>
@@ -607,6 +595,16 @@ public sealed class CursorProviderTests : IDisposable
             }
         }
         """;
+
+    private static string ResolveShellCommand() =>
+        OperatingSystem.IsWindows()
+            ? Environment.GetEnvironmentVariable("ComSpec") ?? "cmd.exe"
+            : "/bin/sh";
+
+    private static string CreateShellArguments(string windowsCommand, string unixCommand) =>
+        OperatingSystem.IsWindows()
+            ? $"/c \"{windowsCommand}\""
+            : $"-c \"{unixCommand.Replace("\"", "\\\"", StringComparison.Ordinal)}\"";
 
     private sealed class MockHttpMessageHandler(HttpResponseMessage response) : HttpMessageHandler
     {
