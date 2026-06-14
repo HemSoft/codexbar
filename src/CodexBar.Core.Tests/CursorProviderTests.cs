@@ -13,11 +13,17 @@ using NSubstitute;
 
 public sealed class CursorProviderTests : IDisposable
 {
+    private readonly List<string> _tempFiles = [];
     private readonly Func<string, CancellationToken, Task<CursorProvider.CommandResult>> _originalRunner =
         CursorProvider.RunCommandAsync;
 
     public void Dispose()
     {
+        foreach (var tempFile in this._tempFiles)
+        {
+            DeleteTempFile(tempFile);
+        }
+
         DeleteTempFile(CursorProvider.AuthPathOverride);
         CursorProvider.RunCommandAsync = this._originalRunner;
         CursorProvider.AuthPathOverride = null;
@@ -32,7 +38,7 @@ public sealed class CursorProviderTests : IDisposable
     [Fact]
     public async Task FetchUsageAsync_WhenAuthenticated_ReturnsDashboardUsageCard()
     {
-        CursorProvider.AuthPathOverride = WriteAuthFile("test-token");
+        CursorProvider.AuthPathOverride = this.WriteAuthFile("test-token");
         CursorProvider.RunCommandAsync = (arguments, _) =>
         {
             if (arguments.StartsWith("status", StringComparison.Ordinal))
@@ -115,7 +121,7 @@ public sealed class CursorProviderTests : IDisposable
     [Fact]
     public async Task FetchUsageAsync_WhenCredentialFileMalformed_ReturnsFailureMessageAsync()
     {
-        CursorProvider.AuthPathOverride = WriteTempFile("{");
+        CursorProvider.AuthPathOverride = this.WriteTempFile("{");
 
         var provider = CreateProvider(CreateResponse("{}"));
 
@@ -128,7 +134,7 @@ public sealed class CursorProviderTests : IDisposable
     [Fact]
     public async Task FetchUsageAsync_WhenDashboardReturnsHttpError_ReturnsFailureMessageAsync()
     {
-        CursorProvider.AuthPathOverride = WriteAuthFile("test-token");
+        CursorProvider.AuthPathOverride = this.WriteAuthFile("test-token");
 
         var provider = CreateProvider(CreateResponse("{}", HttpStatusCode.InternalServerError));
 
@@ -141,7 +147,7 @@ public sealed class CursorProviderTests : IDisposable
     [Fact]
     public async Task FetchUsageAsync_WhenCanceled_RethrowsOperationCanceledExceptionAsync()
     {
-        CursorProvider.AuthPathOverride = WriteAuthFile("test-token");
+        CursorProvider.AuthPathOverride = this.WriteAuthFile("test-token");
         var provider = CreateProvider(new CanceledHttpMessageHandler());
         using var cts = new CancellationTokenSource();
         cts.Cancel();
@@ -152,7 +158,7 @@ public sealed class CursorProviderTests : IDisposable
     [Fact]
     public async Task FetchUsageAsync_WhenCursorAgentReturnsMalformedAboutJson_IgnoresOptionalMetadataFailure()
     {
-        CursorProvider.AuthPathOverride = WriteAuthFile("test-token");
+        CursorProvider.AuthPathOverride = this.WriteAuthFile("test-token");
         CursorProvider.RunCommandAsync = (arguments, _) =>
         {
             if (arguments.StartsWith("status", StringComparison.Ordinal))
@@ -201,7 +207,7 @@ public sealed class CursorProviderTests : IDisposable
     [InlineData(0, " ")]
     public async Task FetchUsageAsync_WhenStatusCommandCannotBeRead_UsesAboutMetadataAsync(int exitCode, string stdout)
     {
-        CursorProvider.AuthPathOverride = WriteAuthFile("test-token");
+        CursorProvider.AuthPathOverride = this.WriteAuthFile("test-token");
         CursorProvider.RunCommandAsync = (arguments, _) =>
         {
             if (arguments.StartsWith("status", StringComparison.Ordinal))
@@ -231,7 +237,7 @@ public sealed class CursorProviderTests : IDisposable
     [Fact]
     public async Task FetchUsageAsync_WhenStatusCommandReturnsMalformedJson_UsesAboutMetadataAsync()
     {
-        CursorProvider.AuthPathOverride = WriteAuthFile("test-token");
+        CursorProvider.AuthPathOverride = this.WriteAuthFile("test-token");
         CursorProvider.RunCommandAsync = (arguments, _) =>
             arguments.StartsWith("status", StringComparison.Ordinal)
                 ? Task.FromResult(new CursorProvider.CommandResult(0, "{", string.Empty))
@@ -251,7 +257,7 @@ public sealed class CursorProviderTests : IDisposable
     [Fact]
     public async Task FetchUsageAsync_WhenStatusCommandThrowsWin32Exception_UsesAboutMetadataAsync()
     {
-        CursorProvider.AuthPathOverride = WriteAuthFile("test-token");
+        CursorProvider.AuthPathOverride = this.WriteAuthFile("test-token");
         CursorProvider.RunCommandAsync = (arguments, _) =>
             arguments.StartsWith("status", StringComparison.Ordinal)
                 ? throw new Win32Exception()
@@ -273,7 +279,7 @@ public sealed class CursorProviderTests : IDisposable
     [InlineData(0, " ")]
     public async Task FetchUsageAsync_WhenAboutCommandCannotBeRead_UsesStatusMetadataAsync(int exitCode, string stdout)
     {
-        CursorProvider.AuthPathOverride = WriteAuthFile("test-token");
+        CursorProvider.AuthPathOverride = this.WriteAuthFile("test-token");
         CursorProvider.RunCommandAsync = (arguments, _) =>
             arguments.StartsWith("status", StringComparison.Ordinal)
                 ? Task.FromResult(new CursorProvider.CommandResult(
@@ -293,7 +299,7 @@ public sealed class CursorProviderTests : IDisposable
     [Fact]
     public async Task FetchUsageAsync_WhenAboutCommandThrowsWin32Exception_UsesStatusMetadataAsync()
     {
-        CursorProvider.AuthPathOverride = WriteAuthFile("test-token");
+        CursorProvider.AuthPathOverride = this.WriteAuthFile("test-token");
         CursorProvider.RunCommandAsync = (arguments, _) =>
             arguments.StartsWith("status", StringComparison.Ordinal)
                 ? Task.FromResult(new CursorProvider.CommandResult(
@@ -559,17 +565,24 @@ public sealed class CursorProviderTests : IDisposable
             Content = new StringContent(json, Encoding.UTF8, "application/json"),
         };
 
-    private static string WriteAuthFile(string token)
+    private string WriteAuthFile(string token)
     {
-        var path = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.json");
+        var path = this.CreateTempFilePath();
         File.WriteAllText(path, $$"""{"accessToken":"{{token}}"}""");
         return path;
     }
 
-    private static string WriteTempFile(string contents)
+    private string WriteTempFile(string contents)
+    {
+        var path = this.CreateTempFilePath();
+        File.WriteAllText(path, contents);
+        return path;
+    }
+
+    private string CreateTempFilePath()
     {
         var path = Path.Combine(Path.GetTempPath(), $"{Guid.NewGuid():N}.json");
-        File.WriteAllText(path, contents);
+        this._tempFiles.Add(path);
         return path;
     }
 
