@@ -522,7 +522,37 @@ public sealed class UsageBarViewModel : INotifyPropertyChanged
     public double UsedPercent
     {
         get => this.usedPercent;
-        set => this.SetField(ref this.usedPercent, value);
+        set
+        {
+            if (this.SetField(ref this.usedPercent, value))
+            {
+                this.PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(this.ShowProjectedUsage)));
+            }
+        }
+    }
+
+    private double projectedPercent;
+
+    public double ProjectedPercent
+    {
+        get => this.projectedPercent;
+        set
+        {
+            if (this.SetField(ref this.projectedPercent, value))
+            {
+                this.PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(this.ShowProjectedUsage)));
+            }
+        }
+    }
+
+    public bool ShowProjectedUsage => this.ProjectedPercent > this.UsedPercent;
+
+    private string? projectionDescription;
+
+    public string? ProjectionDescription
+    {
+        get => this.projectionDescription;
+        set => this.SetField(ref this.projectionDescription, value);
     }
 
     private string? resetDescription;
@@ -565,6 +595,14 @@ public sealed class UsageBarViewModel : INotifyPropertyChanged
         set => this.SetField(ref this.projectionPeriodEnd, value);
     }
 
+    private bool showProjectionOnCurrentBar;
+
+    public bool ShowProjectionOnCurrentBar
+    {
+        get => this.showProjectionOnCurrentBar;
+        set => this.SetField(ref this.showProjectionOnCurrentBar, value);
+    }
+
     private bool isHighUsage;
 
     public bool IsHighUsage
@@ -582,13 +620,26 @@ public sealed class UsageBarViewModel : INotifyPropertyChanged
             || this.ProjectionPeriodStart is not { } periodStart
             || this.ProjectionPeriodEnd is not { } periodEnd)
         {
+            this.ProjectedPercent = 0;
+            this.ProjectionDescription = null;
             return;
         }
 
         var projected = ProjectMonthEnd(this.ProjectionCurrent.Value, periodStart, periodEnd, nowUtc);
+        var projectedPercent = Math.Clamp((double)(projected / this.ProjectionLimit.Value), 0.0, 1.0);
+        var limitHit = FormatLimitHit(this.ProjectionCurrent.Value, this.ProjectionLimit.Value, periodStart, periodEnd, nowUtc);
+        if (this.ShowProjectionOnCurrentBar)
+        {
+            this.ProjectedPercent = projectedPercent;
+            this.ProjectionDescription = $"Projected {projectedPercent:P0} at current pace · {limitHit}";
+            return;
+        }
+
         this.Label = $"Month end est. · {projected:N0} / {this.ProjectionLimit.Value:N0}";
-        this.UsedPercent = Math.Clamp((double)(projected / this.ProjectionLimit.Value), 0.0, 1.0);
-        this.ResetDescription = FormatLimitHit(this.ProjectionCurrent.Value, this.ProjectionLimit.Value, periodStart, periodEnd, nowUtc);
+        this.UsedPercent = projectedPercent;
+        this.ResetDescription = limitHit;
+        this.ProjectedPercent = 0;
+        this.ProjectionDescription = null;
     }
 
     private static decimal ProjectMonthEnd(decimal current, DateTimeOffset periodStart, DateTimeOffset periodEnd, DateTimeOffset nowUtc)
@@ -624,7 +675,7 @@ public sealed class UsageBarViewModel : INotifyPropertyChanged
 
         var secondsToLimit = (double)(limit / ratePerSecond);
         var hitAt = periodStart.AddSeconds(secondsToLimit);
-        return hitAt >= periodEnd ? "Limit not reached" : $"Limit hit {FormatEasternTime(hitAt)}";
+        return hitAt > periodEnd ? "Limit not reached" : $"Limit hit {FormatEasternTime(hitAt)}";
     }
 
     internal static string FormatEasternTime(DateTimeOffset timestamp, TimeZoneInfo? easternTimeZone)
@@ -659,15 +710,16 @@ public sealed class UsageBarViewModel : INotifyPropertyChanged
         return null;
     }
 
-    private void SetField<T>(ref T field, T value, [CallerMemberName] string? name = null)
+    private bool SetField<T>(ref T field, T value, [CallerMemberName] string? name = null)
     {
         if (EqualityComparer<T>.Default.Equals(field, value))
         {
-            return;
+            return false;
         }
 
         field = value;
         this.PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+        return true;
     }
 }
 

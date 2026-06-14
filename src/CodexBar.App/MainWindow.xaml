@@ -22,6 +22,7 @@
         <BooleanToVisibilityConverter x:Key="BoolToVis" />
         <local:ProgressToArcGeometryConverter x:Key="ProgressToArcGeometry" />
         <local:RefreshProgressToBrushConverter x:Key="RefreshProgressToBrush" />
+        <local:UsagePercentToBrushConverter x:Key="UsagePercentToBrush" />
 
         <!-- Inverse bool converter: true → Collapsed, false → Visible -->
         <local:InverseBoolToVisibilityConverter x:Key="InverseBoolToVis" />
@@ -330,8 +331,22 @@
                                                 </Grid>
 
                                                 <!-- Progress bar -->
-                                                <ProgressBar Value="{Binding UsedPercent, Mode=OneWay}"
-                                                             Style="{StaticResource UsageBar}" />
+                                                <Grid Height="8"
+                                                      Background="#1A1A2E"
+                                                      ClipToBounds="True"
+                                                      ToolTip="{Binding ProjectionDescription}">
+                                                    <ProgressBar Value="{Binding ProjectedPercent, Mode=OneWay}"
+                                                                 Style="{StaticResource UsageBar}"
+                                                                 Background="Transparent"
+                                                                 Foreground="{Binding ProjectedPercent, Converter={StaticResource UsagePercentToBrush}, ConverterParameter=Projected}"
+                                                                 Opacity="0.55"
+                                                                 Panel.ZIndex="0"
+                                                                 Visibility="{Binding ShowProjectedUsage, Converter={StaticResource BoolToVis}}" />
+                                                    <ProgressBar Value="{Binding UsedPercent, Mode=OneWay}"
+                                                                 Style="{StaticResource UsageBar}"
+                                                                 Background="Transparent"
+                                                                 Panel.ZIndex="1" />
+                                                </Grid>
                                             </StackPanel>
                                         </DataTemplate>
                                     </ItemsControl.ItemTemplate>

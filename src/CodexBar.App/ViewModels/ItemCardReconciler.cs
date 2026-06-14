@@ -387,6 +387,7 @@ internal sealed class ItemCardReconciler
         viewModel.ProjectionLimit = bar.ProjectionLimit;
         viewModel.ProjectionPeriodStart = bar.ProjectionPeriodStart;
         viewModel.ProjectionPeriodEnd = bar.ProjectionPeriodEnd;
+        viewModel.ShowProjectionOnCurrentBar = bar.ShowProjectionOnCurrentBar;
         viewModel.UpdateProjection(DateTimeOffset.UtcNow);
     }
 

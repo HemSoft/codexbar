@@ -268,6 +268,11 @@ public sealed class CodexProvider : IUsageProvider
         UsedPercent = window.UsedPercent,
         ResetsAt = window.ResetsAt,
         ResetDescription = FormatReset(window.ResetsAt),
+        ProjectionCurrent = (decimal)window.UsedPercent,
+        ProjectionLimit = 1m,
+        ProjectionPeriodStart = window.ResetsAt.AddSeconds(-window.DurationSeconds),
+        ProjectionPeriodEnd = window.ResetsAt,
+        ShowProjectionOnCurrentBar = true,
     };
 
     private static UsageSnapshot ToSnapshot(WindowData window) => new()

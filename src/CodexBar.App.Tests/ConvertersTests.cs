@@ -253,4 +253,57 @@ public sealed class ConvertersTests
         Assert.Throws<NotSupportedException>(() =>
             converter.ConvertBack(Brushes.Red, typeof(double), null, CultureInfo.InvariantCulture));
     }
+
+    [Theory]
+    [InlineData(0.69, 0x22, 0xC5, 0x5E)]
+    [InlineData(0.70, 0xEA, 0xB3, 0x08)]
+    [InlineData(0.90, 0xEF, 0x44, 0x44)]
+    public void UsagePercentToBrushConverter_Actual_UsesGreenYellowRedThresholds(
+        double progress,
+        byte red,
+        byte green,
+        byte blue)
+    {
+        var converter = UsagePercentToBrushConverter.Instance;
+        var brush = Assert.IsType<SolidColorBrush>(
+            converter.Convert(progress, typeof(Brush), null, CultureInfo.InvariantCulture));
+
+        Assert.Equal(Color.FromRgb(red, green, blue), brush.Color);
+    }
+
+    [Theory]
+    [InlineData(0.69, 0x86, 0xEF, 0xAC)]
+    [InlineData(0.70, 0xFA, 0xCC, 0x15)]
+    [InlineData(0.90, 0xF8, 0x71, 0x71)]
+    public void UsagePercentToBrushConverter_Projected_UsesLighterGreenYellowRedThresholds(
+        double progress,
+        byte red,
+        byte green,
+        byte blue)
+    {
+        var converter = UsagePercentToBrushConverter.Instance;
+        var brush = Assert.IsType<SolidColorBrush>(
+            converter.Convert(progress, typeof(Brush), "Projected", CultureInfo.InvariantCulture));
+
+        Assert.Equal(Color.FromRgb(red, green, blue), brush.Color);
+    }
+
+    [Fact]
+    public void UsagePercentToBrushConverter_BrushIsFrozen()
+    {
+        var converter = UsagePercentToBrushConverter.Instance;
+        var brush = Assert.IsType<SolidColorBrush>(
+            converter.Convert(0.5d, typeof(Brush), null, CultureInfo.InvariantCulture));
+
+        Assert.True(brush.IsFrozen);
+    }
+
+    [Fact]
+    public void UsagePercentToBrushConverter_ConvertBack_Throws()
+    {
+        var converter = UsagePercentToBrushConverter.Instance;
+
+        Assert.Throws<NotSupportedException>(() =>
+            converter.ConvertBack(Brushes.Red, typeof(double), null, CultureInfo.InvariantCulture));
+    }
 }

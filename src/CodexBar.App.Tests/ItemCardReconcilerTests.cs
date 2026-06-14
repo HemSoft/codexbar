@@ -1046,6 +1046,48 @@ public sealed class ItemCardReconcilerTests
     }
 
     [Fact]
+    public void Reconcile_MultiBarWithSameBarProjection_SetsProjectedPercentWithoutReplacingActual()
+    {
+        var now = DateTimeOffset.UtcNow;
+
+        this._sut.Reconcile(ProviderId.Codex, "codex:", new ProviderUsageResult
+        {
+            Provider = ProviderId.Codex,
+            Success = true,
+            Items =
+            [
+                new UsageItem
+                {
+                    Key = "codex:chatgpt",
+                    DisplayName = "ChatGPT / Codex (Pro)",
+                    Success = true,
+                    Bars =
+                    [
+                        new UsageBar
+                        {
+                            Label = "5 hour usage limit",
+                            UsedPercent = 0.5,
+                            ResetDescription = "Resets 3h",
+                            ProjectionCurrent = 0.5m,
+                            ProjectionLimit = 1m,
+                            ProjectionPeriodStart = now.AddHours(-2),
+                            ProjectionPeriodEnd = now.AddHours(3),
+                            ShowProjectionOnCurrentBar = true,
+                        },
+                    ],
+                },
+            ],
+        });
+
+        var bar = this._providers[0].Bars[0];
+        Assert.Equal(0.5, bar.UsedPercent, 3);
+        Assert.Equal(1.0, bar.ProjectedPercent);
+        Assert.True(bar.ShowProjectedUsage);
+        Assert.True(bar.ShowProjectionOnCurrentBar);
+        Assert.NotNull(bar.ProjectionDescription);
+    }
+
+    [Fact]
     public void Reconcile_OverageToNoOverage_ClearsSpending()
     {
         this._sut.Reconcile(ProviderId.Copilot, "copilot:", new ProviderUsageResult

@@ -54,6 +54,35 @@ public sealed class UsageBarViewModelTests
     }
 
     [Fact]
+    public void ProjectedPercent_Default_IsZero()
+    {
+        var vm = new UsageBarViewModel();
+        Assert.Equal(0, vm.ProjectedPercent);
+    }
+
+    [Fact]
+    public void ProjectedPercent_WhenAboveUsed_ShowsProjectedUsage()
+    {
+        var vm = new UsageBarViewModel { UsedPercent = 0.5 };
+
+        vm.ProjectedPercent = 1.0;
+
+        Assert.True(vm.ShowProjectedUsage);
+    }
+
+    [Fact]
+    public void ProjectedPercent_Set_RaisesShowProjectedUsageChanged()
+    {
+        var vm = new UsageBarViewModel { UsedPercent = 0.5 };
+        var raised = AssertPropertyChanged(
+            vm,
+            nameof(UsageBarViewModel.ShowProjectedUsage),
+            () => vm.ProjectedPercent = 0.9);
+
+        Assert.True(raised);
+    }
+
+    [Fact]
     public void ResetDescription_Default_IsNull()
     {
         var vm = new UsageBarViewModel();
@@ -164,6 +193,49 @@ public sealed class UsageBarViewModelTests
         Assert.Equal("Month end est. · 300 / 100", vm.Label);
         Assert.Equal(1.0, vm.UsedPercent);
         Assert.Equal("Limit reached", vm.ResetDescription);
+    }
+
+    [Fact]
+    public void UpdateProjection_WhenShownOnCurrentBar_PreservesActualAndSetsProjection()
+    {
+        var bar = new UsageBarViewModel
+        {
+            Label = "5 hour usage limit",
+            UsedPercent = 0.5,
+            ResetDescription = "Resets 2h 30m",
+            ProjectionCurrent = 0.5m,
+            ProjectionLimit = 1m,
+            ProjectionPeriodStart = new DateTimeOffset(2026, 6, 1, 0, 0, 0, TimeSpan.Zero),
+            ProjectionPeriodEnd = new DateTimeOffset(2026, 6, 1, 5, 0, 0, TimeSpan.Zero),
+            ShowProjectionOnCurrentBar = true,
+        };
+
+        bar.UpdateProjection(new DateTimeOffset(2026, 6, 1, 2, 30, 0, TimeSpan.Zero));
+
+        Assert.Equal("5 hour usage limit", bar.Label);
+        Assert.Equal(0.5, bar.UsedPercent, 3);
+        Assert.Equal(1.0, bar.ProjectedPercent);
+        Assert.True(bar.ShowProjectedUsage);
+        Assert.Equal("Resets 2h 30m", bar.ResetDescription);
+        Assert.StartsWith("Projected 100% at current pace · Limit hit", bar.ProjectionDescription);
+    }
+
+    [Fact]
+    public void UpdateProjection_WhenProjectionDataMissing_ClearsProjectionOverlay()
+    {
+        var bar = new UsageBarViewModel
+        {
+            UsedPercent = 0.5,
+            ProjectedPercent = 1.0,
+            ProjectionDescription = "Projected 100%",
+            ShowProjectionOnCurrentBar = true,
+        };
+
+        bar.UpdateProjection(new DateTimeOffset(2026, 6, 1, 2, 30, 0, TimeSpan.Zero));
+
+        Assert.Equal(0, bar.ProjectedPercent);
+        Assert.Null(bar.ProjectionDescription);
+        Assert.False(bar.ShowProjectedUsage);
     }
 
     [Fact]
