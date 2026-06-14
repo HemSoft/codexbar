@@ -532,14 +532,14 @@ public sealed class UsageBarViewModel : INotifyPropertyChanged
         }
     }
 
-    private double projectedPercent;
+    private double _projectedPercent;
 
     public double ProjectedPercent
     {
-        get => this.projectedPercent;
+        get => this._projectedPercent;
         set
         {
-            if (this.SetField(ref this.projectedPercent, value))
+            if (this.SetField(ref this._projectedPercent, value))
             {
                 this.PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(this.ShowProjectedUsage)));
             }
@@ -548,12 +548,12 @@ public sealed class UsageBarViewModel : INotifyPropertyChanged
 
     public bool ShowProjectedUsage => this.ProjectedPercent > this.UsedPercent;
 
-    private string? projectionDescription;
+    private string? _projectionDescription;
 
     public string? ProjectionDescription
     {
-        get => this.projectionDescription;
-        set => this.SetField(ref this.projectionDescription, value);
+        get => this._projectionDescription;
+        set => this.SetField(ref this._projectionDescription, value);
     }
 
     private string? resetDescription;
@@ -596,12 +596,12 @@ public sealed class UsageBarViewModel : INotifyPropertyChanged
         set => this.SetField(ref this.projectionPeriodEnd, value);
     }
 
-    private bool showProjectionOnCurrentBar;
+    private bool _showProjectionOnCurrentBar;
 
     public bool ShowProjectionOnCurrentBar
     {
-        get => this.showProjectionOnCurrentBar;
-        set => this.SetField(ref this.showProjectionOnCurrentBar, value);
+        get => this._showProjectionOnCurrentBar;
+        set => this.SetField(ref this._showProjectionOnCurrentBar, value);
     }
 
     private bool isHighUsage;
