@@ -43,6 +43,12 @@ public sealed partial class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttp
     /// <summary>Gets or sets an override for the environment access token (test hook).</summary>
     internal static string? EnvironmentAccessTokenOverride { get; set; }
 
+    internal static Func<string, string?> EnvironmentVariableProvider { get; set; } =
+        Environment.GetEnvironmentVariable;
+
+    internal static Func<string, EnvironmentVariableTarget, string?> TargetEnvironmentVariableProvider { get; set; } =
+        Environment.GetEnvironmentVariable;
+
     private static string CredentialsPath => CredentialsPathOverride ?? _defaultCredentialsPath;
 
     private static string StatsCachePath => StatsCachePathOverride ?? _defaultStatsCachePath;
@@ -137,12 +143,6 @@ public sealed partial class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttp
             }
 
             credentials = await this.EnsureTokenFreshAsync(credentials, ct);
-            if (credentials is null)
-            {
-                return ProviderUsageResult.Failure(
-                    ProviderId.Claude,
-                    "Claude login expired and could not be refreshed. Run 'claude' in terminal and sign in again.");
-            }
 
             var accountInfo = this.ReadAccountInfo();
             var stats = this.ReadStatsCache();
@@ -211,7 +211,7 @@ public sealed partial class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttp
         return $"Claude credentials file exists but could not be read or is corrupted ({CredentialsPath}). Delete the file and run 'claude auth login' to re-authenticate.";
     }
 
-    private async Task<ClaudeCredentials?> EnsureTokenFreshAsync(ClaudeCredentials credentials, CancellationToken ct)
+    private async Task<ClaudeCredentials> EnsureTokenFreshAsync(ClaudeCredentials credentials, CancellationToken ct)
     {
         if (credentials.ExpiresAt <= 0)
         {
@@ -698,7 +698,7 @@ public sealed partial class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttp
         return request;
     }
 
-    private UnifiedRateLimits? CacheAndReturnLimits(UnifiedRateLimits? result, HttpResponseHeaders responseHeaders)
+    internal UnifiedRateLimits? CacheAndReturnLimits(UnifiedRateLimits? result, HttpResponseHeaders responseHeaders)
     {
         if (result is not null)
         {
@@ -726,7 +726,7 @@ public sealed partial class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttp
         return result ?? this.GetFallbackCachedLimits();
     }
 
-    private UnifiedRateLimits? CacheAndReturnUsageLimits(UnifiedRateLimits? result)
+    internal UnifiedRateLimits? CacheAndReturnUsageLimits(UnifiedRateLimits? result)
     {
         if (result is null)
         {
@@ -1085,10 +1085,10 @@ public sealed partial class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttp
             return null;
         }
 
-        accessToken = Environment.GetEnvironmentVariable("CLAUDE_CODE_OAUTH_TOKEN");
+        accessToken = EnvironmentVariableProvider("CLAUDE_CODE_OAUTH_TOKEN");
         if (string.IsNullOrWhiteSpace(accessToken))
         {
-            accessToken = Environment.GetEnvironmentVariable("CLAUDE_CODE_OAUTH_TOKEN", EnvironmentVariableTarget.User);
+            accessToken = TargetEnvironmentVariableProvider("CLAUDE_CODE_OAUTH_TOKEN", EnvironmentVariableTarget.User);
         }
 
         if (string.IsNullOrWhiteSpace(accessToken))

@@ -39,13 +39,13 @@ public sealed partial class ClaudeProvider
 
     internal static string? ClaudeDesktopCookieHeaderOverride { get; set; }
 
-    private static string ClaudeDesktopLocalStatePath =>
+    internal static string ClaudeDesktopLocalStatePath =>
         ClaudeDesktopLocalStatePathOverride ?? _defaultClaudeDesktopLocalStatePath;
 
-    private static string ClaudeDesktopCookiesPath =>
+    internal static string ClaudeDesktopCookiesPath =>
         ClaudeDesktopCookiesPathOverride ?? _defaultClaudeDesktopCookiesPath;
 
-    private static string ClaudeDesktopConfigPath =>
+    internal static string ClaudeDesktopConfigPath =>
         ClaudeDesktopConfigPathOverride ?? _defaultClaudeDesktopConfigPath;
 
     private ClaudeCredentials? ReadClaudeDesktopTokenCacheCredentials()
