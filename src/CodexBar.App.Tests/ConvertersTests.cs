@@ -322,6 +322,16 @@ public sealed class ConvertersTests
     }
 
     [Fact]
+    public void UsagePercentToBrushConverter_NullProgress_UsesZero()
+    {
+        var converter = UsagePercentToBrushConverter.Instance;
+        var brush = Assert.IsType<SolidColorBrush>(
+            converter.Convert(null, typeof(Brush), null, CultureInfo.InvariantCulture));
+
+        Assert.Equal(Color.FromRgb(0x22, 0xC5, 0x5E), brush.Color);
+    }
+
+    [Fact]
     public void UsagePercentToBrushConverter_BrushIsFrozen()
     {
         var converter = UsagePercentToBrushConverter.Instance;

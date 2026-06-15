@@ -6,6 +6,7 @@ using System.Globalization;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Text.Json;
+using System.Threading;
 using CodexBar.Core.Configuration;
 using CodexBar.Core.Models;
 using Microsoft.Extensions.Logging;
@@ -18,7 +19,28 @@ public sealed class CodexProvider : IUsageProvider
 {
     private const string UsageEndpoint = "https://chatgpt.com/backend-api/wham/usage";
     private static readonly TimeSpan CacheTtl = TimeSpan.FromSeconds(90);
-    private static readonly TimeZoneInfo EasternTimeZone = ResolveEasternTimeZone();
+    private static readonly AsyncLocal<Func<string, TimeZoneInfo?>?> TimeZoneResolverOverride = new();
+    private static readonly AsyncLocal<TimeZoneInfo?> LocalTimeZoneOverride = new();
+
+    internal static Func<string, TimeZoneInfo?> TimeZoneResolver
+    {
+        get => TimeZoneResolverOverride.Value ?? FindTimeZoneById;
+        set => TimeZoneResolverOverride.Value = value;
+    }
+
+    internal static TimeZoneInfo LocalTimeZone
+    {
+        get => LocalTimeZoneOverride.Value ?? TimeZoneInfo.Local;
+        set => LocalTimeZoneOverride.Value = value;
+    }
+
+    internal static void ResetTimeZoneResolverForTests()
+    {
+        TimeZoneResolverOverride.Value = null;
+        LocalTimeZoneOverride.Value = null;
+    }
+
+    private static TimeZoneInfo EasternTimeZone => ResolveEasternTimeZone();
 
     private readonly ILogger<CodexProvider> _logger;
     private readonly IHttpClientFactory _httpClientFactory;
@@ -220,27 +242,32 @@ public sealed class CodexProvider : IUsageProvider
         return $"{eastern.ToString(timeFormat, CultureInfo.InvariantCulture)} {GetEasternTimeZoneAbbreviation(eastern)}";
     }
 
-    private static string GetEasternTimeZoneAbbreviation(DateTimeOffset easternTime) => easternTime.Offset switch
+    internal static string GetEasternTimeZoneAbbreviation(DateTimeOffset easternTime) => easternTime.Offset switch
     {
         { Hours: -4 } => "EDT",
         { Hours: -5 } => "EST",
         _ => "ET",
     };
 
-    private static TimeZoneInfo ResolveEasternTimeZone()
+    internal static TimeZoneInfo ResolveEasternTimeZone()
     {
-        if (TimeZoneInfo.TryFindSystemTimeZoneById("Eastern Standard Time", out var windowsEasternTimeZone))
+        if (TimeZoneResolver("Eastern Standard Time") is { } windowsEasternTimeZone)
         {
             return windowsEasternTimeZone;
         }
 
-        if (TimeZoneInfo.TryFindSystemTimeZoneById("America/New_York", out var ianaEasternTimeZone))
+        if (TimeZoneResolver("America/New_York") is { } ianaEasternTimeZone)
         {
             return ianaEasternTimeZone;
         }
 
-        return TimeZoneInfo.Local;
+        return LocalTimeZone;
     }
+
+    private static TimeZoneInfo? FindTimeZoneById(string id) =>
+        TimeZoneInfo.TryFindSystemTimeZoneById(id, out var timeZone)
+            ? timeZone
+            : null;
 
     private static void AddWindow(JsonElement rateLimit, string propertyName, List<WindowData> windows)
     {

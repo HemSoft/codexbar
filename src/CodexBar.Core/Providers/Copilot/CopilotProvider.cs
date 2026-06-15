@@ -248,11 +248,6 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
         var enterprise = NormalizeCopilotSetting(appSettings.CopilotEnterprise, defaults.CopilotEnterprise);
         var organization = NormalizeCopilotSetting(appSettings.CopilotOrganization, defaults.CopilotOrganization);
 
-        if (string.IsNullOrWhiteSpace(enterprise) || string.IsNullOrWhiteSpace(organization))
-        {
-            return null;
-        }
-
         foreach (var (username, result) in accountResults)
         {
             if (IsBillingEligibleAccount(result, organization))
@@ -261,7 +256,7 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
                 return new CopilotBillingConfiguration(
                     enterprise,
                     organization,
-                    appSettings.CopilotPoolTotal is > 0 ? appSettings.CopilotPoolTotal : null,
+                    NormalizeCopilotPoolTotalOverride(appSettings.CopilotPoolTotal),
                     username,
                     now.Year,
                     now.Month,
@@ -431,10 +426,13 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
         return request;
     }
 
-    private static string NormalizeCopilotSetting(string? value, string fallbackValue) =>
+    internal static string NormalizeCopilotSetting(string? value, string fallbackValue) =>
         string.IsNullOrWhiteSpace(value) ? fallbackValue : value.Trim();
 
-    private static decimal SumGrossQuantity(IEnumerable<BillingUsageItem>? usageItems) =>
+    internal static decimal? NormalizeCopilotPoolTotalOverride(decimal? poolTotal) =>
+        poolTotal is > 0 ? poolTotal : null;
+
+    internal static decimal SumGrossQuantity(IEnumerable<BillingUsageItem>? usageItems) =>
         (usageItems ?? []).Sum(item => item.GrossQuantity);
 
     internal static decimal ProjectMonthEndCredits(decimal consumed, int year, int month, DateTimeOffset now)
@@ -460,10 +458,10 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
 
         var elapsed = (decimal)(now - periodStart).TotalSeconds;
         var total = (decimal)(periodEnd - periodStart).TotalSeconds;
-        return elapsed <= 0 ? consumed : consumed * total / elapsed;
+        return consumed * total / elapsed;
     }
 
-    private static IReadOnlyList<UsageBar>? BuildOrgUsageBars(
+    internal static IReadOnlyList<UsageBar>? BuildOrgUsageBars(
         decimal consumed,
         decimal? poolTotal,
         decimal projectedMonthEnd,
@@ -499,7 +497,7 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
         ];
     }
 
-    private static IReadOnlyList<UsageBar> BuildUserUsageBars(
+    internal static IReadOnlyList<UsageBar> BuildUserUsageBars(
         decimal consumed,
         decimal perSeat,
         decimal projectedMonthEnd,
@@ -545,7 +543,7 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
         return bars;
     }
 
-    private static IReadOnlyList<UsageBar> BuildUsageCategoryBars(decimal consumed, IReadOnlyList<BillingUsageItem> usageItems)
+    internal static IReadOnlyList<UsageBar> BuildUsageCategoryBars(decimal consumed, IReadOnlyList<BillingUsageItem> usageItems)
     {
         if (consumed <= 0 || usageItems.Count == 0)
         {
@@ -573,10 +571,10 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
             .ToArray();
     }
 
-    private static bool IsCopilotPrReviewUsage(BillingUsageItem item) =>
+    internal static bool IsCopilotPrReviewUsage(BillingUsageItem item) =>
         item.Model?.Contains("Code Review", StringComparison.OrdinalIgnoreCase) == true;
 
-    private static UsageSnapshot BuildMonthlyUsageSnapshot(decimal used, decimal? total, string usageLabel, int year, int month)
+    internal static UsageSnapshot BuildMonthlyUsageSnapshot(decimal used, decimal? total, string usageLabel, int year, int month)
     {
         var resetAt = ComputeBillingResetAt(year, month);
         var (resetsAt, resetDescription) = ParseReset(resetAt.ToString("O"));
@@ -598,7 +596,7 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
     private static DateTimeOffset ComputeBillingResetAt(int year, int month) =>
         ComputeBillingPeriodStart(year, month).AddMonths(1);
 
-    private static int GetCreditsPerSeat(int year, int month) =>
+    internal static int GetCreditsPerSeat(int year, int month) =>
         year == 2026 && month is >= 6 and <= 8 ? PromotionalCreditsPerSeat : StandardCreditsPerSeat;
 
     private sealed record BillingBuildResult(List<UsageItem> Items, UsageSnapshot? SessionUsage);
