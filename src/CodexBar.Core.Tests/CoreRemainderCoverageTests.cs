@@ -661,8 +661,7 @@ public sealed class ClaudeProviderRemainderCoverageTests : IDisposable
         ClaudeProvider.StatsCachePathOverride = null;
         ClaudeProvider.ClaudeJsonPathOverride = null;
         ClaudeProvider.EnvironmentAccessTokenOverride = null;
-        ClaudeProvider.EnvironmentVariableProvider = Environment.GetEnvironmentVariable;
-        ClaudeProvider.TargetEnvironmentVariableProvider = Environment.GetEnvironmentVariable;
+        ClaudeProvider.ResetEnvironmentProvidersForTests();
         ClaudeProvider.ClaudeDesktopLocalStatePathOverride = null;
         ClaudeProvider.ClaudeDesktopCookiesPathOverride = null;
         ClaudeProvider.ClaudeDesktopConfigPathOverride = null;
@@ -1448,8 +1447,7 @@ public sealed class ClaudeProviderRemainderCoverageTests : IDisposable
         ClaudeProvider.StatsCachePathOverride = this._statsPath;
         ClaudeProvider.ClaudeJsonPathOverride = this._claudeJsonPath;
         ClaudeProvider.EnvironmentAccessTokenOverride = null;
-        ClaudeProvider.EnvironmentVariableProvider = _ => null;
-        ClaudeProvider.TargetEnvironmentVariableProvider = (_, _) => null;
+        ClaudeProvider.ResetEnvironmentProvidersForTests();
         ClaudeProvider.ClaudeDesktopLocalStatePathOverride = null;
         ClaudeProvider.ClaudeDesktopCookiesPathOverride = null;
         ClaudeProvider.ClaudeDesktopConfigPathOverride = null;

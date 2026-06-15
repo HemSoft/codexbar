@@ -49,6 +49,12 @@ public sealed partial class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttp
     internal static Func<string, EnvironmentVariableTarget, string?> TargetEnvironmentVariableProvider { get; set; } =
         Environment.GetEnvironmentVariable;
 
+    internal static void ResetEnvironmentProvidersForTests()
+    {
+        EnvironmentVariableProvider = Environment.GetEnvironmentVariable;
+        TargetEnvironmentVariableProvider = Environment.GetEnvironmentVariable;
+    }
+
     private static string CredentialsPath => CredentialsPathOverride ?? _defaultCredentialsPath;
 
     private static string StatsCachePath => StatsCachePathOverride ?? _defaultStatsCachePath;
