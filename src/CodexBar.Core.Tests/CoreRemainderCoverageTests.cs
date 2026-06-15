@@ -75,6 +75,16 @@ public sealed class CodexProviderRemainderCoverageTests : IDisposable
     }
 
     [Fact]
+    public void ResetTimeZoneResolverForTests_LocalTimeZoneOverrideSet_RestoresSystemLocal()
+    {
+        CodexProvider.LocalTimeZone = TimeZoneInfo.CreateCustomTimeZone("LocalTest", TimeSpan.FromHours(2), "Local", "Local");
+
+        CodexProvider.ResetTimeZoneResolverForTests();
+
+        Assert.Same(TimeZoneInfo.Local, CodexProvider.LocalTimeZone);
+    }
+
+    [Fact]
     public void DefaultTimeZoneResolver_MissingId_ReturnsNull()
     {
         var result = CodexProvider.TimeZoneResolver($"missing-zone-{Guid.NewGuid():N}");

@@ -6,6 +6,7 @@ using System.Globalization;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Text.Json;
+using System.Threading;
 using CodexBar.Core.Configuration;
 using CodexBar.Core.Models;
 using Microsoft.Extensions.Logging;
@@ -18,15 +19,25 @@ public sealed class CodexProvider : IUsageProvider
 {
     private const string UsageEndpoint = "https://chatgpt.com/backend-api/wham/usage";
     private static readonly TimeSpan CacheTtl = TimeSpan.FromSeconds(90);
+    private static readonly AsyncLocal<Func<string, TimeZoneInfo?>?> TimeZoneResolverOverride = new();
+    private static readonly AsyncLocal<TimeZoneInfo?> LocalTimeZoneOverride = new();
 
-    internal static Func<string, TimeZoneInfo?> TimeZoneResolver { get; set; } = FindTimeZoneById;
+    internal static Func<string, TimeZoneInfo?> TimeZoneResolver
+    {
+        get => TimeZoneResolverOverride.Value ?? FindTimeZoneById;
+        set => TimeZoneResolverOverride.Value = value;
+    }
 
-    internal static TimeZoneInfo LocalTimeZone { get; set; } = TimeZoneInfo.Local;
+    internal static TimeZoneInfo LocalTimeZone
+    {
+        get => LocalTimeZoneOverride.Value ?? TimeZoneInfo.Local;
+        set => LocalTimeZoneOverride.Value = value;
+    }
 
     internal static void ResetTimeZoneResolverForTests()
     {
-        TimeZoneResolver = FindTimeZoneById;
-        LocalTimeZone = TimeZoneInfo.Local;
+        TimeZoneResolverOverride.Value = null;
+        LocalTimeZoneOverride.Value = null;
     }
 
     private static TimeZoneInfo EasternTimeZone => ResolveEasternTimeZone();
