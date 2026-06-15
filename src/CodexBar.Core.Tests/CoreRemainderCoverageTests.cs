@@ -75,6 +75,41 @@ public sealed class CodexProviderRemainderCoverageTests : IDisposable
     }
 
     [Fact]
+    public async Task TimeZoneOverrides_SetInParallelAsyncContext_DoNotAffectSiblingContext()
+    {
+        var local = TimeZoneInfo.CreateCustomTimeZone("LocalTest", TimeSpan.FromHours(2), "Local", "Local");
+        var overrideSet = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseOverride = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var overrideTask = Task.Run(async () =>
+        {
+            CodexProvider.TimeZoneResolver = _ => null;
+            CodexProvider.LocalTimeZone = local;
+            overrideSet.SetResult();
+
+            await releaseOverride.Task;
+
+            return CodexProvider.ResolveEasternTimeZone();
+        });
+
+        await overrideSet.Task;
+        TimeZoneInfo siblingTimeZone;
+        try
+        {
+            siblingTimeZone = await Task.Run(CodexProvider.ResolveEasternTimeZone);
+        }
+        finally
+        {
+            releaseOverride.SetResult();
+        }
+
+        var overrideTimeZone = await overrideTask;
+
+        Assert.Same(local, overrideTimeZone);
+        Assert.NotSame(local, siblingTimeZone);
+        Assert.NotEqual(local.Id, siblingTimeZone.Id);
+    }
+
+    [Fact]
     public void ResetTimeZoneResolverForTests_LocalTimeZoneOverrideSet_RestoresSystemLocal()
     {
         CodexProvider.LocalTimeZone = TimeZoneInfo.CreateCustomTimeZone("LocalTest", TimeSpan.FromHours(2), "Local", "Local");
