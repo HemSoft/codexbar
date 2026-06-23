@@ -29,7 +29,7 @@ public partial class MainWindow : Window
     private const uint SWPNOSIZE = 0x0001;
     private const uint SWPNOZORDER = 0x0004;
     private const uint SWPNOACTIVATE = 0x0010;
-    private const double WorkAreaEdgePadding = 16;
+    internal const double WorkAreaEdgePadding = 4;
 
     [DllImport("user32.dll")]
     private static extern IntPtr LoadCursor(IntPtr hInstance, IntPtr lpCursorName);
@@ -743,7 +743,8 @@ public partial class MainWindow : Window
         {
             Owner = this,
         };
-        var viewModel = new ProviderConfigurationViewModel(this.settings, this.providers, window.Close);
+        var currentProviderCards = (this.DataContext as MainViewModel)?.Providers;
+        var viewModel = new ProviderConfigurationViewModel(this.settings, this.providers, window.Close, currentProviderCards);
         viewModel.Saved += async (_, _) =>
         {
             if (this.DataContext is MainViewModel mainViewModel)

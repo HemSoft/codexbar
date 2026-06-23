@@ -43,6 +43,12 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
     private const string GitHubRestUserAgent = "CodexBar/1.0";
     private const int PromotionalCreditsPerSeat = 7000;
     private const int StandardCreditsPerSeat = 3900;
+    private const int FhemmerreliasMonthlyCredits = 250000;
+
+    private static readonly Dictionary<string, int> SpecialMonthlyCreditsByUser = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["fhemmerrelias"] = FhemmerreliasMonthlyCredits,
+    };
 
     [ExcludeFromCodeCoverage]
     private static string GetConfiguredValue(string environmentVariableName, string fallbackValue)
@@ -320,16 +326,10 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
 
         var periodStart = ComputeBillingPeriodStart(configuration.Year, configuration.Month);
         var periodEnd = periodStart.AddMonths(1);
-        var consumed = SumGrossQuantity(response.UsageItems);
-        decimal perSeat = configuration.CreditsPerSeat;
+        var billingConsumed = SumGrossQuantity(response.UsageItems);
+        var (consumed, total, primary) = BuildUserPrimaryUsage(configuration, username, billingConsumed);
         var projectedMonthEnd = ProjectMonthEndCredits(consumed, periodStart, periodEnd, DateTimeOffset.UtcNow);
-        var primary = BuildMonthlyUsageSnapshot(
-            consumed,
-            perSeat,
-            $"{consumed:N0} / {perSeat:N0} AI credits",
-            configuration.Year,
-            configuration.Month);
-        var bars = BuildUserUsageBars(consumed, perSeat, projectedMonthEnd, primary, periodStart, periodEnd, response.UsageItems, orgConsumed);
+        var bars = BuildUserUsageBars(consumed, total, projectedMonthEnd, primary, periodStart, periodEnd, billingConsumed, orgConsumed);
 
         return new UsageItem
         {
@@ -497,82 +497,65 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
         ];
     }
 
+    private static (decimal Consumed, decimal Total, UsageSnapshot PrimaryUsage) BuildUserPrimaryUsage(
+        CopilotBillingConfiguration configuration,
+        string username,
+        decimal billingConsumed)
+    {
+        var perSeat = GetMonthlyAICreditAllowance(username, configuration.CreditsPerSeat);
+        return (billingConsumed,
+            perSeat,
+            BuildMonthlyUsageSnapshot(
+                billingConsumed,
+                perSeat,
+                $"{billingConsumed:N0} / {perSeat:N0} AI credits",
+                configuration.Year,
+                configuration.Month));
+    }
+
     internal static IReadOnlyList<UsageBar> BuildUserUsageBars(
         decimal consumed,
-        decimal perSeat,
+        decimal total,
         decimal projectedMonthEnd,
         UsageSnapshot primaryUsage,
         DateTimeOffset periodStart,
         DateTimeOffset periodEnd,
-        IReadOnlyList<BillingUsageItem> usageItems,
+        decimal billingConsumed,
         decimal? orgConsumed)
     {
         var bars = new List<UsageBar>
         {
             new()
             {
-                Label = $"Personal · {consumed:N0} / {perSeat:N0}",
+                Label = $"Current · {consumed:N0} / {total:N0}",
                 UsedPercent = primaryUsage.UsedPercent,
                 ResetDescription = primaryUsage.ResetDescription,
                 ResetsAt = primaryUsage.ResetsAt,
             },
             new()
             {
-                Label = $"Month end est. · {projectedMonthEnd:N0} / {perSeat:N0}",
-                UsedPercent = Math.Clamp((double)(projectedMonthEnd / perSeat), 0.0, 1.0),
+                Label = $"Month end est. · {projectedMonthEnd:N0} / {total:N0}",
+                UsedPercent = Math.Clamp((double)(projectedMonthEnd / total), 0.0, 1.0),
                 ResetDescription = primaryUsage.ResetDescription,
                 ResetsAt = primaryUsage.ResetsAt,
                 ProjectionCurrent = consumed,
-                ProjectionLimit = perSeat,
+                ProjectionLimit = total,
                 ProjectionPeriodStart = periodStart,
                 ProjectionPeriodEnd = periodEnd,
             },
         };
 
-        bars.AddRange(BuildUsageCategoryBars(consumed, usageItems));
-
         if (orgConsumed is > 0)
         {
             bars.Add(new UsageBar
             {
-                Label = $"Share of org · {consumed:N0} / {orgConsumed.Value:N0}",
-                UsedPercent = Math.Clamp((double)(consumed / orgConsumed.Value), 0.0, 1.0),
+                Label = $"Share of org · {billingConsumed:N0} / {orgConsumed.Value:N0}",
+                UsedPercent = Math.Clamp((double)(billingConsumed / orgConsumed.Value), 0.0, 1.0),
             });
         }
 
         return bars;
     }
-
-    internal static IReadOnlyList<UsageBar> BuildUsageCategoryBars(decimal consumed, IReadOnlyList<BillingUsageItem> usageItems)
-    {
-        if (consumed <= 0 || usageItems.Count == 0)
-        {
-            return [];
-        }
-
-        var prReviewCredits = usageItems
-            .Where(IsCopilotPrReviewUsage)
-            .Sum(item => item.GrossQuantity);
-        var otherCredits = usageItems
-            .Where(item => !IsCopilotPrReviewUsage(item))
-            .Sum(item => item.GrossQuantity);
-
-        return new[]
-            {
-                new { Label = "Copilot PR Review", Credits = prReviewCredits },
-                new { Label = "Other models", Credits = otherCredits },
-            }
-            .Where(group => group.Credits > 0)
-            .Select(group => new UsageBar
-            {
-                Label = $"{group.Label} · {group.Credits:N1}",
-                UsedPercent = Math.Clamp((double)(group.Credits / consumed), 0.0, 1.0),
-            })
-            .ToArray();
-    }
-
-    internal static bool IsCopilotPrReviewUsage(BillingUsageItem item) =>
-        item.Model?.Contains("Code Review", StringComparison.OrdinalIgnoreCase) == true;
 
     internal static UsageSnapshot BuildMonthlyUsageSnapshot(decimal used, decimal? total, string usageLabel, int year, int month)
     {
@@ -598,6 +581,11 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
 
     internal static int GetCreditsPerSeat(int year, int month) =>
         year == 2026 && month is >= 6 and <= 8 ? PromotionalCreditsPerSeat : StandardCreditsPerSeat;
+
+    internal static int GetMonthlyAICreditAllowance(string username, int defaultMonthlyAllowance) =>
+        SpecialMonthlyCreditsByUser.TryGetValue(username, out var specialMonthlyCredits)
+            ? specialMonthlyCredits
+            : defaultMonthlyAllowance;
 
     private sealed record BillingBuildResult(List<UsageItem> Items, UsageSnapshot? SessionUsage);
 
@@ -685,7 +673,7 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
         try
         {
             using var process = this.GhStatusProcessOverride?.Invoke() ?? StartGhAuthStatusProcess();
-            var (exitCode, stderr, _) = await WaitForGhProcessAsync(process, this.DiscoveryTimeoutOverride ?? TimeSpan.FromSeconds(10), ct);
+            var (exitCode, stderr, stdout) = await WaitForGhProcessAsync(process, this.DiscoveryTimeoutOverride ?? TimeSpan.FromSeconds(10), ct);
             if (exitCode is null)
             {
                 this._lastDiscoveryError = "GitHub CLI (gh) timed out. Ensure 'gh' is responsive.";
@@ -699,7 +687,7 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
                 return accounts;
             }
 
-            accounts = ExtractUsernamesFromGhStatus(stderr);
+            accounts = ExtractUsernamesFromGhStatus(string.Join('\n', stdout, stderr));
             this._logger.LogDebug("Discovered {Count} gh CLI accounts: {Accounts}", accounts.Count, string.Join(", ", accounts));
         }
         catch (OperationCanceledException)
@@ -1072,7 +1060,7 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
             };
         }
 
-        var premium = result.PremiumInteractions;
+        var premium = ApplySpecialMonthlyCredits(username, result.PremiumInteractions);
         UsageSnapshot? primaryUsage = null;
         UsageSnapshot? secondaryUsage = null;
         decimal? overageCost = null;
@@ -1206,5 +1194,28 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
         var overageByCount = Math.Max(0, premium.OverageCount);
         var overageByRemaining = Math.Max(0, -premium.Remaining);
         return Math.Max(overageByCount, overageByRemaining);
+    }
+
+    internal static CopilotQuotaSnapshot? ApplySpecialMonthlyCredits(string username, CopilotQuotaSnapshot? quota)
+    {
+        if (quota is null || !SpecialMonthlyCreditsByUser.TryGetValue(username, out var specialMonthlyCredits))
+        {
+            return quota;
+        }
+
+        var used = Math.Max(0, quota.Entitlement - quota.Remaining);
+        var remaining = specialMonthlyCredits - used;
+
+        return new CopilotQuotaSnapshot
+        {
+            Entitlement = specialMonthlyCredits,
+            Remaining = remaining,
+            OverageCount = Math.Max(0, -remaining),
+            OveragePermitted = quota.OveragePermitted,
+            PercentRemaining = specialMonthlyCredits > 0 ? Math.Max(0, remaining) / (double)specialMonthlyCredits : 0,
+            Unlimited = quota.Unlimited,
+            QuotaId = quota.QuotaId,
+            TimestampUtc = quota.TimestampUtc,
+        };
     }
 }

@@ -31,6 +31,13 @@ public sealed class AppSettings
     public List<string> CopilotAccounts { get; set; } = [];
 
     /// <summary>
+    /// Gets or sets GitHub usernames the configuration UI should keep offering for account toggles.
+    /// This does not control fetching; <see cref="CopilotAccounts"/> remains the allow-list.
+    /// </summary>
+    [JsonPropertyName("copilotKnownAccounts")]
+    public List<string> CopilotKnownAccounts { get; set; } = [];
+
+    /// <summary>
     /// Gets or sets the GitHub enterprise slug used for Copilot billing lookups.
     /// </summary>
     [JsonPropertyName("copilotEnterprise")]

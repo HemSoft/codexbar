@@ -248,7 +248,7 @@ public class CopilotProviderTests
     }
 
     [Fact]
-    public async Task FetchUsageAsync_WhenUserBillingAvailable_AddsPersonalProjectionBar()
+    public async Task FetchUsageAsync_WhenUserBillingAvailable_AddsCurrentProjectionBar()
     {
         var settings = Substitute.For<ISettingsService>();
         settings.IsProviderEnabled(ProviderId.Copilot).Returns(true);
@@ -325,15 +325,13 @@ public class CopilotProviderTests
         Assert.NotNull(result.Items);
         var user = Assert.Single(result.Items, item => item.Key == "copilot:alice");
         Assert.NotNull(user.Bars);
-        Assert.Equal("Personal · 55 / 7,000", user.Bars![0].Label);
+        Assert.Equal("Current · 55 / 7,000", user.Bars![0].Label);
         Assert.StartsWith("Month end est. · ", user.Bars[1].Label);
         Assert.Equal(55m, user.Bars[1].ProjectionCurrent);
         Assert.Equal(7000m, user.Bars[1].ProjectionLimit);
         Assert.Equal(new DateTimeOffset(2026, 6, 1, 0, 0, 0, TimeSpan.Zero), user.Bars[1].ProjectionPeriodStart);
         Assert.Equal(new DateTimeOffset(2026, 7, 1, 0, 0, 0, TimeSpan.Zero), user.Bars[1].ProjectionPeriodEnd);
-        Assert.Equal("Copilot PR Review · 20.0", user.Bars[2].Label);
-        Assert.Equal("Other models · 35.0", user.Bars[3].Label);
-        Assert.Equal("Share of org · 55 / 200", user.Bars[4].Label);
+        Assert.Equal("Share of org · 55 / 200", user.Bars[2].Label);
     }
 
     [Fact]

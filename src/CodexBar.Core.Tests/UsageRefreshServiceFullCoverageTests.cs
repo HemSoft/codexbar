@@ -82,7 +82,7 @@ public class UsageRefreshServiceFullCoverageTests
     }
 
     [Fact]
-    public async Task RefreshAllAsync_ProviderUnavailableFromStart_DoesNotFireEvent()
+    public async Task RefreshAllAsync_ProviderUnavailableFromStart_FiresFailureEvent()
     {
         var provider = CreateMockProvider(ProviderId.Claude, available: false);
 
@@ -95,8 +95,9 @@ public class UsageRefreshServiceFullCoverageTests
 
         await service.RefreshAllAsync();
 
-        // No event should be fired since there was no previous result to clear
-        Assert.Empty(updatedEvents);
+        Assert.Equal([ProviderId.Claude], updatedEvents);
+        Assert.Single(service.LatestResults);
+        Assert.False(service.LatestResults[ProviderId.Claude].Success);
     }
 
     [Fact]

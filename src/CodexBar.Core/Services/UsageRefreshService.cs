@@ -126,27 +126,13 @@ public sealed class UsageRefreshService(
             if (!available)
             {
                 this._logger.LogDebug("{Provider} is not available, skipping", provider.Metadata.DisplayName);
-                ProviderUsageResult? removed = null;
+                var unavailableResult = ProviderUsageResult.Failure(provider.Metadata.Id, "Provider unavailable");
                 lock (this._resultsLock)
                 {
-                    if (this._latestResults.Remove(provider.Metadata.Id, out var old))
-                    {
-                        removed = old;
-                    }
+                    this._latestResults[provider.Metadata.Id] = unavailableResult;
                 }
 
-                if (removed is not null)
-                {
-                    // State changed from available → unavailable; notify UI so it clears stale data
-                    var unavailableResult = ProviderUsageResult.Failure(provider.Metadata.Id, "Provider unavailable");
-                    lock (this._resultsLock)
-                    {
-                        this._latestResults[provider.Metadata.Id] = unavailableResult;
-                    }
-
-                    this.RaiseUsageUpdated(provider.Metadata.Id, unavailableResult);
-                }
-
+                this.RaiseUsageUpdated(provider.Metadata.Id, unavailableResult);
                 return;
             }
 

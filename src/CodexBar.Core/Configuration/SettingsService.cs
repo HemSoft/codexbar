@@ -24,7 +24,8 @@ using Microsoft.Extensions.Logging;
 public sealed class SettingsService : ISettingsService
 {
     private readonly string _settingsDir;
-    private readonly string _settingsPath;
+    private string _settingsPath;
+    private readonly string _fallbackSettingsPath;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -42,6 +43,7 @@ public sealed class SettingsService : ISettingsService
         this._logger = logger;
         this._settingsDir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codexbar");
         this._settingsPath = Path.Combine(this._settingsDir, "settings.json");
+        this._fallbackSettingsPath = Path.Combine(this._settingsDir, "codexbar-settings.json");
     }
 
     /// <summary>
@@ -53,6 +55,7 @@ public sealed class SettingsService : ISettingsService
         this._logger = logger;
         this._settingsDir = settingsDir;
         this._settingsPath = Path.Combine(this._settingsDir, "settings.json");
+        this._fallbackSettingsPath = Path.Combine(this._settingsDir, "codexbar-settings.json");
     }
 
     public AppSettings Load()
@@ -79,6 +82,7 @@ public sealed class SettingsService : ISettingsService
     /// </summary>
     private void MergeFromDisk(AppSettings settings)
     {
+        this.UseFallbackSettingsPathIfPrimaryIsMissing();
         if (!File.Exists(this._settingsPath))
         {
             return;
@@ -97,6 +101,7 @@ public sealed class SettingsService : ISettingsService
             MergeProviderCardOrder(settings, disk);
             MergeWorkspaceId(settings, disk);
             MergeCopilotBillingSettings(settings, disk);
+            MergeCopilotKnownAccounts(settings, disk);
             MergeSessionBaselines(settings, disk);
             MergeSessionResetTimes(settings, disk);
         }
@@ -173,6 +178,14 @@ public sealed class SettingsService : ISettingsService
         }
     }
 
+    private static void MergeCopilotKnownAccounts(AppSettings settings, AppSettings disk)
+    {
+        if ((settings.CopilotKnownAccounts?.Count ?? 0) == 0 && disk.CopilotKnownAccounts is { Count: > 0 })
+        {
+            settings.CopilotKnownAccounts = disk.CopilotKnownAccounts.ToList();
+        }
+    }
+
     private static bool ShouldPreserveStringSetting(string? settingsValue, string? diskValue) =>
         string.IsNullOrWhiteSpace(settingsValue) && !string.IsNullOrWhiteSpace(diskValue);
 
@@ -209,32 +222,55 @@ public sealed class SettingsService : ISettingsService
         try
         {
             var sanitized = SanitizeForPersistence(settings);
-
-            Directory.CreateDirectory(this._settingsDir);
-            this.RestrictDirectoryPermissions(this._settingsDir);
-            var json = JsonSerializer.Serialize(sanitized, JsonOptions);
-
-            // Write to a temp file and atomically move into place.
-            // Permissions are set at creation time (see FileSecurityHelper.WriteRestrictedFile)
-            // so no window exists where the file is world-readable.
-            var tempPath = this._settingsPath + ".tmp";
-            FileSecurityHelper.WriteRestrictedFile(tempPath, json);
-            try
-            {
-                File.Move(tempPath, this._settingsPath, overwrite: true);
-            }
-            catch
-            {
-                BestEffortDelete(tempPath);
-                throw;
-            }
+            var persistedPath = this.WriteSettingsFileWithFallback(sanitized);
 
             this._cached = sanitized;
-            this._logger.LogDebug("Settings saved to {Path}", this._settingsPath);
+            this._logger.LogDebug("Settings saved to {Path}", persistedPath);
         }
         catch (Exception ex)
         {
             this._logger.LogError(ex, "Failed to save settings to {Path}", this._settingsPath);
+            throw;
+        }
+    }
+
+    private string WriteSettingsFileWithFallback(AppSettings sanitized)
+    {
+        try
+        {
+            this.WriteSettingsFile(sanitized, this._settingsPath);
+            return this._settingsPath;
+        }
+        catch (Exception ex) when (IsSettingsPathUnavailable(ex) && !string.Equals(this._settingsPath, this._fallbackSettingsPath, StringComparison.OrdinalIgnoreCase))
+        {
+            this._logger.LogWarning(ex, "Settings path {Path} is not writable; falling back to {FallbackPath}", this._settingsPath, this._fallbackSettingsPath);
+            this.WriteSettingsFile(sanitized, this._fallbackSettingsPath);
+            this._settingsPath = this._fallbackSettingsPath;
+            return this._settingsPath;
+        }
+    }
+
+    private static bool IsSettingsPathUnavailable(Exception ex) =>
+        ex is UnauthorizedAccessException or IOException;
+
+    private void WriteSettingsFile(AppSettings sanitized, string settingsPath)
+    {
+        Directory.CreateDirectory(this._settingsDir);
+        this.RestrictDirectoryPermissions(this._settingsDir);
+        var json = JsonSerializer.Serialize(sanitized, JsonOptions);
+
+        // Write to a temp file and atomically move into place.
+        // Permissions are set at creation time (see FileSecurityHelper.WriteRestrictedFile)
+        // so no window exists where the file is world-readable.
+        var tempPath = settingsPath + ".tmp";
+        FileSecurityHelper.WriteRestrictedFile(tempPath, json);
+        try
+        {
+            File.Move(tempPath, settingsPath, overwrite: true);
+        }
+        catch
+        {
+            BestEffortDelete(tempPath);
             throw;
         }
     }
@@ -244,7 +280,8 @@ public sealed class SettingsService : ISettingsService
         return new AppSettings
         {
             RefreshIntervalSeconds = settings.RefreshIntervalSeconds,
-            CopilotAccounts = (settings.CopilotAccounts ?? []).ToList(),
+            CopilotAccounts = NormalizeStringList(settings.CopilotAccounts),
+            CopilotKnownAccounts = NormalizeStringList(settings.CopilotKnownAccounts),
             CopilotEnterprise = NormalizeCopilotEnterprise(settings.CopilotEnterprise),
             CopilotOrganization = NormalizeCopilotOrganization(settings.CopilotOrganization),
             CopilotPoolTotal = NormalizeCopilotPoolTotal(settings.CopilotPoolTotal),
@@ -279,6 +316,13 @@ public sealed class SettingsService : ISettingsService
     private static Dictionary<TKey, TValue> CloneDictionary<TKey, TValue>(Dictionary<TKey, TValue>? source)
         where TKey : notnull =>
         (source ?? []).ToDictionary(kvp => kvp.Key, kvp => kvp.Value);
+
+    private static List<string> NormalizeStringList(IEnumerable<string>? values) =>
+        (values ?? [])
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Select(value => value.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
 
     private static List<string> NormalizeProviderCardOrder(IEnumerable<string>? order) =>
         (order ?? [])
@@ -391,6 +435,7 @@ public sealed class SettingsService : ISettingsService
             return this._cached;
         }
 
+        this.UseFallbackSettingsPathIfPrimaryIsMissing();
         if (!File.Exists(this._settingsPath))
         {
             this._logger.LogInformation("No settings file found at {Path}, using defaults", this._settingsPath);
@@ -430,6 +475,15 @@ public sealed class SettingsService : ISettingsService
         return this._cached;
     }
 
+    private void UseFallbackSettingsPathIfPrimaryIsMissing()
+    {
+        if (!File.Exists(this._settingsPath) &&
+            File.Exists(this._fallbackSettingsPath))
+        {
+            this._settingsPath = this._fallbackSettingsPath;
+        }
+    }
+
     private static AppSettings CreateDefaults() => new()
     {
         RefreshIntervalSeconds = 120,
@@ -448,7 +502,8 @@ public sealed class SettingsService : ISettingsService
     private static AppSettings DeepCopy(AppSettings source) => new()
     {
         RefreshIntervalSeconds = source.RefreshIntervalSeconds,
-        CopilotAccounts = (source.CopilotAccounts ?? []).ToList(),
+        CopilotAccounts = NormalizeStringList(source.CopilotAccounts),
+        CopilotKnownAccounts = NormalizeStringList(source.CopilotKnownAccounts),
         CopilotEnterprise = NormalizeCopilotEnterprise(source.CopilotEnterprise),
         CopilotOrganization = NormalizeCopilotOrganization(source.CopilotOrganization),
         CopilotPoolTotal = NormalizeCopilotPoolTotal(source.CopilotPoolTotal),

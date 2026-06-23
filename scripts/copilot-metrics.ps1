@@ -8,6 +8,9 @@ param(
     [int]$Top = 25,
     [string[]]$User,
     [string]$ApiVersion = '2026-03-10',
+    [int]$Delay = 5,
+    [int]$DataRetentionDays = 3,
+    [int]$RollingRefreshDays = 4,
     [string]$Token,
     [string]$GitHubUser,
     [string]$DataDir = (Join-Path (Split-Path -Parent $PSScriptRoot) 'data'),
@@ -44,10 +47,28 @@ function Get-EasternTimestamp {
     $easternNow.ToString('dddd, MMMM d, yyyy h:mm tt')
 }
 
-function Show-CopilotMetricsHeader {
-    Write-Information 'Co-pilot Metrics. Copyrights 2024 by Relias LLC.'
-    Write-Information "Displayed at: $(Get-EasternTimestamp) Eastern Time"
+function Write-MetricsSection {
+    param([Parameter(Mandatory)][string]$Title)
+
     Write-Information ''
+    Write-Information "== $Title =="
+}
+
+function Write-MetricsDetail {
+    param(
+        [Parameter(Mandatory)][string]$Label,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$Value
+    )
+
+    Write-Information ('  {0,-14} {1}' -f "$($Label):", $Value)
+}
+
+function Show-CopilotMetricsHeader {
+    Write-Information ''
+    Write-Information 'Copilot Metrics'
+    Write-Information '---------------'
+    Write-MetricsDetail -Label 'Displayed' -Value "$(Get-EasternTimestamp) Eastern Time"
+    Write-MetricsDetail -Label 'Copyright' -Value '2024 Relias LLC'
 }
 
 Show-CopilotMetricsHeader
@@ -119,8 +140,17 @@ DATA PARAMETERS
                            .\data\copilot-metrics.json.
   -RepairInputFile <file>  Repair a saved JSON run against the current org seat
                            roster, fetching missing or failed user/day responses.
+  -Delay <seconds>         Seconds to wait between GitHub API calls.
+                           Default: 5. Use 0 to disable.
+  -DataRetentionDays <n>   Days of old generated data files to retain when
+                           writing refresh or repair output. Default: 3.
+  -RollingRefreshDays <n>  Maximum trailing UTC days to refresh because GitHub
+                           billing data can be backfilled. Once the day before
+                           yesterday is cached, refreshes only yesterday and
+                           today. Default: 4.
   -DataDir <path>          Output folder. Default: .\data.
-  -RunStamp <text>         Backup filename suffix. Default: yyyyMMdd-HHmmss.
+  -RunStamp <text>         Temporary save filename suffix.
+                           Default: yyyyMMdd-HHmmss.
 
 OUTPUT CONTRACT
   Default and -InputPath modes are read-only.
@@ -128,10 +158,13 @@ OUTPUT CONTRACT
   -Refresh and -RepairInputFile write the latest raw run to:
     .\data\copilot-metrics.json
 
-  If copilot-metrics.json already exists, renames it before writing the new file:
-    .\data\copilot-metrics.backup-<RunStamp>.json
-
-  If the backup name already exists, appends -1, -2, and so on.
+  -Refresh reuses compatible successful user/day responses already stored in
+  copilot-metrics.json, fetches only missing or failed responses, and then
+  atomically replaces the same JSON file.
+  Failed user/day responses are saved as retryable cache entries instead of
+  discarding successful work from the same run.
+  Each fetched user/day response is checkpointed to copilot-metrics.json before
+  the next API call, so interrupted runs resume from the last completed fetch.
 
 AUTHENTICATION
   Not required for default or -InputPath mode.
@@ -167,8 +200,27 @@ $inputPathValue = $InputPath
 $repairInputFileValue = $RepairInputFile
 $refreshValue = $Refresh.IsPresent
 $githubUserValue = $GitHubUser
+$delaySecondsValue = $Delay
+$dataRetentionDaysValue = $DataRetentionDays
+$rollingRefreshDaysValue = $RollingRefreshDays
 $usingDefaultInputPath = $false
 $tokenSource = if ($Token) { '-Token' } else { $null }
+$defaultMonthlyAICreditAllowance = 7000
+$specialMonthlyAICreditAllowanceByUser = @{
+    fhemmerrelias = 250000
+}
+
+if ($delaySecondsValue -lt 0) {
+    throw '-Delay must be 0 or greater.'
+}
+
+if ($dataRetentionDaysValue -lt 0) {
+    throw '-DataRetentionDays must be 0 or greater.'
+}
+
+if ($rollingRefreshDaysValue -lt 0) {
+    throw '-RollingRefreshDays must be 0 or greater.'
+}
 
 if ($inputPathValue -and $repairInputFileValue) {
     throw 'Use either -InputPath or -RepairInputFile, not both.'
@@ -264,10 +316,25 @@ $headers = @{
     'X-GitHub-Api-Version'   = $ApiVersion
 }
 
+$script:lastGitHubApiCallCompletedAt = $null
+
+function Wait-GitHubApiDelay {
+    if ($delaySecondsValue -le 0 -or $null -eq $script:lastGitHubApiCallCompletedAt) {
+        return
+    }
+
+    $elapsed = [DateTimeOffset]::UtcNow - $script:lastGitHubApiCallCompletedAt
+    $remainingDelay = $delaySecondsValue - $elapsed.TotalSeconds
+    if ($remainingDelay -gt 0) {
+        Start-Sleep -Seconds ([math]::Ceiling($remainingDelay))
+    }
+}
+
 function Invoke-GitHubApi {
     param([Parameter(Mandatory)][string]$Path)
 
     $uri = "https://api.github.com$Path"
+    Wait-GitHubApiDelay
     try {
         Invoke-RestMethod -Uri $uri -Headers $headers -Method Get
     }
@@ -295,12 +362,16 @@ function Invoke-GitHubApi {
 
         throw [System.InvalidOperationException]::new("$detail [$Path]", $_.Exception)
     }
+    finally {
+        $script:lastGitHubApiCallCompletedAt = [DateTimeOffset]::UtcNow
+    }
 }
 
 function Invoke-GitHubRawApi {
     param([Parameter(Mandatory)][string]$Path)
 
     $uri = "https://api.github.com$Path"
+    Wait-GitHubApiDelay
     try {
         $response = Invoke-WebRequest -Uri $uri -Headers $headers -Method Get -UseBasicParsing
         $body = [string]$response.Content
@@ -333,6 +404,9 @@ function Invoke-GitHubRawApi {
 
         throw [System.InvalidOperationException]::new("$detail [$Path]", $_.Exception)
     }
+    finally {
+        $script:lastGitHubApiCallCompletedAt = [DateTimeOffset]::UtcNow
+    }
 }
 
 function Get-Encoded {
@@ -346,14 +420,59 @@ function Get-CopilotMetricsOutputPath {
         New-Item -Path $dataDirValue -ItemType Directory | Out-Null
     }
 
-    $outputPath = Join-Path $dataDirValue 'copilot-metrics.json'
-    if (Test-Path -LiteralPath $outputPath) {
-        $backupPath = Get-UniqueBackupPath -Directory $dataDirValue -RunStamp $runStampValue
-        Move-Item -LiteralPath $outputPath -Destination $backupPath
-        Write-Information "Backed up previous copilot-metrics.json to $backupPath"
+    Join-Path $dataDirValue 'copilot-metrics.json'
+}
+
+function Save-CopilotMetricsRun {
+    param(
+        [Parameter(Mandatory)]$RunData,
+        [Parameter(Mandatory)][string]$Path
+    )
+
+    $temporaryPath = "$Path.$runStampValue.tmp"
+    $RunData | ConvertTo-Json -Depth 100 | Set-Content -Path $temporaryPath -Encoding UTF8
+    Move-Item -LiteralPath $temporaryPath -Destination $Path -Force
+}
+
+function Remove-ExpiredCopilotMetricsDataFile {
+    [CmdletBinding(SupportsShouldProcess)]
+    param([Parameter(Mandatory)][string]$CurrentPath)
+
+    if (-not (Test-Path -LiteralPath $dataDirValue)) {
+        return
     }
 
-    $outputPath
+    $retentionCutoff = (Get-Date).AddDays(-$dataRetentionDaysValue)
+    $currentFullPath = [System.IO.Path]::GetFullPath($CurrentPath)
+    $cleanupPatterns = @(
+        'copilot-metrics.backup-*.json',
+        'copilot-metrics.bad-*.json',
+        'copilot-metrics.json.*.tmp',
+        'top10-*.json',
+        'top10.json'
+    )
+    $removedCount = 0
+
+    foreach ($pattern in $cleanupPatterns) {
+        foreach ($file in @(Get-ChildItem -LiteralPath $dataDirValue -Filter $pattern -File -ErrorAction Stop)) {
+            if ([System.IO.Path]::GetFullPath($file.FullName) -eq $currentFullPath) {
+                continue
+            }
+
+            if ($file.LastWriteTime -ge $retentionCutoff) {
+                continue
+            }
+
+            if ($PSCmdlet.ShouldProcess($file.FullName, 'Remove expired Copilot metrics data file')) {
+                Remove-Item -LiteralPath $file.FullName -Force
+                $removedCount++
+            }
+        }
+    }
+
+    if ($removedCount -gt 0) {
+        Write-Information "Cleaned up $removedCount generated data file(s) older than $dataRetentionDaysValue day(s)."
+    }
 }
 
 function Get-CopilotMetricsInputPath {
@@ -392,26 +511,6 @@ function Get-CopilotMetricsInputPath {
     $Path
 }
 
-function Get-UniqueBackupPath {
-    param(
-        [Parameter(Mandatory)][string]$Directory,
-        [Parameter(Mandatory)][string]$RunStamp
-    )
-
-    $backupPath = Join-Path $Directory "copilot-metrics.backup-$RunStamp.json"
-    if (-not (Test-Path -LiteralPath $backupPath)) {
-        return $backupPath
-    }
-
-    $index = 1
-    do {
-        $backupPath = Join-Path $Directory "copilot-metrics.backup-$RunStamp-$index.json"
-        $index++
-    } while (Test-Path -LiteralPath $backupPath)
-
-    $backupPath
-}
-
 function Get-QueryDay {
     $daysInMonth = [DateTime]::DaysInMonth($yearValue, $monthValue)
     $lastDay = $endDayValue
@@ -437,6 +536,55 @@ function Get-QueryDay {
     $startDayValue..$lastDay
 }
 
+function Get-AlwaysRefreshDay {
+    param(
+        [Parameter(Mandatory)][int[]]$Day,
+        $Responses
+    )
+
+    if ($rollingRefreshDaysValue -le 0) {
+        return @()
+    }
+
+    $utcNow = [DateTimeOffset]::UtcNow
+    if ($utcNow.Year -ne $yearValue -or $utcNow.Month -ne $monthValue) {
+        return @()
+    }
+
+    $dayBeforeYesterday = $utcNow.Day - 2
+    if ($dayBeforeYesterday -ge 1) {
+        $responsesByDay = Get-ResponseDayLookup -Responses $Responses
+        if (Test-ResponseNeedsRepair -Response $responsesByDay[$dayBeforeYesterday]) {
+            return @()
+        }
+    }
+
+    $refreshDayCount = [math]::Min(2, $rollingRefreshDaysValue)
+    $firstRefreshDay = [math]::Max(1, $utcNow.Day - $refreshDayCount + 1)
+    @($Day | Where-Object { $_ -ge $firstRefreshDay -and $_ -le $utcNow.Day })
+}
+
+function Get-UniqueLogin {
+    param([string[]]$Login)
+
+    $seen = @{}
+    $uniqueLogins = [System.Collections.Generic.List[string]]::new()
+
+    foreach ($login in @($Login)) {
+        $loginKey = ([string]$login).Trim()
+        if (-not $loginKey) {
+            continue
+        }
+
+        if (-not $seen.ContainsKey($loginKey)) {
+            $seen[$loginKey] = $true
+            $uniqueLogins.Add($loginKey)
+        }
+    }
+
+    @($uniqueLogins | Sort-Object)
+}
+
 function Get-CopilotSeatLogin {
     $logins = [System.Collections.Generic.List[string]]::new()
     $page = 1
@@ -455,7 +603,7 @@ function Get-CopilotSeatLogin {
         $page++
     } while ($seats.Count -eq 100)
 
-    $logins | Sort-Object -Unique
+    Get-UniqueLogin -Login $logins
 }
 
 function Get-UsageItem {
@@ -485,6 +633,16 @@ function Format-UsagePercent {
     }
 
     '{0:N1}%' -f (($Value / $Total) * 100)
+}
+
+function Get-MonthlyAICreditAllowance {
+    param([Parameter(Mandatory)][string]$Login)
+
+    if ($specialMonthlyAICreditAllowanceByUser.ContainsKey($Login)) {
+        return [double]$specialMonthlyAICreditAllowanceByUser[$Login]
+    }
+
+    [double]$defaultMonthlyAICreditAllowance
 }
 
 function Test-CopilotPrReviewModel {
@@ -560,30 +718,50 @@ function Convert-ResponseToUserUsage {
     }
 
     $topModel = Get-TopModelUsage -ModelUsage $modelUsage
+    $monthlyAllowance = Get-MonthlyAICreditAllowance -Login $Login
+    $remainingAllowance = [math]::Max(0.0, $monthlyAllowance - $grossQuantity)
 
     [pscustomobject]@{
-        User          = $Login
-        AICredits     = [math]::Round($grossQuantity, 3)
-        PRReviewPct   = Format-UsagePercent -Value $prReviewQuantity -Total $grossQuantity
-        TopModel      = $topModel.Model
-        TopModelPct   = Format-UsagePercent -Value $topModel.Quantity -Total $grossQuantity
-        GrossCostUsd  = [math]::Round($grossAmount, 2)
-        NetCostUsd    = [math]::Round($netAmount, 2)
-        DaysWithUsage = $daysWithUsage
+        User             = $Login
+        AICredits        = [math]::Round($grossQuantity, 3)
+        MonthlyAllowance = [int][math]::Round($monthlyAllowance, 0)
+        AllowanceUsedPct = Format-UsagePercent -Value $grossQuantity -Total $monthlyAllowance
+        RemainingCredits = [int][math]::Round($remainingAllowance, 0)
+        PRReviewPct      = Format-UsagePercent -Value $prReviewQuantity -Total $grossQuantity
+        TopModel         = $topModel.Model
+        TopModelPct      = Format-UsagePercent -Value $topModel.Quantity -Total $grossQuantity
+        GrossCostUsd     = [math]::Round($grossAmount, 2)
+        NetCostUsd       = [math]::Round($netAmount, 2)
+        DaysWithUsage    = $daysWithUsage
     }
 }
 
 function Get-UserAICreditUsage {
     param(
         [Parameter(Mandatory)][string]$Login,
-        [Parameter(Mandatory)][int[]]$Days
+        [Parameter(Mandatory)][int[]]$Days,
+        [int[]]$DaysToFetch = @(),
+        $ExistingResponses,
+        [Parameter(Mandatory)][int]$UserIndex,
+        [Parameter(Mandatory)][int]$UserCount,
+        [Parameter(Mandatory)][string]$RefreshRunId,
+        [scriptblock]$OnResponseFetched
     )
 
     $encodedEnterprise = Get-Encoded $enterpriseName
     $encodedLogin = Get-Encoded $Login
-    $responses = [System.Collections.Generic.List[object]]::new()
+    $responsesByDay = Get-ResponseDayLookup -Responses $ExistingResponses
+    $dayIndex = 0
+    $failedFetchCount = 0
 
-    foreach ($day in $Days) {
+    foreach ($day in $DaysToFetch) {
+        $dayIndex++
+        $dayStatus = '{0} / {1}: {2}, missing day {3} / {4} ({5}-{6:D2}-{7:D2})' -f
+            $UserIndex, $UserCount, $Login, $dayIndex, $DaysToFetch.Count, $yearValue, $monthValue, $day
+        Write-Progress -Id 2 -ParentId 1 -Activity 'Fetching missing Copilot billing responses' `
+            -Status $dayStatus `
+            -PercentComplete (($dayIndex / $DaysToFetch.Count) * 100)
+
         $path = "/enterprises/$encodedEnterprise/settings/billing/premium_request/usage" +
             "?year=$yearValue&month=$monthValue&day=$day&user=$encodedLogin"
 
@@ -592,20 +770,58 @@ function Get-UserAICreditUsage {
             $path += "&organization=$encodedOrg"
         }
 
-        $rawResponse = Invoke-GitHubRawApi $path
-        $responses.Add([pscustomobject]@{
-                Day        = $day
-                Path       = $path
-                StatusCode = $rawResponse.StatusCode
-                Success    = $true
-                RawJson    = $rawResponse.Body
-                Response   = $rawResponse.Json
-            })
+        $responseSucceeded = $false
+        try {
+            $rawResponse = Invoke-GitHubRawApi $path
+            $refreshedAtUtc = [DateTimeOffset]::UtcNow.ToString('o')
+            $responsesByDay[[int]$day] = [pscustomobject]@{
+                Day            = $day
+                Path           = $path
+                StatusCode     = $rawResponse.StatusCode
+                Success        = $true
+                RawJson        = $rawResponse.Body
+                Response       = $rawResponse.Json
+                RefreshedAtUtc = $refreshedAtUtc
+                RefreshRunId   = $RefreshRunId
+            }
+            $responseSucceeded = $true
+        }
+        catch {
+            $failedFetchCount++
+            $refreshedAtUtc = [DateTimeOffset]::UtcNow.ToString('o')
+            Write-Warning "Caching failed response for $Login day $day`: $($_.Exception.Message)"
+            $responsesByDay[[int]$day] = [pscustomobject]@{
+                Day            = $day
+                Path           = $path
+                StatusCode     = $null
+                Success        = $false
+                RawJson        = $null
+                Response       = $null
+                Error          = $_.Exception.Message
+                RefreshedAtUtc = $refreshedAtUtc
+                RefreshRunId   = $RefreshRunId
+            }
+        }
+
+        if ($OnResponseFetched) {
+            $currentResponses = @($responsesByDay.GetEnumerator() |
+                Sort-Object -Property Name |
+                ForEach-Object { $_.Value })
+            & $OnResponseFetched -Login $Login -Responses $currentResponses -Succeeded $responseSucceeded
+        }
     }
 
+    Write-Progress -Id 2 -Activity 'Fetching missing Copilot billing responses' -Completed
+    $responses = @($responsesByDay.GetEnumerator() |
+        Sort-Object -Property Name |
+        ForEach-Object { $_.Value })
+
     [pscustomobject]@{
-        Usage     = Convert-ResponseToUserUsage -Login $Login -Responses $responses
-        Responses = @($responses)
+        Usage        = Convert-ResponseToUserUsage -Login $Login -Responses $responses
+        Responses    = @($responses)
+        FetchedCount = $DaysToFetch.Count - $failedFetchCount
+        FailedCount  = $failedFetchCount
+        ReusedCount  = $Days.Count - $DaysToFetch.Count
     }
 }
 
@@ -680,11 +896,193 @@ function Get-RunUserLookup {
     $lookup = @{}
     foreach ($userEntry in @($RunUser)) {
         if ($userEntry.User) {
-            $lookup[[string]$userEntry.User] = $userEntry
+            $lookup[([string]$userEntry.User).Trim()] = $userEntry
         }
     }
 
     $lookup
+}
+
+function Get-UniqueRunUser {
+    param($RunUser)
+
+    $lookup = Get-RunUserLookup -RunUser $RunUser
+    @($lookup.GetEnumerator() |
+        Sort-Object -Property Name |
+        ForEach-Object { $_.Value })
+}
+
+function Test-CopilotMetricsCacheScope {
+    param($Cache)
+
+    if (-not $Cache) { return $false }
+    if ([string]$Cache.Enterprise -ne $enterpriseName) { return $false }
+    if ([string]$Cache.Organization -ne $Org) { return $false }
+    if ([int]$Cache.Year -ne $yearValue) { return $false }
+    if ([int]$Cache.Month -ne $monthValue) { return $false }
+    if ($Cache.ApiVersion -and [string]$Cache.ApiVersion -ne $ApiVersion) { return $false }
+
+    $cachedOrganizationFilter = $false
+    if ($Cache.PSObject.Properties['IncludeOrganizationFilter']) {
+        $cachedOrganizationFilter = [bool]$Cache.IncludeOrganizationFilter
+    }
+
+    $cachedOrganizationFilter -eq $includeOrganizationFilterValue
+}
+
+function Get-CompatibleCopilotMetricsCache {
+    param([Parameter(Mandatory)][string]$Path)
+
+    if (-not (Test-Path -LiteralPath $Path)) {
+        return $null
+    }
+
+    $cache = Get-Content -Path $Path -Raw | ConvertFrom-Json
+    if (Test-CopilotMetricsCacheScope -Cache $cache) {
+        Write-MetricsSection -Title 'Cache'
+        Write-MetricsDetail -Label 'Status' -Value 'Compatible'
+        Write-MetricsDetail -Label 'Path' -Value $Path
+        Write-MetricsDetail -Label 'Mode' -Value 'Reuse cached history; conditionally refresh recent UTC days'
+        return $cache
+    }
+
+    Write-MetricsSection -Title 'Cache'
+    Write-MetricsDetail -Label 'Status' -Value 'Different scope'
+    Write-MetricsDetail -Label 'Path' -Value $Path
+    Write-MetricsDetail -Label 'Mode' -Value 'Replace with this refresh'
+    $null
+}
+
+function Get-ResponseDayLookup {
+    param($Responses)
+
+    $lookup = @{}
+    foreach ($response in @($Responses)) {
+        if ($response -and $response.PSObject.Properties['Day']) {
+            $lookup[[int](@($response.Day)[0])] = $response
+        }
+    }
+
+    $lookup
+}
+
+function Get-MissingResponseDay {
+    param(
+        [Parameter(Mandatory)][int[]]$Days,
+        $Responses,
+        [int[]]$AlwaysRefreshDay = @(),
+        [string]$ResumeRefreshRunId
+    )
+
+    $responsesByDay = Get-ResponseDayLookup -Responses $Responses
+    $alwaysRefreshDayLookup = @{}
+    foreach ($day in $AlwaysRefreshDay) {
+        $alwaysRefreshDayLookup[[int]$day] = $true
+    }
+
+    @($Days | Where-Object {
+            $day = [int]$_
+            $existingResponse = $responsesByDay[$day]
+            if ($alwaysRefreshDayLookup.ContainsKey($day)) {
+                if ($ResumeRefreshRunId -and $existingResponse -and $existingResponse.PSObject.Properties['RefreshRunId'] -and [string]$existingResponse.RefreshRunId -eq $ResumeRefreshRunId) {
+                    $false
+                }
+                else {
+                    $true
+                }
+            }
+            else {
+                Test-ResponseNeedsRepair -Response $existingResponse
+            }
+        })
+}
+
+function Get-RunResponseDay {
+    param($RunUser)
+
+    @($RunUser | ForEach-Object {
+            foreach ($response in @($_.Responses)) {
+                if ($response -and $response.PSObject.Properties['Day']) {
+                    [int](@($response.Day)[0])
+                }
+            }
+        }) | Sort-Object -Unique
+}
+
+function ConvertTo-RunUserEntry {
+    param(
+        [Parameter(Mandatory)][string]$Login,
+        [Parameter(Mandatory)]$Responses
+    )
+
+    $responseErrors = @($Responses |
+        Where-Object { -not $_.Success } |
+        ForEach-Object {
+            if ($_.PSObject.Properties['Error']) { $_.Error } else { 'Unknown response error' }
+        })
+
+    [pscustomobject]@{
+        User      = $Login
+        Success   = $responseErrors.Count -eq 0
+        Responses = @($Responses)
+        Error     = $responseErrors -join '; '
+    }
+}
+
+function Get-PersistedRunUser {
+    param(
+        [Parameter(Mandatory)][hashtable]$UserLookup,
+        [Parameter(Mandatory)][string[]]$Login,
+        [Parameter(Mandatory)][bool]$PreserveAllCachedUsers
+    )
+
+    if ($PreserveAllCachedUsers) {
+        return @($UserLookup.GetEnumerator() |
+            Sort-Object -Property Name |
+            ForEach-Object { $_.Value })
+    }
+
+    @(Get-UniqueLogin -Login $Login | ForEach-Object {
+            $loginKey = [string]$_
+            if ($UserLookup.ContainsKey($loginKey)) {
+                $UserLookup[$loginKey]
+            }
+        })
+}
+
+function Get-CopilotMetricsRunData {
+    param(
+        [Parameter(Mandatory)]$RunUser,
+        [Parameter(Mandatory)][int[]]$RefreshedDay,
+        [Parameter(Mandatory)][int]$FetchedResponseCount,
+        [Parameter(Mandatory)][int]$FailedResponseCount,
+        [Parameter(Mandatory)][int]$ReusedResponseCount,
+        [Parameter(Mandatory)][string]$RefreshRunId,
+        [Parameter(Mandatory)][string]$RefreshStatus
+    )
+
+    $persistedDays = @(Get-RunResponseDay -RunUser $RunUser)
+    if ($persistedDays.Count -eq 0) {
+        $persistedDays = $RefreshedDay
+    }
+
+    [pscustomobject]@{
+        GeneratedAtUtc            = [DateTimeOffset]::UtcNow.ToString('o')
+        Enterprise                = $enterpriseName
+        Organization              = $Org
+        Year                      = $yearValue
+        Month                     = $monthValue
+        Days                      = $persistedDays
+        RefreshedDays             = $RefreshedDay
+        ApiVersion                = $ApiVersion
+        IncludeOrganizationFilter = $includeOrganizationFilterValue
+        RefreshRunId              = $RefreshRunId
+        RefreshStatus             = $RefreshStatus
+        FetchedResponseCount      = $FetchedResponseCount
+        FailedResponseCount       = $FailedResponseCount
+        ReusedResponseCount       = $ReusedResponseCount
+        Users                     = @($RunUser)
+    }
 }
 
 function Get-MissingRunUser {
@@ -771,15 +1169,13 @@ function Show-TopUser {
         [Parameter(Mandatory)][string]$Label
     )
 
-    $topUsers = @($RunUser | ForEach-Object {
+    $topUsers = @(Get-UniqueRunUser -RunUser $RunUser | ForEach-Object {
             Convert-ResponseToUserUsage -Login $_.User -Responses $_.Responses
         }) |
         Sort-Object -Property AICredits -Descending |
         Select-Object -First $Top
 
-    Write-Information ''
-    Write-Information $Label
-    Write-Information ''
+    Write-MetricsSection -Title $Label
 
     $topUsers | Format-Table -AutoSize
 }
@@ -846,67 +1242,188 @@ if ($repairInputFileValue) {
         Month                = $monthValue
         Days                 = $repairDays
         ApiVersion           = $ApiVersion
-        RepairedFrom         = $repairInputFileValue
-        RepairedRequestCount = $repairCount
-        SeatCount            = $seatLogins.Count
-        InputUserCount       = $inputUserCount
-        MissingUserCount     = $missingLogins.Count
-        Users                = @($repairedUsers)
+        IncludeOrganizationFilter = $includeOrganizationFilterValue
+        RepairedFrom              = $repairInputFileValue
+        RepairedRequestCount      = $repairCount
+        SeatCount                 = $seatLogins.Count
+        InputUserCount            = $inputUserCount
+        MissingUserCount          = $missingLogins.Count
+        Users                     = @($repairedUsers)
     }
 
-    $runData | ConvertTo-Json -Depth 100 | Set-Content -Path $cachePath -Encoding UTF8
+    Save-CopilotMetricsRun -RunData $runData -Path $cachePath
+    Remove-ExpiredCopilotMetricsDataFile -CurrentPath $cachePath
     Write-Information "Saved repaired raw GitHub responses to $cachePath"
     Show-TopUser -RunUser $repairedUsers -Label 'Top 10 Copilot AI Credit consumers from repaired data'
     return
 }
 
 $usingExplicitUsers = $User -and $User.Count -gt 0
+$cachePath = Get-CopilotMetricsOutputPath
+$existingCache = Get-CompatibleCopilotMetricsCache -Path $cachePath
+$existingUserLookup = if ($existingCache) { Get-RunUserLookup -RunUser $existingCache.Users } else { @{} }
+$mergedUserLookup = if ($existingCache) { Get-RunUserLookup -RunUser $existingCache.Users } else { @{} }
 
-if ($usingExplicitUsers) {
-    Write-Information 'Using explicit user list...'
-}
-else {
-    Write-Information "Fetching Copilot seats for $Org..."
-}
+Write-MetricsSection -Title 'Scope'
+Write-MetricsDetail -Label 'Enterprise' -Value $enterpriseName
+Write-MetricsDetail -Label 'Organization' -Value $Org
+Write-MetricsDetail -Label 'Users' -Value $(if ($usingExplicitUsers) { 'Explicit list' } else { 'Current Copilot seats' })
 
 $logins = if ($usingExplicitUsers) {
-    @($User | Sort-Object -Unique)
+    Get-UniqueLogin -Login $User
 }
 else {
+    Write-MetricsDetail -Label 'Seat lookup' -Value 'Fetching from GitHub'
     @(Get-CopilotSeatLogin)
 }
 
 $days = @(Get-QueryDay)
+$resumeRefreshRunId = if ($existingCache -and $existingCache.RefreshStatus -eq 'InProgress' -and $existingCache.RefreshRunId) {
+    [string]$existingCache.RefreshRunId
+}
+else {
+    $null
+}
+$refreshRunId = if ($resumeRefreshRunId) {
+    $resumeRefreshRunId
+}
+else {
+    [guid]::NewGuid().ToString('N')
+}
 
 if ($logins.Count -eq 0) {
     throw "No Copilot users found for $Org."
 }
 
-Write-Information "Querying $($logins.Count) users for $yearValue-$('{0:D2}' -f $monthValue) days $($days[0])-$($days[-1]) AI Credit usage..."
-if (-not $includeOrganizationFilterValue -and -not $usingExplicitUsers) {
-    Write-Information "Using enterprise user scope; users are limited to current $Org seat assignees."
+Write-MetricsDetail -Label 'User count' -Value ([string]$logins.Count)
+Write-MetricsDetail -Label 'Period' -Value "$yearValue-$('{0:D2}' -f $monthValue) days $($days[0])-$($days[-1])"
+if ($resumeRefreshRunId) {
+    Write-MetricsDetail -Label 'Resume' -Value "Continuing interrupted run $resumeRefreshRunId"
 }
+if (-not $includeOrganizationFilterValue -and -not $usingExplicitUsers) {
+    Write-MetricsDetail -Label 'Billing scope' -Value "Enterprise user usage filtered to $Org seat assignees"
+}
+
+$refreshPlan = [System.Collections.Generic.List[object]]::new()
+$alwaysRefreshDayLookup = @{}
+$loginIndex = 0
+foreach ($login in $logins) {
+    $loginIndex++
+    $existingUserEntry = if ($existingUserLookup.ContainsKey([string]$login)) {
+        $existingUserLookup[[string]$login]
+    }
+    else {
+        $null
+    }
+    $existingResponses = @($existingUserEntry.Responses)
+    $alwaysRefreshDays = @(Get-AlwaysRefreshDay -Day $days -Responses $existingResponses)
+    foreach ($alwaysRefreshDay in $alwaysRefreshDays) {
+        $alwaysRefreshDayLookup[[int]$alwaysRefreshDay] = $true
+    }
+
+    $missingDays = @(Get-MissingResponseDay -Days $days -Responses $existingResponses -AlwaysRefreshDay $alwaysRefreshDays -ResumeRefreshRunId $resumeRefreshRunId)
+
+    $refreshPlan.Add([pscustomobject]@{
+            Login             = [string]$login
+            SeatIndex         = $loginIndex
+            ExistingResponses = $existingResponses
+            AlwaysRefreshDays = $alwaysRefreshDays
+            MissingDays       = $missingDays
+        })
+}
+
+$alwaysRefreshDays = @($alwaysRefreshDayLookup.GetEnumerator() |
+    Sort-Object -Property Name |
+    ForEach-Object { [int]$_.Name })
+
+$missingResponseCount = 0
+$missingUserCount = 0
+$resumeCheckpointedResponseCount = 0
+foreach ($planItem in $refreshPlan) {
+    $missingDayCount = @($planItem.MissingDays).Count
+    $missingResponseCount += $missingDayCount
+    if ($missingDayCount -gt 0) {
+        $missingUserCount++
+    }
+}
+$plannedResponseCount = $logins.Count * $days.Count
+if ($resumeRefreshRunId) {
+    foreach ($planItem in $refreshPlan) {
+        foreach ($response in @($planItem.ExistingResponses)) {
+            if ($response -and
+                $response.PSObject.Properties['RefreshRunId'] -and
+                [string]$response.RefreshRunId -eq $resumeRefreshRunId) {
+                $resumeCheckpointedResponseCount++
+            }
+        }
+    }
+}
+$plannedReuseCount = $plannedResponseCount - $missingResponseCount
+Write-MetricsSection -Title 'Refresh Plan'
+Write-MetricsDetail -Label 'Fetch' -Value "$missingResponseCount user/day response(s) to fetch or refresh"
+Write-MetricsDetail -Label 'Reuse' -Value "$plannedReuseCount cached response(s)"
+if ($resumeRefreshRunId) {
+    Write-MetricsDetail -Label 'Already done' -Value "$resumeCheckpointedResponseCount checkpointed response(s) from this interrupted run"
+}
+if ($alwaysRefreshDays.Count -gt 0) {
+    Write-MetricsDetail -Label 'UTC refresh' -Value "Conditional recent day(s): $($alwaysRefreshDays -join ',')"
+}
+Write-MetricsDetail -Label 'Checkpoint' -Value 'After every fetched response'
 
 $results = [System.Collections.Generic.List[object]]::new()
 $runUsers = [System.Collections.Generic.List[object]]::new()
-$index = 0
+$fetchedResponseCount = 0
+$failedResponseCount = 0
+$reusedResponseCount = $plannedReuseCount
+$missingUserIndex = 0
+$refreshStartedAt = [DateTimeOffset]::UtcNow
+$checkpointResponseCount = 0
+$checkpointSaver = {
+    param(
+        [Parameter(Mandatory)][string]$Login,
+        [Parameter(Mandatory)]$Responses,
+        [Parameter(Mandatory)][bool]$Succeeded
+    )
 
-foreach ($login in $logins) {
-    $index++
-    Write-Progress -Activity 'Querying per-user Copilot billing usage' `
-        -Status "$index / $($logins.Count): $login" `
-        -PercentComplete (($index / $logins.Count) * 100)
+    if ($Succeeded) {
+        $script:fetchedResponseCount++
+    }
+    else {
+        $script:failedResponseCount++
+    }
+
+    $script:checkpointResponseCount++
+    $script:mergedUserLookup[[string]$Login] = ConvertTo-RunUserEntry -Login $Login -Responses $Responses
+    $checkpointUsers = Get-PersistedRunUser -UserLookup $script:mergedUserLookup -Login $script:logins -PreserveAllCachedUsers $script:usingExplicitUsers
+    $checkpointData = Get-CopilotMetricsRunData `
+        -RunUser $checkpointUsers `
+        -RefreshedDay $script:days `
+        -FetchedResponseCount $script:fetchedResponseCount `
+        -FailedResponseCount $script:failedResponseCount `
+        -ReusedResponseCount $script:reusedResponseCount `
+        -RefreshRunId $script:refreshRunId `
+        -RefreshStatus 'InProgress'
+    Save-CopilotMetricsRun -RunData $checkpointData -Path $script:cachePath
+}
+
+foreach ($planItem in $refreshPlan) {
+    $login = [string]$planItem.Login
+    $seatIndex = [int]$planItem.SeatIndex
+    $missingDays = @($planItem.MissingDays)
+    if ($missingDays.Count -gt 0) {
+        $missingUserIndex++
+        Write-Progress -Id 1 -Activity 'Fetching missing per-user Copilot billing responses' `
+            -Status "remaining $missingUserIndex / $missingUserCount; seat $seatIndex / $($logins.Count): $login ($($missingDays.Count) missing day(s))" `
+            -PercentComplete (($missingUserIndex / $missingUserCount) * 100)
+    }
 
     try {
-        $userData = Get-UserAICreditUsage -Login $login -Days $days
+        $userData = Get-UserAICreditUsage -Login $login -Days $days -DaysToFetch $missingDays -ExistingResponses @($planItem.ExistingResponses) -UserIndex $missingUserIndex -UserCount $missingUserCount -RefreshRunId $refreshRunId -OnResponseFetched $checkpointSaver
         if ($userData) {
             $results.Add($userData.Usage)
-            $runUsers.Add([pscustomobject]@{
-                    User      = $login
-                    Success   = $true
-                    Responses = @($userData.Responses)
-                    Error     = $null
-                })
+            $runUserEntry = ConvertTo-RunUserEntry -Login $login -Responses $userData.Responses
+            $runUsers.Add($runUserEntry)
+            $mergedUserLookup[[string]$login] = $runUserEntry
         }
     }
     catch {
@@ -920,36 +1437,41 @@ foreach ($login in $logins) {
     }
 }
 
-Write-Progress -Activity 'Querying per-user Copilot billing usage' -Completed
+Write-Progress -Id 1 -Activity 'Fetching missing per-user Copilot billing responses' -Completed
 
 $failedUsers = @($runUsers | Where-Object { -not $_.Success })
 if ($failedUsers.Count -gt 0) {
     $sampleErrors = $failedUsers |
         Select-Object -First 5 -ExpandProperty Error
-    throw "Refresh failed for $($failedUsers.Count) user(s); not overwriting copilot-metrics.json. Sample errors: $($sampleErrors -join '; ')"
+    Write-Warning "Refresh has $failedResponseCount failed response(s) across $($failedUsers.Count) user(s); saving partial cache so failed days can be retried next run. Sample errors: $($sampleErrors -join '; ')"
 }
 
-$cachePath = Get-CopilotMetricsOutputPath
-$runData = [pscustomobject]@{
-    GeneratedAtUtc = [DateTimeOffset]::UtcNow.ToString('o')
-    Enterprise     = $enterpriseName
-    Organization   = $Org
-    Year           = $yearValue
-    Month          = $monthValue
-    Days           = $days
-    ApiVersion     = $ApiVersion
-    Users          = @($runUsers)
-}
+$persistedUsers = Get-PersistedRunUser -UserLookup $mergedUserLookup -Login $logins -PreserveAllCachedUsers $usingExplicitUsers
+$runData = Get-CopilotMetricsRunData -RunUser $persistedUsers -RefreshedDay $days -FetchedResponseCount $fetchedResponseCount -FailedResponseCount $failedResponseCount -ReusedResponseCount $reusedResponseCount -RefreshRunId $refreshRunId -RefreshStatus 'Complete'
 
-$runData | ConvertTo-Json -Depth 100 | Set-Content -Path $cachePath -Encoding UTF8
-Write-Information "Saved raw GitHub responses to $cachePath"
+Save-CopilotMetricsRun -RunData $runData -Path $cachePath
+Remove-ExpiredCopilotMetricsDataFile -CurrentPath $cachePath
+$elapsed = [DateTimeOffset]::UtcNow - $refreshStartedAt
+Write-MetricsSection -Title 'Result'
+Write-MetricsDetail -Label 'Elapsed' -Value ('{0:mm\:ss}' -f $elapsed)
+Write-MetricsDetail -Label 'Fetched' -Value ([string]$fetchedResponseCount)
+Write-MetricsDetail -Label 'Failed' -Value ([string]$failedResponseCount)
+Write-MetricsDetail -Label 'Reused' -Value ([string]$reusedResponseCount)
+Write-MetricsDetail -Label 'Checkpointed' -Value ([string]$checkpointResponseCount)
+Write-MetricsDetail -Label 'Saved' -Value $cachePath
 
-$topUsers = $results |
+$displayUsers = Get-UniqueRunUser -RunUser $persistedUsers
+$topUsers = $displayUsers |
+    ForEach-Object {
+        Convert-ResponseToUserUsage -Login $_.User -Responses $_.Responses
+    } |
     Sort-Object -Property AICredits -Descending |
     Select-Object -First $Top
+$displayDays = @(Get-RunResponseDay -RunUser $displayUsers)
+if ($displayDays.Count -eq 0) {
+    $displayDays = $days
+}
 
-Write-Information ''
-Write-Information "Top $Top Copilot AI Credit consumers for $Org ($yearValue-$('{0:D2}' -f $monthValue) days $($days[0])-$($days[-1]))"
-Write-Information ''
+Write-MetricsSection -Title "Top $Top Copilot AI Credit consumers for $Org ($yearValue-$('{0:D2}' -f $monthValue) days $($displayDays[0])-$($displayDays[-1]))"
 
 $topUsers | Format-Table -AutoSize

@@ -126,9 +126,13 @@ public sealed class ClampToWorkAreaTests
     {
         var transformFromDevice = new Matrix(0.5, 0, 0, 0.5, 0, 0);
 
-        var result = MainWindow.CalculateMaxHeightFromWorkArea(1800, transformFromDevice, minHeight: 180, padding: 16);
+        var result = MainWindow.CalculateMaxHeightFromWorkArea(
+            1800,
+            transformFromDevice,
+            minHeight: 180,
+            padding: MainWindow.WorkAreaEdgePadding);
 
-        Assert.Equal(884, result);
+        Assert.Equal(896, result);
     }
 
     [Fact]

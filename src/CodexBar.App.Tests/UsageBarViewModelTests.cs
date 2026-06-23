@@ -221,6 +221,31 @@ public sealed class UsageBarViewModelTests
     }
 
     [Fact]
+    public void UpdateProjection_WhenShownOnCurrentBarAndLimitNotReached_HidesProjectionDescription()
+    {
+        var bar = new UsageBarViewModel
+        {
+            Label = "5 hour usage limit",
+            UsedPercent = 0.35,
+            ResetDescription = "Resets 1h 18m",
+            ProjectionCurrent = 0.35m,
+            ProjectionLimit = 1m,
+            ProjectionPeriodStart = new DateTimeOffset(2026, 6, 1, 0, 0, 0, TimeSpan.Zero),
+            ProjectionPeriodEnd = new DateTimeOffset(2026, 6, 1, 5, 0, 0, TimeSpan.Zero),
+            ShowProjectionOnCurrentBar = true,
+        };
+
+        bar.UpdateProjection(new DateTimeOffset(2026, 6, 1, 3, 45, 0, TimeSpan.Zero));
+
+        Assert.Equal("5 hour usage limit", bar.Label);
+        Assert.Equal(0.35, bar.UsedPercent, 3);
+        Assert.Equal(0.467, bar.ProjectedPercent, 3);
+        Assert.True(bar.ShowProjectedUsage);
+        Assert.Equal("Resets 1h 18m", bar.ResetDescription);
+        Assert.Null(bar.ProjectionDescription);
+    }
+
+    [Fact]
     public void UpdateProjection_WhenProjectionDataMissing_ClearsProjectionOverlay()
     {
         var bar = new UsageBarViewModel
@@ -245,7 +270,53 @@ public sealed class UsageBarViewModelTests
 
         var result = UsageBarViewModel.FormatEasternTime(timestamp, easternTimeZone: null);
 
-        Assert.Equal("Jun 20 12:00 AM UTC", result);
+        Assert.Equal("Sat 12:00 AM UTC", result);
+    }
+
+    [Fact]
+    public void FormatEasternTime_WhenOffsetIsStandardEastern_UsesEst()
+    {
+        var timestamp = new DateTimeOffset(2026, 1, 20, 0, 0, 0, TimeSpan.Zero);
+        var timeZone = TimeZoneInfo.CreateCustomTimeZone(
+            "fixed-est",
+            TimeSpan.FromHours(-5),
+            "Fixed EST",
+            "Fixed EST");
+
+        var result = UsageBarViewModel.FormatEasternTime(timestamp, timeZone);
+
+        Assert.Equal("Mon 7:00 PM EST", result);
+    }
+
+    [Fact]
+    public void FormatEasternTime_WhenOffsetIsNotEastern_UsesEt()
+    {
+        var timestamp = new DateTimeOffset(2026, 6, 20, 0, 0, 0, TimeSpan.Zero);
+        var timeZone = TimeZoneInfo.CreateCustomTimeZone(
+            "fixed-other",
+            TimeSpan.FromHours(-3),
+            "Fixed Other",
+            "Fixed Other");
+
+        var result = UsageBarViewModel.FormatEasternTime(timestamp, timeZone);
+
+        Assert.Equal("Fri 9:00 PM ET", result);
+    }
+
+    [Fact]
+    public void FormatEarlyDuration_WhenDurationHasDaysHoursAndMinutes_UsesCompactDeadlineFormat()
+    {
+        var result = UsageBarViewModel.FormatEarlyDuration(new TimeSpan(days: 2, hours: 3, minutes: 4, seconds: 59));
+
+        Assert.Equal("2d 3h 4m", result);
+    }
+
+    [Fact]
+    public void FormatEarlyDuration_WhenDurationIsUnderOneDay_UsesHoursAndMinutes()
+    {
+        var result = UsageBarViewModel.FormatEarlyDuration(new TimeSpan(days: 0, hours: 9, minutes: 31, seconds: 59));
+
+        Assert.Equal("9h 31m", result);
     }
 
     [Fact]
@@ -262,6 +333,23 @@ public sealed class UsageBarViewModelTests
             nowUtc: periodStart);
 
         Assert.Equal("Limit hit unknown", result);
+    }
+
+    [Fact]
+    public void FormatLimitHit_WhenLimitHitBeforeDeadline_AppendsEarlyDuration()
+    {
+        var periodStart = new DateTimeOffset(2026, 6, 1, 0, 0, 0, TimeSpan.Zero);
+        var periodEnd = new DateTimeOffset(2026, 6, 1, 5, 0, 0, TimeSpan.Zero);
+        var now = periodStart.AddHours(2);
+
+        var result = UsageBarViewModel.FormatLimitHit(
+            current: 0.5m,
+            limit: 1m,
+            periodStart,
+            periodEnd,
+            nowUtc: now);
+
+        Assert.Equal("Limit hit Mon 12:00 AM EDT - 1h early", result);
     }
 
     [Fact]

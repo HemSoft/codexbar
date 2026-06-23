@@ -8,9 +8,39 @@ using CodexBar.Core.Models;
 using CodexBar.Core.Providers.OpenCodeZen;
 using Microsoft.Extensions.Logging.Abstractions;
 
-[Collection("OpenCodeZenEnvVars")]
-public class OpenCodeZenProviderTests
+[Collection("EnvironmentVariableTests")]
+public class OpenCodeZenProviderTests : IDisposable
 {
+    private readonly Dictionary<string, string?> savedEnvVars = new();
+    private readonly Func<string, string?> savedEnvironmentVariableResolver;
+
+    public OpenCodeZenProviderTests()
+    {
+        this.savedEnvironmentVariableResolver = OpenCodeZenProvider.EnvironmentVariableResolver;
+        OpenCodeZenProvider.EnvironmentVariableResolver = Environment.GetEnvironmentVariable;
+        this.SaveAndClear("OPENCODE_GO_WORKSPACE_ID");
+        this.SaveAndClear("OPENCODE_GO_AUTH_COOKIE");
+        this.SaveAndClear("OPENCODE_ZEN_WORKSPACE_ID");
+        this.SaveAndClear("OPENCODE_ZEN_AUTH_COOKIE");
+        this.SaveAndClear("OPENCODE_ZEN_KEY");
+    }
+
+    public void Dispose()
+    {
+        OpenCodeZenProvider.EnvironmentVariableResolver = this.savedEnvironmentVariableResolver;
+
+        foreach (var (name, value) in this.savedEnvVars)
+        {
+            Environment.SetEnvironmentVariable(name, value);
+        }
+    }
+
+    private void SaveAndClear(string name)
+    {
+        this.savedEnvVars[name] = Environment.GetEnvironmentVariable(name);
+        Environment.SetEnvironmentVariable(name, null);
+    }
+
     [Fact]
     public void Metadata_IsCorrect()
     {
@@ -27,7 +57,7 @@ public class OpenCodeZenProviderTests
     }
 
     [Fact]
-    public async Task IsAvailableAsync_NoCredentials_ReturnsFalse()
+    public async Task IsAvailableAsync_NoCredentials_ReturnsTrueWhenEnabled()
     {
         var provider = new OpenCodeZenProvider(
             NullLogger<OpenCodeZenProvider>.Instance,
@@ -35,7 +65,7 @@ public class OpenCodeZenProviderTests
             new DummySettingsService(workspaceId: null, authCookie: null));
 
         var result = await provider.IsAvailableAsync();
-        Assert.False(result);
+        Assert.True(result);
     }
 
     [Fact]

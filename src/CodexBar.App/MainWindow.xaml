@@ -333,8 +333,7 @@
                                                 <!-- Progress bar -->
                                                 <Grid Height="8"
                                                       Background="#1A1A2E"
-                                                      ClipToBounds="True"
-                                                      ToolTip="{Binding ProjectionDescription}">
+                                                      ClipToBounds="True">
                                                     <ProgressBar Value="{Binding ProjectedPercent, Mode=OneWay}"
                                                                  Style="{StaticResource UsageBar}"
                                                                  Background="Transparent"
@@ -347,6 +346,14 @@
                                                                  Background="Transparent"
                                                                  Panel.ZIndex="1" />
                                                 </Grid>
+                                                <TextBlock Text="{Binding ProjectionDescription}"
+                                                           FontSize="11"
+                                                           Foreground="{StaticResource TextSecondaryBrush}"
+                                                           HorizontalAlignment="Stretch"
+                                                           TextAlignment="Right"
+                                                           Margin="0,2,0,0"
+                                                           Opacity="0.7"
+                                                           Visibility="{Binding ProjectionDescription, Converter={x:Static local:NullToCollapsedConverter.Instance}}" />
                                             </StackPanel>
                                         </DataTemplate>
                                     </ItemsControl.ItemTemplate>

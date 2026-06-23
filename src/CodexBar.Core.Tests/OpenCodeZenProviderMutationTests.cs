@@ -22,25 +22,33 @@ public class OpenCodeZenProviderMutationTests : IDisposable
     private readonly string? _origCookie;
     private readonly string? _origZenWorkspace;
     private readonly string? _origZenCookie;
+    private readonly string? _origZenKey;
+    private readonly Func<string, string?> _origEnvironmentVariableResolver;
 
     public OpenCodeZenProviderMutationTests()
     {
+        this._origEnvironmentVariableResolver = OpenCodeZenProvider.EnvironmentVariableResolver;
+        OpenCodeZenProvider.EnvironmentVariableResolver = Environment.GetEnvironmentVariable;
         this._origWorkspace = Environment.GetEnvironmentVariable("OPENCODE_GO_WORKSPACE_ID");
         this._origCookie = Environment.GetEnvironmentVariable("OPENCODE_GO_AUTH_COOKIE");
         this._origZenWorkspace = Environment.GetEnvironmentVariable("OPENCODE_ZEN_WORKSPACE_ID");
         this._origZenCookie = Environment.GetEnvironmentVariable("OPENCODE_ZEN_AUTH_COOKIE");
+        this._origZenKey = Environment.GetEnvironmentVariable("OPENCODE_ZEN_KEY");
         Environment.SetEnvironmentVariable("OPENCODE_GO_WORKSPACE_ID", null);
         Environment.SetEnvironmentVariable("OPENCODE_GO_AUTH_COOKIE", null);
         Environment.SetEnvironmentVariable("OPENCODE_ZEN_WORKSPACE_ID", null);
         Environment.SetEnvironmentVariable("OPENCODE_ZEN_AUTH_COOKIE", null);
+        Environment.SetEnvironmentVariable("OPENCODE_ZEN_KEY", null);
     }
 
     public void Dispose()
     {
+        OpenCodeZenProvider.EnvironmentVariableResolver = this._origEnvironmentVariableResolver;
         Environment.SetEnvironmentVariable("OPENCODE_GO_WORKSPACE_ID", this._origWorkspace);
         Environment.SetEnvironmentVariable("OPENCODE_GO_AUTH_COOKIE", this._origCookie);
         Environment.SetEnvironmentVariable("OPENCODE_ZEN_WORKSPACE_ID", this._origZenWorkspace);
         Environment.SetEnvironmentVariable("OPENCODE_ZEN_AUTH_COOKIE", this._origZenCookie);
+        Environment.SetEnvironmentVariable("OPENCODE_ZEN_KEY", this._origZenKey);
     }
 
     // === ParseBalance ===
@@ -93,11 +101,11 @@ public class OpenCodeZenProviderMutationTests : IDisposable
 
     // === Credential resolution ===
     [Fact]
-    public async Task IsAvailableAsync_NoCookie_ReturnsFalse()
+    public async Task IsAvailableAsync_NoCookie_ReturnsTrueWhenEnabled()
     {
         var settings = CreateSettings(enabled: true, workspaceId: "ws", apiKey: null);
         var provider = CreateProvider(settings: settings);
-        Assert.False(await provider.IsAvailableAsync());
+        Assert.True(await provider.IsAvailableAsync());
     }
 
     [Fact]
@@ -148,6 +156,49 @@ public class OpenCodeZenProviderMutationTests : IDisposable
 
         Assert.True(result.Success);
         Assert.Equal(3.00m, result.CreditsRemaining);
+    }
+
+    [Fact]
+    public async Task FetchUsageAsync_ZenKeyEnvVarWithoutCookie_ReturnsActionableFailure()
+    {
+        Environment.SetEnvironmentVariable("OPENCODE_GO_WORKSPACE_ID", "ws");
+        Environment.SetEnvironmentVariable("OPENCODE_ZEN_KEY", "zen-key");
+
+        var handler = new CapturingHandler(OkHtml("balance:300000000"));
+        var settings = CreateSettings(enabled: true, workspaceId: null, apiKey: null);
+        var factory = new SimpleFactory(handler);
+        var provider = new OpenCodeZenProvider(NullLogger<OpenCodeZenProvider>.Instance, factory, settings);
+
+        var result = await provider.FetchUsageAsync();
+
+        Assert.False(result.Success);
+        Assert.Null(handler.LastRequest);
+        Assert.Contains("OPENCODE_ZEN_KEY is configured", result.ErrorMessage);
+        Assert.Contains("dashboard auth cookie", result.ErrorMessage);
+    }
+
+    [Fact]
+    public async Task FetchUsageAsync_CustomResolverWithMachineCookie_ReturnsWorkspaceAndCookie()
+    {
+        OpenCodeZenProvider.EnvironmentVariableResolver = name => name switch
+        {
+            "OPENCODE_ZEN_WORKSPACE_ID" => "machine-ws",
+            "OPENCODE_ZEN_AUTH_COOKIE" => "machine-cookie",
+            _ => null,
+        };
+
+        var handler = new CapturingHandler(OkHtml("balance:300000000"));
+        var settings = CreateSettings(enabled: true, workspaceId: null, apiKey: null);
+        var factory = new SimpleFactory(handler);
+        var provider = new OpenCodeZenProvider(NullLogger<OpenCodeZenProvider>.Instance, factory, settings);
+
+        var result = await provider.FetchUsageAsync();
+
+        Assert.True(result.Success);
+        Assert.NotNull(handler.LastRequest);
+        Assert.Contains("machine-ws", handler.LastRequest!.RequestUri?.ToString());
+        var cookieHeader = handler.LastRequest.Headers.GetValues("Cookie").First();
+        Assert.Contains("machine-cookie", cookieHeader);
     }
 
     // === Credential priority: env var wins over settings ===
@@ -309,6 +360,18 @@ public class OpenCodeZenProviderMutationTests : IDisposable
 
         Assert.False(result.Success);
         Assert.Contains("Could not parse", result.ErrorMessage);
+    }
+
+    [Fact]
+    public async Task FetchUsageAsync_OpenAuthHtml_ReturnsAuthCookieFailure()
+    {
+        var provider = CreateProvider(response: OkHtml("<html><head><title>OpenAuth</title></head><body>Sign in</body></html>"));
+
+        var result = await provider.FetchUsageAsync();
+
+        Assert.False(result.Success);
+        Assert.Contains("OpenAuth sign-in page", result.ErrorMessage);
+        Assert.Contains("OPENCODE_ZEN_KEY is only an API key", result.ErrorMessage);
     }
 
     // === Caching ===

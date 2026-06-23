@@ -417,41 +417,10 @@ public sealed class CopilotProviderRemainderCoverageTests
             primary,
             DateTimeOffset.UtcNow.AddDays(-1),
             DateTimeOffset.UtcNow.AddDays(1),
-            [],
+            100,
             null);
 
         Assert.DoesNotContain(bars, bar => bar.Label.StartsWith("Share of org", StringComparison.Ordinal));
-    }
-
-    [Theory]
-    [InlineData(0, true)]
-    [InlineData(100, false)]
-    public void BuildUsageCategoryBars_EmptyCases_ReturnsEmpty(decimal consumed, bool includeUsageItem)
-    {
-        var usageItems = includeUsageItem
-            ? [new BillingUsageItem { Model = "Code Review", GrossQuantity = 1 }]
-            : Array.Empty<BillingUsageItem>();
-
-        var bars = CopilotProvider.BuildUsageCategoryBars(consumed, usageItems);
-
-        Assert.Empty(bars);
-    }
-
-    [Fact]
-    public void BuildUsageCategoryBars_MixedUsageItems_ReturnsPrReviewAndOtherBars()
-    {
-        BillingUsageItem[] usageItems =
-        [
-            new() { Model = "GPT Code Review", GrossQuantity = 25 },
-            new() { Model = null, GrossQuantity = 75 },
-        ];
-
-        var bars = CopilotProvider.BuildUsageCategoryBars(100, usageItems);
-
-        Assert.Collection(
-            bars,
-            bar => Assert.StartsWith("Copilot PR Review", bar.Label, StringComparison.Ordinal),
-            bar => Assert.StartsWith("Other models", bar.Label, StringComparison.Ordinal));
     }
 
     [Fact]
@@ -472,6 +441,16 @@ public sealed class CopilotProviderRemainderCoverageTests
     public void GetCreditsPerSeat_PromotionalWindow_ReturnsExpectedCredits(int year, int month, int expected)
     {
         var result = CopilotProvider.GetCreditsPerSeat(year, month);
+
+        Assert.Equal(expected, result);
+    }
+
+    [Theory]
+    [InlineData("fhemmerrelias", 250000)]
+    [InlineData("alice", 7000)]
+    public void GetMonthlyAICreditAllowance_UserOverride_ReturnsExpectedAllowance(string username, int expected)
+    {
+        var result = CopilotProvider.GetMonthlyAICreditAllowance(username, 7000);
 
         Assert.Equal(expected, result);
     }

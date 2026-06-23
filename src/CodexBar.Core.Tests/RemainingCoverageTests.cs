@@ -41,17 +41,19 @@ public sealed class RemainingCoverageSettingsServiceTests : IDisposable
     }
 
     [Fact]
-    public void Save_SettingsPathIsDirectory_DeletesTempFileAndRethrows()
+    public void Save_SettingsPathIsDirectory_WritesFallbackAndDeletesTempFile()
     {
         var settingsDir = this.CreateDirectory("save-path-is-directory");
         Directory.CreateDirectory(Path.Combine(settingsDir, "settings.json"));
         var service = new SettingsService(NullLogger<SettingsService>.Instance, settingsDir);
 
-        Assert.ThrowsAny<Exception>(() => service.Save(new AppSettings
+        service.Save(new AppSettings
         {
             RefreshIntervalSeconds = 120,
             Providers = [],
-        }));
+        });
+
+        Assert.True(File.Exists(Path.Combine(settingsDir, "codexbar-settings.json")));
         Assert.False(File.Exists(Path.Combine(settingsDir, "settings.json.tmp")));
     }
 

@@ -9,9 +9,39 @@ using CodexBar.Core.Providers.OpenCodeZen;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
 
-[Collection("OpenCodeZenEnvVars")]
-public class OpenCodeZenProviderMoreTests
+[Collection("EnvironmentVariableTests")]
+public class OpenCodeZenProviderMoreTests : IDisposable
 {
+    private readonly Dictionary<string, string?> savedEnvVars = new();
+    private readonly Func<string, string?> savedEnvironmentVariableResolver;
+
+    public OpenCodeZenProviderMoreTests()
+    {
+        this.savedEnvironmentVariableResolver = OpenCodeZenProvider.EnvironmentVariableResolver;
+        OpenCodeZenProvider.EnvironmentVariableResolver = Environment.GetEnvironmentVariable;
+        this.SaveAndClear("OPENCODE_GO_WORKSPACE_ID");
+        this.SaveAndClear("OPENCODE_GO_AUTH_COOKIE");
+        this.SaveAndClear("OPENCODE_ZEN_WORKSPACE_ID");
+        this.SaveAndClear("OPENCODE_ZEN_AUTH_COOKIE");
+        this.SaveAndClear("OPENCODE_ZEN_KEY");
+    }
+
+    public void Dispose()
+    {
+        OpenCodeZenProvider.EnvironmentVariableResolver = this.savedEnvironmentVariableResolver;
+
+        foreach (var (name, value) in this.savedEnvVars)
+        {
+            Environment.SetEnvironmentVariable(name, value);
+        }
+    }
+
+    private void SaveAndClear(string name)
+    {
+        this.savedEnvVars[name] = Environment.GetEnvironmentVariable(name);
+        Environment.SetEnvironmentVariable(name, null);
+    }
+
     private static OpenCodeZenProvider CreateProviderWithHandler(
         out MockHttpMessageHandler handler,
         ISettingsService? settings = null,
@@ -48,25 +78,25 @@ public class OpenCodeZenProviderMoreTests
     }
 
     [Fact]
-    public async Task IsAvailableAsync_NoWorkspaceId_ReturnsFalse()
+    public async Task IsAvailableAsync_NoWorkspaceId_ReturnsTrueWhenEnabled()
     {
         var settings = CreateSettings(enabled: true, workspaceId: null, apiKey: "auth-cookie");
         var provider = CreateProvider(settings: settings);
 
         var result = await provider.IsAvailableAsync();
 
-        Assert.False(result);
+        Assert.True(result);
     }
 
     [Fact]
-    public async Task IsAvailableAsync_NoAuthCookie_ReturnsFalse()
+    public async Task IsAvailableAsync_NoAuthCookie_ReturnsTrueWhenEnabled()
     {
         var settings = CreateSettings(enabled: true, workspaceId: "ws-123", apiKey: null);
         var provider = CreateProvider(settings: settings);
 
         var result = await provider.IsAvailableAsync();
 
-        Assert.False(result);
+        Assert.True(result);
     }
 
     [Fact]

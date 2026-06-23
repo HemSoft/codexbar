@@ -251,7 +251,7 @@ public class CrapScoreImprovementTests
         var provider = new CopilotProvider(NullLogger<CopilotProvider>.Instance, factory, settings);
         provider.DiscoveryTimeoutOverride = TimeSpan.FromSeconds(5);
         provider.GhStatusProcessOverride = () => CreateExitProcess(
-            0, stderr: "Logged in to github.com account testuser (keyring)");
+            0, stdout: "Logged in to github.com account testuser (keyring)");
         provider.TokenResolverOverride = (_, _) => Task.FromResult<string?>("gho_abc");
 
         var result = await provider.FetchUsageAsync();
@@ -738,7 +738,10 @@ public class CrapScoreImprovementTests
     private static System.Diagnostics.Process CreateExitProcess(int exitCode, string stderr = "", string stdout = "")
     {
         // Use base64-encoded PowerShell script to avoid quoting issues
-        var script = $"[Console]::Error.Write('{stderr.Replace("'", "''")}'); exit {exitCode}";
+        var script =
+            $"[Console]::Out.Write('{stdout.Replace("'", "''")}'); " +
+            $"[Console]::Error.Write('{stderr.Replace("'", "''")}'); " +
+            $"exit {exitCode}";
         var bytes = System.Text.Encoding.Unicode.GetBytes(script);
         var encoded = Convert.ToBase64String(bytes);
 

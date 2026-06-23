@@ -4,6 +4,7 @@ namespace CodexBar.App.ViewModels;
 
 using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Windows.Input;
 using System.Windows.Threading;
@@ -507,6 +508,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 public sealed class UsageBarViewModel : INotifyPropertyChanged
 {
     private static readonly string[] EasternTimeZoneIds = ["Eastern Standard Time", "America/New_York"];
+    private const string LimitNotReachedDescription = "Limit not reached";
     private static readonly Lazy<TimeZoneInfo?> EasternTimeZone = new(
         () => ResolveEasternTimeZone(EasternTimeZoneIds, TimeZoneInfo.FindSystemTimeZoneById));
 
@@ -632,7 +634,9 @@ public sealed class UsageBarViewModel : INotifyPropertyChanged
         if (this.ShowProjectionOnCurrentBar)
         {
             this.ProjectedPercent = projectedPercent;
-            this.ProjectionDescription = $"Projected {projectedPercent:P0} at current pace · {limitHit}";
+            this.ProjectionDescription = limitHit == LimitNotReachedDescription
+                ? null
+                : $"Projected {projectedPercent:P0} at current pace · {limitHit}";
             return;
         }
 
@@ -676,21 +680,62 @@ public sealed class UsageBarViewModel : INotifyPropertyChanged
 
         var secondsToLimit = (double)(limit / ratePerSecond);
         var hitAt = periodStart.AddSeconds(secondsToLimit);
-        return hitAt > periodEnd ? "Limit not reached" : $"Limit hit {FormatEasternTime(hitAt)}";
+        if (hitAt > periodEnd)
+        {
+            return LimitNotReachedDescription;
+        }
+
+        var earlyDescription = hitAt < periodEnd
+            ? $" - {FormatEarlyDuration(periodEnd - hitAt)} early"
+            : string.Empty;
+
+        return $"Limit hit {FormatEasternTime(hitAt)}{earlyDescription}";
     }
 
     internal static string FormatEasternTime(DateTimeOffset timestamp, TimeZoneInfo? easternTimeZone)
     {
         if (easternTimeZone is null)
         {
-            return $"{timestamp.ToUniversalTime():MMM d h:mm tt} UTC";
+            return $"{timestamp.ToUniversalTime().ToString("ddd h:mm tt", CultureInfo.InvariantCulture)} UTC";
         }
 
         var easternTime = TimeZoneInfo.ConvertTime(timestamp, easternTimeZone);
-        return $"{easternTime:MMM d h:mm tt} ET";
+        return $"{easternTime.ToString("ddd h:mm tt", CultureInfo.InvariantCulture)} {GetEasternTimeZoneAbbreviation(easternTime)}";
     }
 
     private static string FormatEasternTime(DateTimeOffset timestamp) => FormatEasternTime(timestamp, EasternTimeZone.Value);
+
+    internal static string FormatEarlyDuration(TimeSpan duration)
+    {
+        var totalMinutes = Math.Max(0, (int)duration.TotalMinutes);
+        var days = totalMinutes / (24 * 60);
+        var hours = (totalMinutes % (24 * 60)) / 60;
+        var minutes = totalMinutes % 60;
+        var parts = new List<string>(capacity: 3);
+        if (days > 0)
+        {
+            parts.Add($"{days}d");
+        }
+
+        if (hours > 0)
+        {
+            parts.Add($"{hours}h");
+        }
+
+        if (minutes > 0 || parts.Count == 0)
+        {
+            parts.Add($"{minutes}m");
+        }
+
+        return string.Join(" ", parts);
+    }
+
+    private static string GetEasternTimeZoneAbbreviation(DateTimeOffset easternTime) => easternTime.Offset switch
+    {
+        { Hours: -4 } => "EDT",
+        { Hours: -5 } => "EST",
+        _ => "ET",
+    };
 
     internal static TimeZoneInfo? ResolveEasternTimeZone(IEnumerable<string> timeZoneIds, Func<string, TimeZoneInfo> findTimeZoneById)
     {

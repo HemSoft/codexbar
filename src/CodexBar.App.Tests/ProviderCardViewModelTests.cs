@@ -137,7 +137,7 @@ public sealed class ProviderCardViewModelTests
 
         Assert.Equal("Month end est. · 150 / 100", bar.Label);
         Assert.Equal(1.0, bar.UsedPercent);
-        Assert.Equal("Limit hit Jun 20 8:00 PM ET", bar.ResetDescription);
+        Assert.Equal("Limit hit Sat 8:00 PM EDT - 10d early", bar.ResetDescription);
     }
 
     [Fact]

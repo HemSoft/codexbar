@@ -98,7 +98,7 @@ public class UsageRefreshServiceCoverageTests
     }
 
     [Fact]
-    public async Task RefreshAllAsync_UnavailableProviderNeverPreviouslySeen_DoesNotNotify()
+    public async Task RefreshAllAsync_UnavailableProviderNeverPreviouslySeen_NotifiesFailure()
     {
         var provider = new ControllableProvider(available: false, result: ProviderUsageResult.EmptySuccess(ProviderId.Claude));
         var service = new UsageRefreshService([provider], NullLogger<UsageRefreshService>.Instance);
@@ -108,9 +108,9 @@ public class UsageRefreshServiceCoverageTests
 
         await service.RefreshAllAsync();
 
-        // No notification because provider was never available (no transition)
-        Assert.False(notified);
-        Assert.Empty(service.LatestResults);
+        Assert.True(notified);
+        Assert.Single(service.LatestResults);
+        Assert.False(service.LatestResults[ProviderId.Claude].Success);
     }
 
     [Fact]

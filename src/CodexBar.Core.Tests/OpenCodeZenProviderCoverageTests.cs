@@ -14,19 +14,24 @@ using NSubstitute;
 /// Coverage tests targeting previously uncovered environment variable override branches
 /// in OpenCodeZenProvider.ResolveCredentials (lines 204-214).
 /// </summary>
-[Collection("OpenCodeZenEnvVars")]
+[Collection("EnvironmentVariableTests")]
 public class OpenCodeZenProviderCoverageTests : IDisposable
 {
     private readonly List<string> _envVarsToCleanup = [];
     private readonly Dictionary<string, string?> _savedEnvVars = new();
+    private readonly Func<string, string?> _savedEnvironmentVariableResolver;
 
     public OpenCodeZenProviderCoverageTests()
     {
+        this._savedEnvironmentVariableResolver = OpenCodeZenProvider.EnvironmentVariableResolver;
+        OpenCodeZenProvider.EnvironmentVariableResolver = Environment.GetEnvironmentVariable;
+
         // Save and clear Go env vars so ResolveCredentials falls through to settings
         this.SaveAndClear("OPENCODE_GO_WORKSPACE_ID");
         this.SaveAndClear("OPENCODE_GO_AUTH_COOKIE");
         this.SaveAndClear("OPENCODE_ZEN_WORKSPACE_ID");
         this.SaveAndClear("OPENCODE_ZEN_AUTH_COOKIE");
+        this.SaveAndClear("OPENCODE_ZEN_KEY");
     }
 
     private void SaveAndClear(string name)
@@ -165,6 +170,8 @@ public class OpenCodeZenProviderCoverageTests : IDisposable
 
     public void Dispose()
     {
+        OpenCodeZenProvider.EnvironmentVariableResolver = this._savedEnvironmentVariableResolver;
+
         foreach (var name in this._envVarsToCleanup)
         {
             Environment.SetEnvironmentVariable(name, null);

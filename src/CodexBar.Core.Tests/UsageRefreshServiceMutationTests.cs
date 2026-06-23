@@ -75,14 +75,15 @@ public class UsageRefreshServiceMutationTests : IAsyncDisposable
 
     // === FetchSafe: unavailable provider ===
     [Fact]
-    public async Task RefreshAllAsync_UnavailableProvider_SkipsAndDoesNotStore()
+    public async Task RefreshAllAsync_UnavailableProvider_SkipsFetchAndStoresFailure()
     {
         this._provider1.IsAvailableAsync(Arg.Any<CancellationToken>()).Returns(false);
 
         await this._sut.RefreshAllAsync();
 
         await this._provider1.DidNotReceive().FetchUsageAsync(Arg.Any<CancellationToken>());
-        Assert.False(this._sut.LatestResults.ContainsKey(ProviderId.Copilot));
+        Assert.True(this._sut.LatestResults.ContainsKey(ProviderId.Copilot));
+        Assert.False(this._sut.LatestResults[ProviderId.Copilot].Success);
     }
 
     [Fact]

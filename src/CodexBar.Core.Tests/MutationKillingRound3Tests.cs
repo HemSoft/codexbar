@@ -247,18 +247,25 @@ public class MutationKillingRound3Tests
 [Collection("EnvironmentVariableTests")]
 public class OpenCodeZenCacheMutationTests : IDisposable
 {
+    private readonly Func<string, string?> savedEnvironmentVariableResolver;
+
     public OpenCodeZenCacheMutationTests()
     {
+        this.savedEnvironmentVariableResolver = OpenCodeZenProvider.EnvironmentVariableResolver;
+        OpenCodeZenProvider.EnvironmentVariableResolver = Environment.GetEnvironmentVariable;
         Environment.SetEnvironmentVariable("OPENCODE_ZEN_WORKSPACE_ID", null);
         Environment.SetEnvironmentVariable("OPENCODE_ZEN_AUTH_COOKIE", null);
+        Environment.SetEnvironmentVariable("OPENCODE_ZEN_KEY", null);
         Environment.SetEnvironmentVariable("OPENCODE_GO_WORKSPACE_ID", null);
         Environment.SetEnvironmentVariable("OPENCODE_GO_AUTH_COOKIE", null);
     }
 
     public void Dispose()
     {
+        OpenCodeZenProvider.EnvironmentVariableResolver = this.savedEnvironmentVariableResolver;
         Environment.SetEnvironmentVariable("OPENCODE_ZEN_WORKSPACE_ID", null);
         Environment.SetEnvironmentVariable("OPENCODE_ZEN_AUTH_COOKIE", null);
+        Environment.SetEnvironmentVariable("OPENCODE_ZEN_KEY", null);
         Environment.SetEnvironmentVariable("OPENCODE_GO_WORKSPACE_ID", null);
         Environment.SetEnvironmentVariable("OPENCODE_GO_AUTH_COOKIE", null);
     }

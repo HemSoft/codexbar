@@ -42,14 +42,16 @@ public class UsageRefreshServiceTests
     }
 
     [Fact]
-    public async Task RefreshAllAsync_SkipsUnavailableProvider()
+    public async Task RefreshAllAsync_UnavailableProvider_StoresFailureResult()
     {
         var provider = new DummyProvider(available: false, result: ProviderUsageResult.EmptySuccess(ProviderId.Copilot));
         var service = new UsageRefreshService([provider], NullLogger<UsageRefreshService>.Instance);
 
         await service.RefreshAllAsync();
 
-        Assert.Empty(service.LatestResults);
+        Assert.Single(service.LatestResults);
+        Assert.False(service.LatestResults[ProviderId.Copilot].Success);
+        Assert.Contains("unavailable", service.LatestResults[ProviderId.Copilot].ErrorMessage);
     }
 
     [Fact]

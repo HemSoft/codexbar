@@ -87,6 +87,42 @@ public class SettingsServiceTests : IDisposable
     }
 
     [Fact]
+    public void Save_WhenPrimarySettingsPathIsUnavailable_WritesFallbackSettingsFile()
+    {
+        Directory.CreateDirectory(Path.Combine(this.tempDir, "settings.json"));
+        var service = this.CreateService();
+
+        var settings = new AppSettings();
+        settings.Providers["Claude"] = new ProviderSettings { Enabled = false };
+        service.Save(settings);
+
+        var fallbackPath = Path.Combine(this.tempDir, "codexbar-settings.json");
+        Assert.True(File.Exists(fallbackPath));
+
+        var service2 = this.CreateService();
+        Assert.False(service2.IsProviderEnabled(ProviderId.Claude));
+    }
+
+    [Fact]
+    public void Load_WhenFallbackSettingsFileExists_UsesFallbackSettingsFile()
+    {
+        var fallbackPath = Path.Combine(this.tempDir, "codexbar-settings.json");
+        File.WriteAllText(fallbackPath, """
+            {
+              "providers": {
+                "Claude": {
+                  "enabled": false
+                }
+              }
+            }
+            """);
+
+        var service = this.CreateService();
+
+        Assert.False(service.IsProviderEnabled(ProviderId.Claude));
+    }
+
+    [Fact]
     public void Save_SanitizesEmptyApiKey()
     {
         var uniqueKey = $"test-{Guid.NewGuid():N}";

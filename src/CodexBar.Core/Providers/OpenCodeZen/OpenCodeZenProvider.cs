@@ -10,7 +10,7 @@ using Microsoft.Extensions.Logging;
 
 /// <summary>
 /// Fetches OpenCode Zen credit balance by scraping the workspace billing dashboard.
-/// Auth: workspace ID + auth cookie from OpenCodeGo settings (shared credentials).
+/// Auth: workspace ID + dashboard auth cookie from OpenCodeGo settings (shared credentials).
 /// URL: https://opencode.ai/workspace/{workspaceId}/billing
 /// Parses SolidJS SSR data: balance field (in nanodollars → dollars).
 /// </summary>
@@ -26,6 +26,8 @@ public sealed partial class OpenCodeZenProvider(
     private const string DashboardPrefix = "https://opencode.ai/workspace/";
     private const string DashboardSuffix = "/billing";
     private static readonly TimeSpan CacheTtl = TimeSpan.FromSeconds(90);
+
+    internal static Func<string, string?> EnvironmentVariableResolver { get; set; } = ResolveEnvironmentVariable;
 
     private readonly SemaphoreSlim fetchLock = new(1, 1);
     private DateTimeOffset lastFetch = DateTimeOffset.MinValue;
@@ -44,28 +46,14 @@ public sealed partial class OpenCodeZenProvider(
         SupportsCredits = true,
     };
 
-    public Task<bool> IsAvailableAsync(CancellationToken ct = default)
-    {
-        if (!this.settings.IsProviderEnabled(ProviderId.OpenCodeZen))
-        {
-            this.logger.LogInformation("OpenCode Zen: disabled in settings");
-            return Task.FromResult(false);
-        }
-
-        var (workspaceId, authCookie) = this.ResolveCredentials();
-        this.logger.LogDebug(
-            "OpenCode Zen: available check - hasWorkspaceId={HasWorkspaceId}, hasCookie={HasCookie}",
-            !string.IsNullOrWhiteSpace(workspaceId),
-            !string.IsNullOrWhiteSpace(authCookie));
-        return Task.FromResult(
-            !string.IsNullOrWhiteSpace(workspaceId) && !string.IsNullOrWhiteSpace(authCookie));
-    }
+    public Task<bool> IsAvailableAsync(CancellationToken ct = default) =>
+        Task.FromResult(this.settings.IsProviderEnabled(ProviderId.OpenCodeZen));
 
     public async Task<ProviderUsageResult> FetchUsageAsync(CancellationToken ct = default)
     {
-        var (workspaceId, authCookie) = this.ResolveCredentials();
+        var (workspaceId, authCookie, hasZenApiKey) = this.ResolveCredentials();
 
-        var validationError = ValidateCredentials(workspaceId, authCookie);
+        var validationError = ValidateCredentials(workspaceId, authCookie, hasZenApiKey);
         if (validationError is not null)
         {
             return validationError;
@@ -102,7 +90,7 @@ public sealed partial class OpenCodeZenProvider(
         }
     }
 
-    private static ProviderUsageResult? ValidateCredentials(string? workspaceId, string? authCookie)
+    private static ProviderUsageResult? ValidateCredentials(string? workspaceId, string? authCookie, bool hasZenApiKey)
     {
         if (string.IsNullOrWhiteSpace(workspaceId))
         {
@@ -113,6 +101,14 @@ public sealed partial class OpenCodeZenProvider(
 
         if (string.IsNullOrWhiteSpace(authCookie))
         {
+            if (hasZenApiKey)
+            {
+                return ProviderUsageResult.Failure(
+                    ProviderId.OpenCodeZen,
+                    "OPENCODE_ZEN_KEY is configured, but OpenCode Zen balance lookup requires a dashboard auth cookie. " +
+                    "OpenCode currently exposes the API key for model access, not balance lookup. Configure OPENCODE_ZEN_AUTH_COOKIE or OPENCODE_GO_AUTH_COOKIE, or disable OpenCode Zen balance.");
+            }
+
             return ProviderUsageResult.Failure(
                 ProviderId.OpenCodeZen,
                 "Configure OPENCODE_ZEN_AUTH_COOKIE or OPENCODE_GO_AUTH_COOKIE (env var) or providers.OpenCodeZen.apiKey or providers.OpenCodeGo.apiKey in settings.json.");
@@ -158,6 +154,14 @@ public sealed partial class OpenCodeZenProvider(
         }
 
         var html = await response.Content.ReadAsStringAsync(ct);
+        if (LooksLikeOpenAuthPage(html))
+        {
+            return ProviderUsageResult.Failure(
+                ProviderId.OpenCodeZen,
+                "OpenCode returned the OpenAuth sign-in page instead of billing data. " +
+                "Refresh OPENCODE_ZEN_AUTH_COOKIE or OPENCODE_GO_AUTH_COOKIE; OPENCODE_ZEN_KEY is only an API key for model access.");
+        }
+
         var balance = ParseBalance(html);
 
         if (balance is null)
@@ -224,17 +228,18 @@ public sealed partial class OpenCodeZenProvider(
     /// Resolves credentials from env vars first, then settings.
     /// Shares the workspace ID and auth cookie with OpenCodeGo since they use the same dashboard.
     /// </summary>
-    private (string? workspaceId, string? authCookie) ResolveCredentials()
+    private (string? workspaceId, string? authCookie, bool hasZenApiKey) ResolveCredentials()
     {
+        var zenApiKey = EnvironmentVariableResolver("OPENCODE_ZEN_KEY");
         var workspaceId = ResolveEnvOrSetting(
             "OPENCODE_ZEN_WORKSPACE_ID",
             "OPENCODE_GO_WORKSPACE_ID",
             this.settings.GetOpenCodeGoWorkspaceId());
 
-        var authCookie = ResolveEnvOrSetting(
-            "OPENCODE_ZEN_AUTH_COOKIE",
-            "OPENCODE_GO_AUTH_COOKIE",
-            this.settings.GetApiKey(ProviderId.OpenCodeGo));
+        var authCookie =
+            EnvironmentVariableResolver("OPENCODE_ZEN_AUTH_COOKIE")
+            ?? EnvironmentVariableResolver("OPENCODE_GO_AUTH_COOKIE")
+            ?? this.settings.GetApiKey(ProviderId.OpenCodeGo);
 
         // Also check for Zen-specific API key override
         var zenKey = this.settings.GetApiKey(ProviderId.OpenCodeZen);
@@ -243,13 +248,24 @@ public sealed partial class OpenCodeZenProvider(
             authCookie = zenKey;
         }
 
-        return (workspaceId, authCookie);
+        return (workspaceId, authCookie, !string.IsNullOrWhiteSpace(zenApiKey));
     }
 
     private static string? ResolveEnvOrSetting(string primaryEnv, string fallbackEnv, string? settingValue) =>
-        Environment.GetEnvironmentVariable(primaryEnv)
-        ?? Environment.GetEnvironmentVariable(fallbackEnv)
+        EnvironmentVariableResolver(primaryEnv)
+        ?? EnvironmentVariableResolver(fallbackEnv)
         ?? settingValue;
+
+    private static string? ResolveEnvironmentVariable(string name) =>
+        Environment.GetEnvironmentVariable(name)
+        ?? Environment.GetEnvironmentVariable(name, EnvironmentVariableTarget.User)
+        ?? Environment.GetEnvironmentVariable(name, EnvironmentVariableTarget.Machine);
+
+    private static bool LooksLikeOpenAuthPage(string html) =>
+        ContainsAny(html, "<title>OpenAuth</title>", "openauth.js.org", "OpenAuth");
+
+    private static bool ContainsAny(string value, params string[] terms) =>
+        terms.Any(term => value.Contains(term, StringComparison.OrdinalIgnoreCase));
 
     [GeneratedRegex(@"balance:(\d+)", RegexOptions.Compiled)]
     private static partial Regex BalanceRegex();
