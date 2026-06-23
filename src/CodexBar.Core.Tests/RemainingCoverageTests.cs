@@ -72,6 +72,31 @@ public sealed class RemainingCoverageSettingsServiceTests : IDisposable
     }
 
     [Fact]
+    public void Load_SettingsDirectoryIsFile_ReturnsInMemoryDefaults()
+    {
+        var settingsDir = Path.Combine(this._rootDir, "settings-dir-is-file");
+        File.WriteAllText(settingsDir, "not a directory");
+        var service = new SettingsService(NullLogger<SettingsService>.Instance, settingsDir);
+
+        var settings = service.Load();
+
+        Assert.Equal(120, settings.RefreshIntervalSeconds);
+        Assert.True(settings.Providers.ContainsKey(ProviderId.Copilot.ToString()));
+        Assert.True(File.Exists(settingsDir));
+    }
+
+    [Fact]
+    public void IsSettingsPathUnavailable_KnownExceptionsReturnTrue()
+    {
+        var method = typeof(SettingsService).GetMethod("IsSettingsPathUnavailable", BindingFlags.NonPublic | BindingFlags.Static);
+        Assert.NotNull(method);
+
+        Assert.True((bool)method!.Invoke(null, [new UnauthorizedAccessException("denied")])!);
+        Assert.True((bool)method.Invoke(null, [new IOException("locked")])!);
+        Assert.False((bool)method.Invoke(null, [new InvalidOperationException("other")])!);
+    }
+
+    [Fact]
     public void Load_RestrictPermissionsThrows_ContinuesLoading()
     {
         // Create a valid settings file in a temp dir
@@ -431,6 +456,20 @@ public sealed class RemainingCoverageCopilotProviderTests : IDisposable
             process,
             TimeSpan.FromSeconds(5),
             cts.Token));
+    }
+
+    [Theory]
+    [InlineData(250000, 125000, 0.5)]
+    [InlineData(250000, -1, 0)]
+    [InlineData(0, 125000, 0)]
+    public void ComputeSpecialCreditPercentRemaining_ReturnsExpectedPercent(
+        int specialMonthlyCredits,
+        int remaining,
+        double expected)
+    {
+        var percent = CopilotProvider.ComputeSpecialCreditPercentRemaining(specialMonthlyCredits, remaining);
+
+        Assert.Equal(expected, percent);
     }
 
     public void Dispose()
