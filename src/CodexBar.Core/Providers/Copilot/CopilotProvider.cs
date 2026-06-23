@@ -1196,6 +1196,9 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
         return Math.Max(overageByCount, overageByRemaining);
     }
 
+    internal static double ComputeSpecialCreditPercentRemaining(int specialMonthlyCredits, int remaining) =>
+        specialMonthlyCredits > 0 ? Math.Max(0, remaining) / (double)specialMonthlyCredits : 0;
+
     internal static CopilotQuotaSnapshot? ApplySpecialMonthlyCredits(string username, CopilotQuotaSnapshot? quota)
     {
         if (quota is null || !SpecialMonthlyCreditsByUser.TryGetValue(username, out var specialMonthlyCredits))
@@ -1212,7 +1215,7 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
             Remaining = remaining,
             OverageCount = Math.Max(0, -remaining),
             OveragePermitted = quota.OveragePermitted,
-            PercentRemaining = specialMonthlyCredits > 0 ? Math.Max(0, remaining) / (double)specialMonthlyCredits : 0,
+            PercentRemaining = ComputeSpecialCreditPercentRemaining(specialMonthlyCredits, remaining),
             Unlimited = quota.Unlimited,
             QuotaId = quota.QuotaId,
             TimestampUtc = quota.TimestampUtc,

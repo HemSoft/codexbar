@@ -284,6 +284,93 @@ public class SettingsServiceMergeHelpersTests : IDisposable
         Assert.Null(loaded.CopilotPoolTotal);
     }
 
+    [Fact]
+    public void Save_MissingCopilotKnownAccounts_PreservesDiskAccounts()
+    {
+        var diskSettings = new AppSettings
+        {
+            Providers = [],
+            CopilotKnownAccounts = ["alice", "bob"],
+        };
+        this.WriteDisk(diskSettings);
+
+        var service = this.CreateService();
+        var memSettings = new AppSettings
+        {
+            Providers = [],
+            CopilotKnownAccounts = [],
+        };
+
+        service.Save(memSettings);
+
+        var loaded = this.CreateService().Load();
+        Assert.Equal(["alice", "bob"], loaded.CopilotKnownAccounts);
+    }
+
+    [Fact]
+    public void Save_NullCopilotKnownAccounts_PreservesDiskAccounts()
+    {
+        var diskSettings = new AppSettings
+        {
+            Providers = [],
+            CopilotKnownAccounts = ["alice"],
+        };
+        this.WriteDisk(diskSettings);
+
+        var service = this.CreateService();
+        var memSettings = new AppSettings
+        {
+            Providers = [],
+            CopilotKnownAccounts = null!,
+        };
+
+        service.Save(memSettings);
+
+        var loaded = this.CreateService().Load();
+        Assert.Equal(["alice"], loaded.CopilotKnownAccounts);
+    }
+
+    [Fact]
+    public void Save_ConfiguredCopilotKnownAccounts_KeepsMemoryAccounts()
+    {
+        var diskSettings = new AppSettings
+        {
+            Providers = [],
+            CopilotKnownAccounts = ["disk"],
+        };
+        this.WriteDisk(diskSettings);
+
+        var service = this.CreateService();
+        var memSettings = new AppSettings
+        {
+            Providers = [],
+            CopilotKnownAccounts = ["memory"],
+        };
+
+        service.Save(memSettings);
+
+        var loaded = this.CreateService().Load();
+        Assert.Equal(["memory"], loaded.CopilotKnownAccounts);
+    }
+
+    [Fact]
+    public void Save_MissingCopilotKnownAccounts_DiskNullOrEmptyKeepsMemoryEmpty()
+    {
+        File.WriteAllText(this.SettingsPath, """{"providers":{},"copilotKnownAccounts":null}""");
+
+        var service = this.CreateService();
+        var memSettings = new AppSettings
+        {
+            Providers = [],
+            CopilotKnownAccounts = [],
+        };
+
+        service.Save(memSettings);
+
+        var loaded = this.CreateService().Load();
+        Assert.Empty(loaded.CopilotKnownAccounts);
+    }
+
     // --- MergeSessionBaselines: memory has baseline, disk has same key → memory wins ---
     [Fact]
     public void Save_MemoryBaseline_TakesPrecedenceOverDisk()
