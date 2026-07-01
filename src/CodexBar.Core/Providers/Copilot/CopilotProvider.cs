@@ -224,7 +224,7 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
 
             if (userToken is not null)
             {
-                var userItem = await this.TryBuildUserBillingItemAsync(username, configuration, orgConsumed, userToken, ct);
+                var userItem = await this.TryBuildUserBillingItemAsync(username, result, configuration, orgConsumed, userToken, ct);
                 if (userItem is not null)
                 {
                     items.Add(userItem);
@@ -310,7 +310,13 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
         return (item, consumed);
     }
 
-    private async Task<UsageItem?> TryBuildUserBillingItemAsync(string username, CopilotBillingConfiguration configuration, decimal? orgConsumed, string token, CancellationToken ct)
+    private async Task<UsageItem?> TryBuildUserBillingItemAsync(
+        string username,
+        CopilotAccountResult accountResult,
+        CopilotBillingConfiguration configuration,
+        decimal? orgConsumed,
+        string token,
+        CancellationToken ct)
     {
         var response = await this.FetchUserBillingAsync(username, configuration, token, ct);
         if (response is null)
@@ -321,7 +327,7 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
         var periodStart = ComputeBillingPeriodStart(configuration.Year, configuration.Month);
         var periodEnd = periodStart.AddMonths(1);
         var billingConsumed = SumGrossQuantity(response.UsageItems);
-        var (consumed, total, primary) = BuildUserPrimaryUsage(configuration, billingConsumed);
+        var (consumed, total, primary) = BuildUserPrimaryUsage(configuration, accountResult, billingConsumed);
         var projectedMonthEnd = ProjectMonthEndCredits(consumed, periodStart, periodEnd, DateTimeOffset.UtcNow);
         var bars = BuildUserUsageBars(consumed, total, projectedMonthEnd, primary, periodStart, periodEnd, billingConsumed, orgConsumed);
 
@@ -493,14 +499,19 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
 
     private static (decimal Consumed, decimal Total, UsageSnapshot PrimaryUsage) BuildUserPrimaryUsage(
         CopilotBillingConfiguration configuration,
+        CopilotAccountResult accountResult,
         decimal billingConsumed)
     {
+        var total = accountResult.PremiumInteractions?.Entitlement is > 0
+            ? accountResult.PremiumInteractions.Entitlement
+            : configuration.CreditsPerSeat;
+
         return (billingConsumed,
-            configuration.CreditsPerSeat,
+            total,
             BuildMonthlyUsageSnapshot(
                 billingConsumed,
-                configuration.CreditsPerSeat,
-                $"{billingConsumed:N0} / {configuration.CreditsPerSeat:N0} AI credits",
+                total,
+                $"{billingConsumed:N0} / {total:N0} AI credits",
                 configuration.Year,
                 configuration.Month));
     }

@@ -321,16 +321,24 @@ public class CopilotProviderTests
         };
 
         var result = await provider.FetchUsageAsync();
+        var expectedPeriodStart = new DateTimeOffset(
+            DateTimeOffset.UtcNow.Year,
+            DateTimeOffset.UtcNow.Month,
+            1,
+            0,
+            0,
+            0,
+            TimeSpan.Zero);
 
         Assert.NotNull(result.Items);
         var user = Assert.Single(result.Items, item => item.Key == "copilot:alice");
         Assert.NotNull(user.Bars);
-        Assert.Equal("Current · 55 / 7,000", user.Bars![0].Label);
+        Assert.Equal("Current · 55 / 300", user.Bars![0].Label);
         Assert.StartsWith("Month end est. · ", user.Bars[1].Label);
         Assert.Equal(55m, user.Bars[1].ProjectionCurrent);
-        Assert.Equal(7000m, user.Bars[1].ProjectionLimit);
-        Assert.Equal(new DateTimeOffset(2026, 6, 1, 0, 0, 0, TimeSpan.Zero), user.Bars[1].ProjectionPeriodStart);
-        Assert.Equal(new DateTimeOffset(2026, 7, 1, 0, 0, 0, TimeSpan.Zero), user.Bars[1].ProjectionPeriodEnd);
+        Assert.Equal(300m, user.Bars[1].ProjectionLimit);
+        Assert.Equal(expectedPeriodStart, user.Bars[1].ProjectionPeriodStart);
+        Assert.Equal(expectedPeriodStart.AddMonths(1), user.Bars[1].ProjectionPeriodEnd);
         Assert.Equal("Share of org · 55 / 200", user.Bars[2].Label);
     }
 
