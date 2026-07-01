@@ -458,20 +458,6 @@ public sealed class RemainingCoverageCopilotProviderTests : IDisposable
             cts.Token));
     }
 
-    [Theory]
-    [InlineData(250000, 125000, 0.5)]
-    [InlineData(250000, -1, 0)]
-    [InlineData(0, 125000, 0)]
-    public void ComputeSpecialCreditPercentRemaining_ReturnsExpectedPercent(
-        int specialMonthlyCredits,
-        int remaining,
-        double expected)
-    {
-        var percent = CopilotProvider.ComputeSpecialCreditPercentRemaining(specialMonthlyCredits, remaining);
-
-        Assert.Equal(expected, percent);
-    }
-
     public void Dispose()
     {
         this._provider.GhTokenProcessOverride = null;

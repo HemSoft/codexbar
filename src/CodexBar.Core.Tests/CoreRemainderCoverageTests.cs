@@ -445,16 +445,6 @@ public sealed class CopilotProviderRemainderCoverageTests
         Assert.Equal(expected, result);
     }
 
-    [Theory]
-    [InlineData("fhemmerrelias", 250000)]
-    [InlineData("alice", 7000)]
-    public void GetMonthlyAICreditAllowance_UserOverride_ReturnsExpectedAllowance(string username, int expected)
-    {
-        var result = CopilotProvider.GetMonthlyAICreditAllowance(username, 7000);
-
-        Assert.Equal(expected, result);
-    }
-
     [Fact]
     public async Task TryBuildBillingItemsAsync_OrgTokenMissing_ReturnsNullAsync()
     {

@@ -704,45 +704,6 @@ public class BranchCoverageTests
         Assert.Contains("Chat", label);
     }
 
-    [Fact]
-    public void ApplySpecialMonthlyCredits_Fhemmerrelias_UsesSpecialAllowance()
-    {
-        var quota = new CopilotQuotaSnapshot
-        {
-            Remaining = -38452,
-            Entitlement = 7000,
-            OverageCount = 38452,
-            OveragePermitted = true,
-            PercentRemaining = 0,
-            Unlimited = false,
-        };
-
-        var adjusted = CopilotProvider.ApplySpecialMonthlyCredits("fhemmerrelias", quota);
-
-        Assert.NotNull(adjusted);
-        Assert.Equal(250000, adjusted.Entitlement);
-        Assert.Equal(204548, adjusted.Remaining);
-        Assert.Equal(0, adjusted.OverageCount);
-    }
-
-    [Fact]
-    public void ApplySpecialMonthlyCredits_OtherUser_ReturnsOriginalQuota()
-    {
-        var quota = new CopilotQuotaSnapshot
-        {
-            Remaining = 3500,
-            Entitlement = 7000,
-            OverageCount = 0,
-            OveragePermitted = false,
-            PercentRemaining = 0.5,
-            Unlimited = false,
-        };
-
-        var adjusted = CopilotProvider.ApplySpecialMonthlyCredits("alice", quota);
-
-        Assert.Same(quota, adjusted);
-    }
-
     /// <summary>
     /// Exercises ParseReset with null value (line 694).
     /// </summary>

@@ -149,6 +149,30 @@ public class CopilotProviderFetchTests
     }
 
     [Fact]
+    public async Task FetchUsageAsync_Fhemmerrelias_UsesApiEntitlement()
+    {
+        var json = BuildCopilotUserJson(
+            login: "fhemmerrelias",
+            entitlement: 350000,
+            remaining: 347468);
+        var response = new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(json, Encoding.UTF8, "application/json"),
+        };
+
+        var settings = CreateSettings("fhemmerrelias");
+        var factory = CreateFactory(response);
+        var provider = CreateProvider(settings, factory, (_, _) => Task.FromResult<string?>(FakeToken));
+
+        var result = await provider.FetchUsageAsync();
+
+        Assert.True(result.Success);
+        var primaryUsage = Assert.Single(result.Items!).PrimaryUsage;
+        Assert.NotNull(primaryUsage);
+        Assert.Equal("2,532 / 350,000", primaryUsage!.UsageLabel);
+    }
+
+    [Fact]
     public async Task FetchUsageAsync_SingleAccount_OveragePermitted_IncludesOverageCost()
     {
         var json = BuildCopilotUserJson(

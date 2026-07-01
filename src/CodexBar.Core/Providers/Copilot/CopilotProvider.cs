@@ -43,12 +43,6 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
     private const string GitHubRestUserAgent = "CodexBar/1.0";
     private const int PromotionalCreditsPerSeat = 7000;
     private const int StandardCreditsPerSeat = 3900;
-    private const int FhemmerreliasMonthlyCredits = 250000;
-
-    private static readonly Dictionary<string, int> SpecialMonthlyCreditsByUser = new(StringComparer.OrdinalIgnoreCase)
-    {
-        ["fhemmerrelias"] = FhemmerreliasMonthlyCredits,
-    };
 
     [ExcludeFromCodeCoverage]
     private static string GetConfiguredValue(string environmentVariableName, string fallbackValue)
@@ -327,7 +321,7 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
         var periodStart = ComputeBillingPeriodStart(configuration.Year, configuration.Month);
         var periodEnd = periodStart.AddMonths(1);
         var billingConsumed = SumGrossQuantity(response.UsageItems);
-        var (consumed, total, primary) = BuildUserPrimaryUsage(configuration, username, billingConsumed);
+        var (consumed, total, primary) = BuildUserPrimaryUsage(configuration, billingConsumed);
         var projectedMonthEnd = ProjectMonthEndCredits(consumed, periodStart, periodEnd, DateTimeOffset.UtcNow);
         var bars = BuildUserUsageBars(consumed, total, projectedMonthEnd, primary, periodStart, periodEnd, billingConsumed, orgConsumed);
 
@@ -499,16 +493,14 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
 
     private static (decimal Consumed, decimal Total, UsageSnapshot PrimaryUsage) BuildUserPrimaryUsage(
         CopilotBillingConfiguration configuration,
-        string username,
         decimal billingConsumed)
     {
-        var perSeat = GetMonthlyAICreditAllowance(username, configuration.CreditsPerSeat);
         return (billingConsumed,
-            perSeat,
+            configuration.CreditsPerSeat,
             BuildMonthlyUsageSnapshot(
                 billingConsumed,
-                perSeat,
-                $"{billingConsumed:N0} / {perSeat:N0} AI credits",
+                configuration.CreditsPerSeat,
+                $"{billingConsumed:N0} / {configuration.CreditsPerSeat:N0} AI credits",
                 configuration.Year,
                 configuration.Month));
     }
@@ -581,11 +573,6 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
 
     internal static int GetCreditsPerSeat(int year, int month) =>
         year == 2026 && month is >= 6 and <= 8 ? PromotionalCreditsPerSeat : StandardCreditsPerSeat;
-
-    internal static int GetMonthlyAICreditAllowance(string username, int defaultMonthlyAllowance) =>
-        SpecialMonthlyCreditsByUser.TryGetValue(username, out var specialMonthlyCredits)
-            ? specialMonthlyCredits
-            : defaultMonthlyAllowance;
 
     private sealed record BillingBuildResult(List<UsageItem> Items, UsageSnapshot? SessionUsage);
 
@@ -1060,7 +1047,7 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
             };
         }
 
-        var premium = ApplySpecialMonthlyCredits(username, result.PremiumInteractions);
+        var premium = result.PremiumInteractions;
         UsageSnapshot? primaryUsage = null;
         UsageSnapshot? secondaryUsage = null;
         decimal? overageCost = null;
@@ -1194,31 +1181,5 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
         var overageByCount = Math.Max(0, premium.OverageCount);
         var overageByRemaining = Math.Max(0, -premium.Remaining);
         return Math.Max(overageByCount, overageByRemaining);
-    }
-
-    internal static double ComputeSpecialCreditPercentRemaining(int specialMonthlyCredits, int remaining) =>
-        specialMonthlyCredits > 0 ? Math.Max(0, remaining) / (double)specialMonthlyCredits : 0;
-
-    internal static CopilotQuotaSnapshot? ApplySpecialMonthlyCredits(string username, CopilotQuotaSnapshot? quota)
-    {
-        if (quota is null || !SpecialMonthlyCreditsByUser.TryGetValue(username, out var specialMonthlyCredits))
-        {
-            return quota;
-        }
-
-        var used = Math.Max(0, quota.Entitlement - quota.Remaining);
-        var remaining = specialMonthlyCredits - used;
-
-        return new CopilotQuotaSnapshot
-        {
-            Entitlement = specialMonthlyCredits,
-            Remaining = remaining,
-            OverageCount = Math.Max(0, -remaining),
-            OveragePermitted = quota.OveragePermitted,
-            PercentRemaining = ComputeSpecialCreditPercentRemaining(specialMonthlyCredits, remaining),
-            Unlimited = quota.Unlimited,
-            QuotaId = quota.QuotaId,
-            TimestampUtc = quota.TimestampUtc,
-        };
     }
 }
