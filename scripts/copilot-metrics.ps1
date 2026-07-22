@@ -571,18 +571,37 @@ function Get-UniqueLogin {
     $uniqueLogins = [System.Collections.Generic.List[string]]::new()
 
     foreach ($login in @($Login)) {
-        $loginKey = ([string]$login).Trim()
+        $loginValue = ([string]$login).Trim()
+        $loginKey = Get-LoginLookupKey -Login $loginValue
         if (-not $loginKey) {
             continue
         }
 
         if (-not $seen.ContainsKey($loginKey)) {
             $seen[$loginKey] = $true
-            $uniqueLogins.Add($loginKey)
+            $uniqueLogins.Add($loginValue)
         }
     }
 
     @($uniqueLogins | Sort-Object)
+}
+
+function Get-LoginLookupKey {
+    param([AllowNull()][string]$Login)
+
+    $loginText = ([string]$Login).Trim()
+    if (-not $loginText) {
+        return ''
+    }
+
+    $builder = [System.Text.StringBuilder]::new()
+    foreach ($character in $loginText.ToCharArray()) {
+        if ([System.Globalization.CharUnicodeInfo]::GetUnicodeCategory($character) -ne [System.Globalization.UnicodeCategory]::Format) {
+            [void]$builder.Append($character)
+        }
+    }
+
+    $builder.ToString().Normalize([System.Text.NormalizationForm]::FormC).ToUpperInvariant()
 }
 
 function Get-CopilotSeatLogin {
@@ -896,11 +915,54 @@ function Get-RunUserLookup {
     $lookup = @{}
     foreach ($userEntry in @($RunUser)) {
         if ($userEntry.User) {
-            $lookup[([string]$userEntry.User).Trim()] = $userEntry
+            $loginKey = Get-LoginLookupKey -Login $userEntry.User
+            if (-not $loginKey) {
+                continue
+            }
+
+            if ($lookup.ContainsKey($loginKey)) {
+                $lookup[$loginKey] = Select-PreferredRunUserEntry -Existing $lookup[$loginKey] -Candidate $userEntry
+            }
+            else {
+                $lookup[$loginKey] = $userEntry
+            }
         }
     }
 
     $lookup
+}
+
+function Get-RunUserResponseCount {
+    param($RunUser)
+
+    @($RunUser.Responses).Count
+}
+
+function Select-PreferredRunUserEntry {
+    param(
+        $Existing,
+        $Candidate
+    )
+
+    if (-not $Existing) {
+        return $Candidate
+    }
+
+    if (-not $Candidate) {
+        return $Existing
+    }
+
+    $existingSucceeded = [bool]$Existing.Success
+    $candidateSucceeded = [bool]$Candidate.Success
+    if ($candidateSucceeded -and -not $existingSucceeded) {
+        return $Candidate
+    }
+
+    if ($candidateSucceeded -eq $existingSucceeded -and (Get-RunUserResponseCount -RunUser $Candidate) -gt (Get-RunUserResponseCount -RunUser $Existing)) {
+        return $Candidate
+    }
+
+    $Existing
 }
 
 function Get-UniqueRunUser {
@@ -937,7 +999,7 @@ function Get-CompatibleCopilotMetricsCache {
         return $null
     }
 
-    $cache = Get-Content -Path $Path -Raw | ConvertFrom-Json
+    $cache = Get-Content -Path $Path -Raw -Encoding UTF8 | ConvertFrom-Json
     if (Test-CopilotMetricsCacheScope -Cache $cache) {
         Write-MetricsSection -Title 'Cache'
         Write-MetricsDetail -Label 'Status' -Value 'Compatible'
@@ -1043,9 +1105,12 @@ function Get-PersistedRunUser {
     }
 
     @(Get-UniqueLogin -Login $Login | ForEach-Object {
-            $loginKey = [string]$_
+            $loginKey = Get-LoginLookupKey -Login $_
             if ($UserLookup.ContainsKey($loginKey)) {
                 $UserLookup[$loginKey]
+            }
+            else {
+                Get-MissingRunUser -Login $_
             }
         })
 }
@@ -1187,13 +1252,13 @@ if ($inputPathValue) {
         throw "No saved Copilot metrics run found at $inputPathValue. Run .\scripts\$(Split-Path -Leaf $PSCommandPath) -Refresh to create it."
     }
 
-    $cache = Get-Content -Path $inputPathValue -Raw | ConvertFrom-Json
+    $cache = Get-Content -Path $inputPathValue -Raw -Encoding UTF8 | ConvertFrom-Json
     Show-TopUser -RunUser $cache.Users -Label "Top $Top Copilot AI Credit consumers from $inputPathValue"
     return
 }
 
 if ($repairInputFileValue) {
-    $cache = Get-Content -Path $repairInputFileValue -Raw | ConvertFrom-Json
+    $cache = Get-Content -Path $repairInputFileValue -Raw -Encoding UTF8 | ConvertFrom-Json
     if ($cache.Enterprise) { $enterpriseName = [string]$cache.Enterprise }
     if ($cache.Organization) { $Org = [string]$cache.Organization }
     if ($cache.Year) { $yearValue = [int]$cache.Year }
@@ -1208,15 +1273,16 @@ if ($repairInputFileValue) {
 
     $inputUserCount = @($cache.Users).Count
     $userLookup = Get-RunUserLookup -RunUser $cache.Users
-    $missingLogins = @($seatLogins | Where-Object { -not $userLookup.ContainsKey([string]$_) })
+    $missingLogins = @($seatLogins | Where-Object { -not $userLookup.ContainsKey((Get-LoginLookupKey -Login $_)) })
     Write-Information "Repair mode found $($seatLogins.Count) current Copilot seat(s); input contains $inputUserCount user(s); $($missingLogins.Count) seat user(s) missing."
 
     $repairedUsers = [System.Collections.Generic.List[object]]::new()
     $repairCount = 0
 
     foreach ($login in $seatLogins) {
-        $userEntry = if ($userLookup.ContainsKey([string]$login)) {
-            $userLookup[[string]$login]
+        $loginKey = Get-LoginLookupKey -Login $login
+        $userEntry = if ($userLookup.ContainsKey($loginKey)) {
+            $userLookup[$loginKey]
         }
         else {
             Get-MissingRunUser -Login ([string]$login)
@@ -1309,8 +1375,9 @@ $alwaysRefreshDayLookup = @{}
 $loginIndex = 0
 foreach ($login in $logins) {
     $loginIndex++
-    $existingUserEntry = if ($existingUserLookup.ContainsKey([string]$login)) {
-        $existingUserLookup[[string]$login]
+    $loginKey = Get-LoginLookupKey -Login $login
+    $existingUserEntry = if ($existingUserLookup.ContainsKey($loginKey)) {
+        $existingUserLookup[$loginKey]
     }
     else {
         $null
@@ -1393,7 +1460,7 @@ $checkpointSaver = {
     }
 
     $script:checkpointResponseCount++
-    $script:mergedUserLookup[[string]$Login] = ConvertTo-RunUserEntry -Login $Login -Responses $Responses
+    $script:mergedUserLookup[(Get-LoginLookupKey -Login $Login)] = ConvertTo-RunUserEntry -Login $Login -Responses $Responses
     $checkpointUsers = Get-PersistedRunUser -UserLookup $script:mergedUserLookup -Login $script:logins -PreserveAllCachedUsers $script:usingExplicitUsers
     $checkpointData = Get-CopilotMetricsRunData `
         -RunUser $checkpointUsers `
@@ -1423,17 +1490,25 @@ foreach ($planItem in $refreshPlan) {
             $results.Add($userData.Usage)
             $runUserEntry = ConvertTo-RunUserEntry -Login $login -Responses $userData.Responses
             $runUsers.Add($runUserEntry)
-            $mergedUserLookup[[string]$login] = $runUserEntry
+            $mergedUserLookup[(Get-LoginLookupKey -Login $login)] = $runUserEntry
         }
     }
     catch {
         Write-Warning "Skipping $login`: $($_.Exception.Message)"
-        $runUsers.Add([pscustomobject]@{
+        $runUserEntry = [pscustomobject]@{
                 User      = $login
                 Success   = $false
                 Responses = @()
                 Error     = $_.Exception.Message
-            })
+            }
+        $runUsers.Add($runUserEntry)
+        $loginKey = Get-LoginLookupKey -Login $login
+        if ($mergedUserLookup.ContainsKey($loginKey)) {
+            $mergedUserLookup[$loginKey] = Select-PreferredRunUserEntry -Existing $mergedUserLookup[$loginKey] -Candidate $runUserEntry
+        }
+        else {
+            $mergedUserLookup[$loginKey] = $runUserEntry
+        }
     }
 }
 
