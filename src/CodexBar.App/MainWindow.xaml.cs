@@ -17,31 +17,20 @@ using CodexBar.Core.Services;
 [System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage]
 public partial class MainWindow : Window
 {
-    private const int WMNCHITTEST = 0x0084;
-    private const int WMNCLBUTTONDOWN = 0x00A1;
+    private const int WMSYSCOMMAND = 0x0112;
+    private const int WMSIZING = 0x0214;
     private const int WMENTERSIZEMOVE = 0x0231;
     private const int WMEXITSIZEMOVE = 0x0232;
-    private const int WMSETCURSOR = 0x0020;
-    private const int WMMOVE = 0x0003;
-    private const int HTCAPTION = 2;
-    private const int HTBOTTOMRIGHT = 17;
+    private const int SCSIZE = 0xF000;
+    private const int SCMASK = 0xFFF0;
     private const uint MONITORDEFAULTTONEAREST = 2;
     private const uint SWPNOSIZE = 0x0001;
     private const uint SWPNOZORDER = 0x0004;
     private const uint SWPNOACTIVATE = 0x0010;
     internal const double WorkAreaEdgePadding = 4;
 
-    [DllImport("user32.dll")]
-    private static extern IntPtr LoadCursor(IntPtr hInstance, IntPtr lpCursorName);
-
-    [DllImport("user32.dll")]
-    private static extern IntPtr SetCursor(IntPtr hCursor);
-
-    [DllImport("user32.dll")]
-    private static extern bool ReleaseCapture();
-
-    [DllImport("user32.dll")]
-    private static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
+    // DWM window attribute: dark title bar (Windows 11 build 22000+).
+    private const int DWMWAUSEIMMERSIVEDARKMODE = 20;
 
     [DllImport("user32.dll")]
     private static extern bool GetWindowRect(IntPtr hwnd, out RECT lpRect);
@@ -55,7 +44,8 @@ public partial class MainWindow : Window
     [DllImport("user32.dll")]
     private static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int x, int y, int cx, int cy, uint uFlags);
 
-    private static readonly IntPtr IDCSIZEALL = new IntPtr(32646);
+    [DllImport("dwmapi.dll")]
+    private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int attributeValue, int attributeSize);
 
     /// <summary>Duration after a drag ends during which Deactivated is suppressed.</summary>
     private static readonly TimeSpan DragCooldown = TimeSpan.FromMilliseconds(500);
@@ -78,10 +68,6 @@ public partial class MainWindow : Window
 
     /// <summary>Saved physical pixel Y coordinate (from GetWindowRect). Null = no saved position.</summary>
     private int? physicalTop;
-
-    /// <summary>Last position received via WM_MOVE during a drag. Used to commit the final position.</summary>
-    private int lastDragX;
-    private int lastDragY;
 
     private bool isDragging;
     private bool isResizeInProgress;
@@ -128,11 +114,11 @@ public partial class MainWindow : Window
             this.physicalTop = (int)appSettings.WindowTop.Value;
             this.Left = appSettings.WindowLeft.Value;
             this.Top = appSettings.WindowTop.Value;
-            LogPosition($"CTOR: Loaded from settings → physicalLeft={this.physicalLeft}, physicalTop={this.physicalTop}, WPF Left={this.Left}, Top={this.Top}");
+            LogPosition($"CTOR[{this.GetHashCode():X8}]: Loaded from settings → physicalLeft={this.physicalLeft}, physicalTop={this.physicalTop}, WPF Left={this.Left}, Top={this.Top}");
         }
         else
         {
-            LogPosition("CTOR: No saved position in settings");
+            LogPosition($"CTOR[{this.GetHashCode():X8}]: No saved position in settings");
         }
 
         this.SizeChanged += this.OnSizeChanged;
@@ -149,9 +135,14 @@ public partial class MainWindow : Window
                 this.lastHeight = this.ActualHeight;
             }
 
-            this.EnsureOnScreen();
+            if (ShouldEnsureOnScreenAfterSizeChanged(this.isResizeInProgress))
+            {
+                this.EnsureOnScreen();
+            }
         }
     }
+
+    internal static bool ShouldEnsureOnScreenAfterSizeChanged(bool isResizeInProgress) => !isResizeInProgress;
 
     /// <summary>
     /// Called by App.ShowPopup() before Show() to set position.
@@ -165,7 +156,7 @@ public partial class MainWindow : Window
         this.ZoomTransform.ScaleY = this.zoomLevel;
 
         var hwnd = new WindowInteropHelper(this).Handle;
-        LogPosition($"RESTORE: physicalLeft={this.physicalLeft}, physicalTop={this.physicalTop}, hwnd={hwnd}");
+        LogPosition($"RESTORE[{this.GetHashCode():X8}]: physicalLeft={this.physicalLeft}, physicalTop={this.physicalTop}, hwnd={hwnd}, IsVisible={this.IsVisible}");
         if (this.physicalLeft is not null && this.physicalTop is not null)
         {
             if (hwnd != IntPtr.Zero)
@@ -181,6 +172,7 @@ public partial class MainWindow : Window
                 this.Left = this.physicalLeft.Value;
                 this.Top = this.physicalTop.Value;
                 LogPosition($"RESTORE: First show, set WPF Left={this.Left}, Top={this.Top}, hooking Loaded");
+                this.Loaded -= this.OnLoadedEnsureOnScreen;
                 this.Loaded += this.OnLoadedEnsureOnScreen;
             }
         }
@@ -192,6 +184,7 @@ public partial class MainWindow : Window
             }
             else
             {
+                this.Loaded -= this.OnLoadedPositionNearTray;
                 this.Loaded += this.OnLoadedPositionNearTray;
             }
         }
@@ -208,26 +201,12 @@ public partial class MainWindow : Window
             var hwnd = new WindowInteropHelper(this).Handle;
             if (hwnd != IntPtr.Zero)
             {
-                // Log position BEFORE SetWindowPos
-                GetWindowRect(hwnd, out var beforeRect);
-                LogPosition($"LOADED: Before SetWindowPos → GetWindowRect=({beforeRect.Left},{beforeRect.Top}), target=({this.physicalLeft},{this.physicalTop})");
-
                 SetWindowPos(hwnd, IntPtr.Zero, this.physicalLeft.Value, this.physicalTop.Value, 0, 0, SWPNOSIZE | SWPNOZORDER | SWPNOACTIVATE);
-
-                // Log position AFTER SetWindowPos
-                GetWindowRect(hwnd, out var afterRect);
-                LogPosition($"LOADED: After SetWindowPos → GetWindowRect=({afterRect.Left},{afterRect.Top})");
+                LogPosition($"LOADED: Applied saved position ({this.physicalLeft},{this.physicalTop})");
             }
         }
 
         this.EnsureOnScreen();
-
-        // Log final position
-        var finalHwnd = new WindowInteropHelper(this).Handle;
-        if (finalHwnd != IntPtr.Zero && GetWindowRect(finalHwnd, out var finalRect))
-        {
-            LogPosition($"LOADED: Final after EnsureOnScreen → GetWindowRect=({finalRect.Left},{finalRect.Top}), WPF Left={this.Left}, Top={this.Top}");
-        }
     }
 
     private void OnLoadedPositionNearTray(object? sender, EventArgs e)
@@ -245,8 +224,16 @@ public partial class MainWindow : Window
 
     protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
     {
+        LogPosition($"CLOSING[{this.GetHashCode():X8}]: cancelling and hiding instead");
         this.hideTimer.Stop();
         this.SaveWindowState();
+
+        // The tray icon owns the app lifetime: the title-bar X just hides the
+        // popup. During Application.Shutdown WPF ignores the cancellation, so
+        // exiting from the tray menu still closes the window for real.
+        e.Cancel = true;
+        this.Hide();
+
         base.OnClosing(e);
     }
 
@@ -372,117 +359,98 @@ public partial class MainWindow : Window
         base.OnSourceInitialized(e);
         this.hwndSource = PresentationSource.FromVisual(this) as HwndSource;
         this.hwndSource?.AddHook(this.WndProc);
+        this.ApplyNativeWindowStyling();
         this.UpdateMaxHeightFromCurrentMonitor();
+    }
+
+    /// <summary>Renders the standard title bar in dark colors to match the theme.</summary>
+    private void ApplyNativeWindowStyling()
+    {
+        var hwnd = this.hwndSource?.Handle ?? IntPtr.Zero;
+        if (hwnd == IntPtr.Zero)
+        {
+            return;
+        }
+
+        try
+        {
+            var darkMode = 1;
+            _ = DwmSetWindowAttribute(hwnd, DWMWAUSEIMMERSIVEDARKMODE, ref darkMode, sizeof(int));
+        }
+        catch (DllNotFoundException)
+        {
+        }
+        catch (EntryPointNotFoundException)
+        {
+        }
     }
 
     private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
         switch (msg)
         {
-            case WMNCHITTEST:
-                return this.HandleNcHitTest(lParam, ref handled);
-            case WMSETCURSOR:
-                if (LowWord((long)lParam) == HTCAPTION)
+            case WMSYSCOMMAND:
+                // A native resize is starting (SC_SIZE | direction, sent by
+                // DefWindowProc when the user grabs a WindowChrome resize border).
+                // Switch out of SizeToContent BEFORE the size loop begins so
+                // layout doesn't snap the height back while the user drags.
+                if (((int)(wParam.ToInt64() & SCMASK)) == SCSIZE)
                 {
-                    SetCursor(LoadCursor(IntPtr.Zero, IDCSIZEALL));
-                    handled = true;
-                    return (IntPtr)1;
+                    this.BeginManualResize();
+                }
+
+                break;
+            case WMSIZING:
+                // Fallback for resize loops that start without SC_SIZE
+                // (e.g., keyboard-initiated sizing).
+                if (!this.isResizeInProgress)
+                {
+                    this.BeginManualResize();
                 }
 
                 break;
             case WMENTERSIZEMOVE:
                 this.isDragging = true;
                 this.hideTimer.Stop();
-                LogPosition("DRAG: WM_ENTERSIZEMOVE received — drag started");
                 break;
             case WMEXITSIZEMOVE:
                 this.isDragging = false;
                 this.dragEndedAtUtc = DateTime.UtcNow;
+                this.SaveCurrentWindowRect();
 
                 if (this.isResizeInProgress)
                 {
-                    this.SaveCurrentWindowRect();
+                    this.EnsureOnScreen();
                     this.isResizeInProgress = false;
                     LogPosition($"RESIZE: WM_EXITSIZEMOVE — saved size ({this.lastWidth},{this.lastHeight})");
                 }
                 else
                 {
-                    // WPF layered windows (AllowsTransparency=True) never commit the final
-                    // drag position to the native HWND — GetWindowRect returns stale pre-drag
-                    // coordinates. Track the real position from the last WM_MOVE instead.
-                    this.physicalLeft = this.lastDragX;
-                    this.physicalTop = this.lastDragY;
-                    LogPosition($"DRAG: WM_EXITSIZEMOVE — saved position ({this.lastDragX},{this.lastDragY})");
+                    LogPosition($"DRAG: WM_EXITSIZEMOVE — saved position ({this.physicalLeft},{this.physicalTop})");
                 }
 
                 this.SaveWindowState();
                 break;
-            case WMMOVE:
-                var moveX = (short)(lParam.ToInt64() & 0xFFFF);
-                var moveY = (short)((lParam.ToInt64() >> 16) & 0xFFFF);
-                if (this.isDragging)
-                {
-                    this.lastDragX = moveX;
-                    this.lastDragY = moveY;
-                }
-
-                break;
         }
 
         return IntPtr.Zero;
     }
 
-    private IntPtr HandleNcHitTest(IntPtr lParam, ref bool handled)
+    private void TitleBar_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
-        if (this.hwndSource?.CompositionTarget == null)
-        {
-            return IntPtr.Zero;
-        }
-
-        var screenX = (short)(lParam.ToInt64() & 0xFFFF);
-        var screenY = (short)((lParam.ToInt64() >> 16) & 0xFFFF);
-
-        var transform = this.hwndSource.CompositionTarget.TransformFromDevice;
-        var wpfScreenPoint = transform.Transform(new Point(screenX, screenY));
-        var windowPoint = this.PointFromScreen(wpfScreenPoint);
-
-        var result = VisualTreeHelper.HitTest(this, windowPoint);
-        if (result != null)
-        {
-            var visual = result.VisualHit;
-            while (visual != null)
-            {
-                if (visual == this.TitleBarBorder)
-                {
-                    handled = true;
-                    return (IntPtr)HTCAPTION;
-                }
-
-                visual = VisualTreeHelper.GetParent(visual);
-            }
-        }
-
-        return IntPtr.Zero;
-    }
-
-    private void ResizeGrip_PreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
-    {
-        if (e.ChangedButton != MouseButton.Left)
+        if (e.ButtonState != MouseButtonState.Pressed)
         {
             return;
         }
 
-        e.Handled = true;
-        this.BeginManualResize();
-
-        var hwnd = new WindowInteropHelper(this).Handle;
-        if (hwnd == IntPtr.Zero)
+        try
         {
-            return;
+            this.DragMove();
         }
-
-        ReleaseCapture();
-        SendMessage(hwnd, WMNCLBUTTONDOWN, (IntPtr)HTBOTTOMRIGHT, IntPtr.Zero);
+        catch (InvalidOperationException)
+        {
+            // Mouse button was released before the move loop started.
+        }
     }
 
     private void BeginManualResize()
@@ -519,7 +487,10 @@ public partial class MainWindow : Window
         }
 
         this.lastWidth = this.ActualWidth;
-        this.lastHeight = this.ActualHeight;
+        if (this.hasManualWindowHeight)
+        {
+            this.lastHeight = this.ActualHeight;
+        }
     }
 
     private void UpdateMaxHeightFromCurrentMonitor()
@@ -575,8 +546,6 @@ public partial class MainWindow : Window
         var workAreaHeight = transformFromDevice.Transform(new Vector(0, workAreaHeightPixels)).Y;
         return Math.Max(minHeight, workAreaHeight - padding);
     }
-
-    private static short LowWord(long value) => (short)(value & 0xFFFF);
 
     private void Window_Deactivated(object? sender, EventArgs e)
     {
@@ -774,9 +743,7 @@ public partial class MainWindow : Window
         {
             // physicalLeft / physicalTop are maintained by:
             //   - Constructor: loaded from persisted settings
-            //   - WM_EXITSIZEMOVE: updated from the last WM_MOVE coordinates
-            // We do NOT read from GetWindowRect because it returns stale values
-            // for WPF layered windows (AllowsTransparency=True).
+            //   - WM_EXITSIZEMOVE / EnsureOnScreen: read from GetWindowRect
             if (this.physicalLeft == null || this.physicalTop == null)
             {
                 // Fallback for test scenarios where no HWND/drag ever occurred.
@@ -804,12 +771,12 @@ public partial class MainWindow : Window
         }
     }
 
-    private static void LogPosition(string message)
+    internal static void LogPosition(string message)
     {
         try
         {
             var logPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codexbar", "position-debug.log");
-            File.AppendAllText(logPath, $"[{DateTime.Now:HH:mm:ss.fff}] {message}{Environment.NewLine}");
+            File.AppendAllText(logPath, $"[{DateTime.Now:HH:mm:ss.fff}] [pid {Environment.ProcessId}] {message}{Environment.NewLine}");
         }
         catch
         {

@@ -142,6 +142,22 @@ public sealed class ClampToWorkAreaTests
 
         Assert.Equal(180, result);
     }
+
+    [Fact]
+    public void ShouldEnsureOnScreenAfterSizeChanged_WhenResizeInProgress_ReturnsFalse()
+    {
+        var result = MainWindow.ShouldEnsureOnScreenAfterSizeChanged(isResizeInProgress: true);
+
+        Assert.False(result);
+    }
+
+    [Fact]
+    public void ShouldEnsureOnScreenAfterSizeChanged_WhenResizeNotInProgress_ReturnsTrue()
+    {
+        var result = MainWindow.ShouldEnsureOnScreenAfterSizeChanged(isResizeInProgress: false);
+
+        Assert.True(result);
+    }
 }
 
 [Collection("WPF UI")]

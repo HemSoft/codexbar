@@ -10,9 +10,8 @@
         Title="CodexBar"
         SizeToContent="Height" Width="340"
         MinWidth="280" MinHeight="180"
-        WindowStyle="None"
-        AllowsTransparency="True"
-        Background="#01000000"
+        WindowStyle="ToolWindow"
+        Background="{StaticResource BackgroundBrush}"
         ShowInTaskbar="False"
         Topmost="True"
         ResizeMode="CanResize"
@@ -49,18 +48,10 @@
         </ContextMenu>
     </Window.ContextMenu>
 
-    <Grid>
-        <Border Background="{StaticResource BackgroundBrush}"
-                CornerRadius="12"
-                BorderBrush="#3F3F5F"
-                BorderThickness="1"
-                Margin="8">
+    <Border Background="{StaticResource BackgroundBrush}">
         <Border.LayoutTransform>
             <ScaleTransform x:Name="ZoomTransform" ScaleX="1" ScaleY="1" />
         </Border.LayoutTransform>
-        <Border.Effect>
-            <DropShadowEffect BlurRadius="16" ShadowDepth="4" Opacity="0.4" />
-        </Border.Effect>
 
         <Grid Margin="16">
             <Grid.RowDefinitions>
@@ -69,12 +60,13 @@
                 <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
 
-            <!-- Title bar (drag to reposition via WM_NCHITTEST HTCAPTION) -->
+            <!-- Title bar (drag to reposition) -->
             <Border x:Name="TitleBarBorder"
                     Grid.Row="0"
                     Background="Transparent"
                     Cursor="SizeAll"
-                    Margin="0,0,0,12">
+                    Margin="0,0,0,12"
+                    MouseLeftButtonDown="TitleBar_MouseLeftButtonDown">
                 <Grid>
                     <Grid.ColumnDefinitions>
                         <ColumnDefinition Width="*" />
@@ -281,10 +273,6 @@
                                     </StackPanel>
                                 </Grid>
 
-
-
-
-
                                 <!-- Single-card credits display (no companion) -->
                                 <StackPanel Visibility="{Binding ShowSingleCreditsDisplay, Converter={StaticResource BoolToVis}}"
                                              Margin="0,6,0,0">
@@ -422,17 +410,6 @@
                            Foreground="{StaticResource TextSecondaryBrush}"
                            FontSize="12" />
             </StackPanel>
-            </Grid>
-        </Border>
-
-        <ResizeGrip Width="18"
-                    Height="18"
-                    Margin="0,0,9,9"
-                    HorizontalAlignment="Right"
-                    VerticalAlignment="Bottom"
-                    Cursor="SizeNWSE"
-                    Panel.ZIndex="10"
-                    ToolTip="Resize"
-                    PreviewMouseLeftButtonDown="ResizeGrip_PreviewMouseLeftButtonDown" />
-    </Grid>
+        </Grid>
+    </Border>
 </Window>

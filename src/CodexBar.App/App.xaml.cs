@@ -32,6 +32,7 @@ public partial class App : Application
     private MainViewModel? _viewModel;
     private MainWindow? _mainWindow;
     private bool _shutdownRequested;
+    private bool _isShowingPopup;
 
     protected override void OnStartup(StartupEventArgs e)
     {
@@ -55,10 +56,15 @@ public partial class App : Application
     private static void OnDispatcherUnhandledException(object sender, DispatcherUnhandledExceptionEventArgs e)
     {
         Debug.WriteLine($"[CodexBar] Unhandled dispatcher exception: {e.Exception}");
+        CodexBar.App.MainWindow.LogPosition($"DISPATCHER EXCEPTION (swallowed): {e.Exception}");
         e.Handled = true; // Prevent crash — keep tray icon alive
     }
 
-    private static void OnDomainUnhandledException(object sender, UnhandledExceptionEventArgs e) => Debug.WriteLine($"[CodexBar] Unhandled domain exception: {e.ExceptionObject}");
+    private static void OnDomainUnhandledException(object sender, UnhandledExceptionEventArgs e)
+    {
+        Debug.WriteLine($"[CodexBar] Unhandled domain exception: {e.ExceptionObject}");
+        CodexBar.App.MainWindow.LogPosition($"DOMAIN EXCEPTION: {e.ExceptionObject}");
+    }
 
     private static void ConfigureServices(IServiceCollection services)
     {
@@ -213,6 +219,17 @@ public partial class App : Application
 
     private void ShowPopup()
     {
+        // TrayMouseMove fires on every mouse movement, and Window.Show() pumps
+        // messages while creating the HWND — without this guard the queued tray
+        // events re-enter ShowPopup and call Show() recursively on the same
+        // window, which throws "The root Visual of a VisualTarget cannot have
+        // a parent" and corrupts the window's visibility state.
+        if (this._isShowingPopup)
+        {
+            return;
+        }
+
+        this._isShowingPopup = true;
         try
         {
             if (this._mainWindow is { IsVisible: true })
@@ -224,18 +241,29 @@ public partial class App : Application
             var settingsService = services.GetRequiredService<SettingsService>();
             if (this._mainWindow is null)
             {
+                CodexBar.App.MainWindow.LogPosition("SHOWPOPUP: _mainWindow is null → creating new MainWindow");
                 var providers = services.GetRequiredService<IEnumerable<IUsageProvider>>();
                 this._mainWindow = new MainWindow(settingsService, providers, this._refreshService!) { DataContext = this._viewModel };
-                this._mainWindow.Closed += (_, _) => this._mainWindow = null;
+                this._mainWindow.Closed += (_, _) =>
+                {
+                    CodexBar.App.MainWindow.LogPosition("SHOWPOPUP: Closed event fired → _mainWindow = null");
+                    this._mainWindow = null;
+                };
             }
 
             this._mainWindow.RestoreState();
             this._mainWindow.Show();
             this._mainWindow.Activate();
+            CodexBar.App.MainWindow.LogPosition($"SHOWPOPUP: shown, IsVisible={this._mainWindow?.IsVisible}");
         }
         catch (Exception ex)
         {
             Debug.WriteLine($"[CodexBar] ShowPopup error: {ex.Message}");
+            CodexBar.App.MainWindow.LogPosition($"SHOWPOPUP EXCEPTION: {ex}");
+        }
+        finally
+        {
+            this._isShowingPopup = false;
         }
     }
 
