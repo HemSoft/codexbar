@@ -36,6 +36,8 @@ public class ClaudeProviderPrivateMethodTests : IDisposable
         ClaudeProvider.CredentialsPathOverride = null;
         ClaudeProvider.StatsCachePathOverride = null;
         ClaudeProvider.ClaudeJsonPathOverride = null;
+        ClaudeProvider.ClaudeDesktopCookieHeaderOverride = null;
+        ClaudeProvider.WebSessionCachePathOverride = null;
         try
         {
             Directory.Delete(this._tempDir, recursive: true);
@@ -153,6 +155,20 @@ public class ClaudeProviderPrivateMethodTests : IDisposable
             BindingFlags.NonPublic | BindingFlags.Instance);
         Assert.NotNull(field);
         field!.SetValue(provider, DateTimeOffset.UtcNow.Subtract(TimeSpan.FromHours(1)).UtcTicks);
+    }
+
+    private static void SetBackoff(ClaudeProvider provider, string fieldName)
+    {
+        var field = typeof(ClaudeProvider).GetField(fieldName, BindingFlags.NonPublic | BindingFlags.Instance);
+        Assert.NotNull(field);
+        field!.SetValue(provider, DateTimeOffset.UtcNow.AddHours(1).UtcTicks);
+    }
+
+    private static long GetBackoff(ClaudeProvider provider, string fieldName)
+    {
+        var field = typeof(ClaudeProvider).GetField(fieldName, BindingFlags.NonPublic | BindingFlags.Instance);
+        Assert.NotNull(field);
+        return Assert.IsType<long>(field!.GetValue(provider));
     }
 
     private static async Task<object?> InvokeFetchClaudeWebUsageAsync(
@@ -285,6 +301,37 @@ public class ClaudeProviderPrivateMethodTests : IDisposable
     }
 
     [Fact]
+    public async Task FetchClaudeWebUsageAsync_Unauthorized_DeletesSessionCacheAndArmsBackoff()
+    {
+        var cachePath = Path.Combine(this._tempDir, "web-session.bin");
+        File.WriteAllText(cachePath, "stale");
+        ClaudeProvider.WebSessionCachePathOverride = cachePath;
+        var factory = CreateFactory((_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.Unauthorized)));
+        var provider = CreateProvider(factory);
+
+        var result = await provider.FetchClaudeWebUsageAsync("org-id", "sessionKey=value", CancellationToken.None);
+
+        Assert.Null(result);
+        Assert.False(File.Exists(cachePath));
+        Assert.True(GetBackoff(provider, "webUsageBackoffUntilTicks") > DateTimeOffset.UtcNow.UtcTicks);
+    }
+
+    [Fact]
+    public async Task FetchClaudeWebUsageAsync_BackoffActive_ReturnsNullWithoutRequest()
+    {
+        var factory = Substitute.For<IHttpClientFactory>();
+        var provider = CreateProvider(factory);
+        SetBackoff(provider, "webUsageBackoffUntilTicks");
+
+        var result = await InvokeFetchClaudeWebUsageAsync(
+            provider,
+            new ClaudeProvider.ClaudeAccountInfo { OrganizationUuid = "org-id" });
+
+        Assert.Null(result);
+        factory.DidNotReceiveWithAnyArgs().CreateClient(default!);
+    }
+
+    [Fact]
     public async Task FetchClaudeWebUsageAsync_InvalidJson_ReturnsNull()
     {
         var factory = CreateFactory((_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
@@ -373,6 +420,34 @@ public class ClaudeProviderPrivateMethodTests : IDisposable
     }
 
     [Fact]
+    public async Task FetchOAuthUsageAsync_BackoffActive_ReturnsNullWithoutRequest()
+    {
+        var factory = Substitute.For<IHttpClientFactory>();
+        var provider = CreateProvider(factory);
+        SetBackoff(provider, "usageEndpointBackoffUntilTicks");
+
+        var result = await InvokeFetchOAuthUsageAsync(provider, "test-token");
+
+        Assert.Null(result);
+        factory.DidNotReceiveWithAnyArgs().CreateClient(default!);
+    }
+
+    [Fact]
+    public async Task FetchOAuthUsageAsync_UnreadableForbiddenBody_ArmsBackoff()
+    {
+        var factory = CreateFactory((_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.Forbidden)
+        {
+            Content = new ThrowingHttpContent(),
+        }));
+        var provider = CreateProvider(factory);
+
+        var result = await InvokeFetchOAuthUsageAsync(provider, "test-token");
+
+        Assert.Null(result);
+        Assert.True(GetBackoff(provider, "usageEndpointBackoffUntilTicks") > DateTimeOffset.UtcNow.UtcTicks);
+    }
+
+    [Fact]
     public async Task FetchRateLimitsAsync_NullToken_ReturnsNull()
     {
         var factory = Substitute.For<IHttpClientFactory>();
@@ -392,6 +467,38 @@ public class ClaudeProviderPrivateMethodTests : IDisposable
         var result = await InvokeFetchRateLimitsAsync(provider, string.Empty);
 
         Assert.Null(result);
+    }
+
+    [Fact]
+    public async Task FetchRateLimitsAsync_BackoffActive_ReturnsNullWithoutRequest()
+    {
+        var factory = Substitute.For<IHttpClientFactory>();
+        var provider = CreateProvider(factory);
+        SetBackoff(provider, "probeBackoffUntilTicks");
+
+        var result = await InvokeFetchRateLimitsAsync(provider, "test-token");
+
+        Assert.Null(result);
+        factory.DidNotReceiveWithAnyArgs().CreateClient(default!);
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.Forbidden, "probeBackoffUntilTicks")]
+    [InlineData(HttpStatusCode.TooManyRequests, "probeBackoffUntilTicks")]
+    public async Task FetchRateLimitsAsync_NonSuccessStatus_ArmsBackoff(
+        HttpStatusCode statusCode,
+        string fieldName)
+    {
+        var factory = CreateFactory(new HttpResponseMessage(statusCode)
+        {
+            Content = new StringContent("error", Encoding.UTF8, "text/plain"),
+        });
+        var provider = CreateProvider(factory);
+
+        var result = await InvokeFetchRateLimitsAsync(provider, "test-token");
+
+        Assert.Null(result);
+        Assert.True(GetBackoff(provider, fieldName) > DateTimeOffset.UtcNow.UtcTicks);
     }
 
     [Fact]
@@ -680,6 +787,18 @@ public class ClaudeProviderPrivateMethodTests : IDisposable
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request, CancellationToken cancellationToken) =>
             throw this._exception;
+    }
+
+    private sealed class ThrowingHttpContent : HttpContent
+    {
+        protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context) =>
+            Task.FromException(new IOException("Content read failed."));
+
+        protected override bool TryComputeLength(out long length)
+        {
+            length = 0;
+            return false;
+        }
     }
 
     private sealed class DelegatingHandlerFunc(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> handler)

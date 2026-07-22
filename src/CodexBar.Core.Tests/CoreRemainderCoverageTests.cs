@@ -670,6 +670,7 @@ public sealed class ClaudeProviderRemainderCoverageTests : IDisposable
         ClaudeProvider.ClaudeDesktopCookiesPathOverride = null;
         ClaudeProvider.ClaudeDesktopConfigPathOverride = null;
         ClaudeProvider.ClaudeDesktopCookieHeaderOverride = null;
+        ClaudeProvider.WebSessionCachePathOverride = null;
 
         try
         {
@@ -1098,7 +1099,143 @@ public sealed class ClaudeProviderRemainderCoverageTests : IDisposable
         Assert.False(ClaudeProvider.IsChromiumCookieExpired(265046774400000000));
     }
 
+    [Theory]
+    [InlineData(null, null)]
+    [InlineData("", null)]
+    [InlineData("   ", null)]
+    [InlineData("sessionKey=value", "sessionKey=value")]
+    [InlineData("foo=bar; sessionKey=value", "foo=bar; sessionKey=value")]
+    [InlineData("raw-session-value", "sessionKey=raw-session-value")]
+    [InlineData("sk-ant-api03-example", null)]
+    public void NormalizeClaudeWebCookieHeader_Input_ReturnsExpected(string? input, string? expected)
+    {
+        var result = ClaudeProvider.NormalizeClaudeWebCookieHeader(input);
+
+        Assert.Equal(expected, result);
+    }
+
+    [Fact]
+    public void TryReadClaudeDesktopCookieHeader_ConfiguredSettingsCookie_ReturnsCookieBeforeDesktopRead()
+    {
+        var settings = Substitute.For<ISettingsService>();
+        settings.IsProviderEnabled(ProviderId.Claude).Returns(true);
+        settings.GetApiKey(ProviderId.Claude).Returns("sessionKey=configured");
+        var provider = new ClaudeProvider(
+            NullLogger<ClaudeProvider>.Instance,
+            new HttpClientFactoryStub(new DelegatingHandler(_ => new HttpResponseMessage(HttpStatusCode.OK))),
+            settings);
+
+        var result = InvokePrivateInstance<string?>(
+            provider,
+            "TryReadClaudeDesktopCookieHeader");
+
+        Assert.Equal("sessionKey=configured", result);
+    }
+
 #if WINDOWS
+    [Fact]
+    public void WebSessionCache_ValidPath_RoundTripsEncryptedCookieHeader()
+    {
+        var cachePath = Path.Combine(this._tempDir, "nested", "web-session.bin");
+        ClaudeProvider.WebSessionCachePathOverride = cachePath;
+        var provider = this.CreateProvider();
+
+        _ = InvokePrivateInstance<object?>(provider, "PersistWebSessionCookieHeader", "sessionKey=secret");
+        var result = InvokePrivateInstance<string?>(provider, "TryLoadPersistedWebSessionCookieHeader");
+
+        Assert.Equal("sessionKey=secret", result);
+        Assert.DoesNotContain("sessionKey=secret", Encoding.UTF8.GetString(File.ReadAllBytes(cachePath)), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void WebSessionCache_InvalidCiphertext_ReturnsNull()
+    {
+        var cachePath = Path.Combine(this._tempDir, "invalid-web-session.bin");
+        File.WriteAllBytes(cachePath, [1, 2, 3]);
+        ClaudeProvider.WebSessionCachePathOverride = cachePath;
+
+        var result = InvokePrivateInstance<string?>(this.CreateProvider(), "TryLoadPersistedWebSessionCookieHeader");
+
+        Assert.Null(result);
+    }
+
+    [Fact]
+    public void WebSessionCache_UnwritablePath_DoesNotThrow()
+    {
+        ClaudeProvider.WebSessionCachePathOverride = this._tempDir;
+
+        var exception = Record.Exception(() =>
+            InvokePrivateInstance<object?>(this.CreateProvider(), "PersistWebSessionCookieHeader", "sessionKey=value"));
+
+        Assert.Null(exception);
+    }
+
+    [Fact]
+    public void WebSessionCache_Disabled_SkipsPersistenceLoadingAndInvalidation()
+    {
+        ClaudeProvider.WebSessionCachePathOverride = null;
+        ClaudeProvider.ClaudeDesktopCookieHeaderOverride = "test-override";
+        var provider = this.CreateProvider();
+
+        _ = InvokePrivateInstance<object?>(provider, "PersistWebSessionCookieHeader", "sessionKey=value");
+        var loaded = InvokePrivateInstance<string?>(provider, "TryLoadPersistedWebSessionCookieHeader");
+        _ = InvokePrivateInstance<object?>(provider, "InvalidatePersistedWebSessionCookieHeader");
+
+        Assert.Null(loaded);
+    }
+
+    [Fact]
+    public void InvalidatePersistedWebSessionCookieHeader_ExistingCache_DeletesFile()
+    {
+        var cachePath = Path.Combine(this._tempDir, "stale-web-session.bin");
+        File.WriteAllText(cachePath, "stale");
+        ClaudeProvider.WebSessionCachePathOverride = cachePath;
+
+        _ = InvokePrivateInstance<object?>(this.CreateProvider(), "InvalidatePersistedWebSessionCookieHeader");
+
+        Assert.False(File.Exists(cachePath));
+    }
+
+    [Fact]
+    public void TryCopySidecarFile_ReadableSource_CopiesFile()
+    {
+        var source = Path.Combine(this._tempDir, "source-wal");
+        var destination = Path.Combine(this._tempDir, "destination-wal");
+        File.WriteAllText(source, "sidecar");
+
+        _ = InvokePrivateStatic<object?>("TryCopySidecarFile", source, destination);
+
+        Assert.Equal("sidecar", File.ReadAllText(destination));
+    }
+
+    [Fact]
+    public void TryCopySidecarFile_LockedSourceAndDirectoryDestination_SwallowsExpectedErrors()
+    {
+        var source = Path.Combine(this._tempDir, "locked-wal");
+        File.WriteAllText(source, "sidecar");
+        using (File.Open(source, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+        {
+            _ = InvokePrivateStatic<object?>("TryCopySidecarFile", source, Path.Combine(this._tempDir, "locked-copy"));
+        }
+
+        var destinationDirectory = Directory.CreateDirectory(Path.Combine(this._tempDir, "directory-destination"));
+        _ = InvokePrivateStatic<object?>("TryCopySidecarFile", source, destinationDirectory.FullName);
+    }
+
+    [Fact]
+    public void TryDeleteFile_LockedFileAndDirectory_SwallowsExpectedErrors()
+    {
+        var lockedPath = Path.Combine(this._tempDir, "locked-delete");
+        File.WriteAllText(lockedPath, "locked");
+        using (File.Open(lockedPath, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+        {
+            _ = InvokePrivateStatic<object?>("TryDeleteFile", lockedPath);
+        }
+
+        var directory = Directory.CreateDirectory(Path.Combine(this._tempDir, "directory-delete"));
+        _ = InvokePrivateStatic<object?>("TryDeleteFile", directory.FullName);
+    }
+
     [Fact]
     public void ReadClaudeDesktopTokenCacheCredentials_TestCredentialOverrideWithoutDesktopOverrides_ReturnsNull()
     {
@@ -1456,6 +1593,7 @@ public sealed class ClaudeProviderRemainderCoverageTests : IDisposable
         ClaudeProvider.ClaudeDesktopCookiesPathOverride = null;
         ClaudeProvider.ClaudeDesktopConfigPathOverride = null;
         ClaudeProvider.ClaudeDesktopCookieHeaderOverride = null;
+        ClaudeProvider.WebSessionCachePathOverride = Path.Combine(this._tempDir, "claude-web-session.bin");
     }
 
 #if WINDOWS

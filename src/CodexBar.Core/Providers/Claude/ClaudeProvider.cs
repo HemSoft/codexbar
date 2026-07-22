@@ -104,6 +104,22 @@ public sealed partial class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttp
     private static readonly TimeSpan CacheTtl = TimeSpan.FromMinutes(30);
     private readonly SemaphoreSlim cacheLock = new(1, 1);
 
+    // Backoff after endpoint failures. Without it the 2-minute refresh loop
+    // hammers Anthropic all day (failures are never cached), which is exactly
+    // what triggers the persistent 429 rate_limit_error on the usage endpoint.
+    private long usageEndpointBackoffUntilTicks;
+    private long probeBackoffUntilTicks;
+    private long webUsageBackoffUntilTicks;
+    private static readonly TimeSpan RateLimitBackoff = TimeSpan.FromMinutes(15);
+    private static readonly TimeSpan PermissionErrorBackoff = TimeSpan.FromHours(6);
+    private static readonly TimeSpan WebUsageForbiddenBackoff = TimeSpan.FromMinutes(15);
+
+    private static bool IsInBackoff(ref long backoffUntilTicks) =>
+        Volatile.Read(ref backoffUntilTicks) > DateTimeOffset.UtcNow.UtcTicks;
+
+    private static void SetBackoff(ref long backoffUntilTicks, TimeSpan duration) =>
+        Volatile.Write(ref backoffUntilTicks, DateTimeOffset.UtcNow.Add(duration).UtcTicks);
+
     public ProviderMetadata Metadata { get; } = new()
     {
         Id = ProviderId.Claude,
@@ -540,6 +556,11 @@ public sealed partial class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttp
             return this.GetFallbackCachedLimits();
         }
 
+        if (IsInBackoff(ref this.probeBackoffUntilTicks))
+        {
+            return this.GetFallbackCachedLimits();
+        }
+
         await this.cacheLock.WaitAsync(ct);
         try
         {
@@ -569,6 +590,11 @@ public sealed partial class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttp
             return this.GetFallbackCachedLimits();
         }
 
+        if (IsInBackoff(ref this.usageEndpointBackoffUntilTicks))
+        {
+            return this.GetFallbackCachedLimits();
+        }
+
         await this.cacheLock.WaitAsync(ct);
         try
         {
@@ -589,7 +615,27 @@ public sealed partial class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttp
 
             if (!response.IsSuccessStatusCode)
             {
-                this.logger.LogWarning("Claude OAuth usage endpoint failed with status {StatusCode}", (int)response.StatusCode);
+                var errorBody = await ReadTruncatedBodyAsync(response, cts.Token);
+                this.logger.LogWarning(
+                    "Claude OAuth usage endpoint failed with status {StatusCode}: {Body}",
+                    (int)response.StatusCode,
+                    errorBody);
+
+                if (response.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
+                {
+                    var backoff = response.Headers.RetryAfter?.Delta is { } retryAfter && retryAfter > RateLimitBackoff
+                        ? retryAfter
+                        : RateLimitBackoff;
+                    SetBackoff(ref this.usageEndpointBackoffUntilTicks, backoff);
+                    this.logger.LogInformation("Claude usage endpoint rate-limited; backing off for {Backoff}", backoff);
+                }
+                else if (response.StatusCode == System.Net.HttpStatusCode.Forbidden)
+                {
+                    // Org-level "OAuth authentication is currently not allowed"
+                    // policy — retrying every cycle only re-arms the rate limiter.
+                    SetBackoff(ref this.usageEndpointBackoffUntilTicks, PermissionErrorBackoff);
+                }
+
                 return this.GetFallbackCachedLimits();
             }
 
@@ -618,6 +664,19 @@ public sealed partial class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttp
         }
     }
 
+    private static async Task<string> ReadTruncatedBodyAsync(HttpResponseMessage response, CancellationToken ct)
+    {
+        try
+        {
+            var body = await response.Content.ReadAsStringAsync(ct);
+            return body.Length > 500 ? body[..500] : body;
+        }
+        catch (Exception)
+        {
+            return "<unreadable>";
+        }
+    }
+
     internal static HttpRequestMessage BuildOAuthUsageRequest(string accessToken)
     {
         var request = new HttpRequestMessage(HttpMethod.Get, UsageApiUrl);
@@ -625,7 +684,7 @@ public sealed partial class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttp
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
         request.Headers.TryAddWithoutValidation("Content-Type", "application/json");
         request.Headers.TryAddWithoutValidation("anthropic-beta", "oauth-2025-04-20");
-        request.Headers.TryAddWithoutValidation("User-Agent", "claude-code/2.1.0");
+        request.Headers.TryAddWithoutValidation("User-Agent", "claude-cli/2.1.12 (external, cli)");
         return request;
     }
 
@@ -672,6 +731,27 @@ public sealed partial class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttp
             {
                 this.logger.LogWarning("Claude API returned 401 — OAuth token may be expired");
                 return null;
+            }
+
+            if (!response.IsSuccessStatusCode)
+            {
+                var errorBody = await ReadTruncatedBodyAsync(response, cts.Token);
+                this.logger.LogWarning(
+                    "Claude API probe failed with status {StatusCode}: {Body}",
+                    (int)response.StatusCode,
+                    errorBody);
+
+                if (response.StatusCode == System.Net.HttpStatusCode.Forbidden)
+                {
+                    // "OAuth authentication is currently not allowed for this
+                    // organization" — an org-level policy that won't change
+                    // between refreshes, so retrying every cycle only burns quota.
+                    SetBackoff(ref this.probeBackoffUntilTicks, PermissionErrorBackoff);
+                }
+                else if (response.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
+                {
+                    SetBackoff(ref this.probeBackoffUntilTicks, RateLimitBackoff);
+                }
             }
 
             var result = ParseRateLimitHeaders(response.Headers);

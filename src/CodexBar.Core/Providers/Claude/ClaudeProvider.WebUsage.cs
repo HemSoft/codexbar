@@ -31,6 +31,11 @@ public sealed partial class ClaudeProvider
         "Claude",
         "config.json");
 
+    private static readonly string _defaultWebSessionCachePath = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+        ".codexbar",
+        "claude-web-session.bin");
+
     internal static string? ClaudeDesktopLocalStatePathOverride { get; set; }
 
     internal static string? ClaudeDesktopCookiesPathOverride { get; set; }
@@ -38,6 +43,19 @@ public sealed partial class ClaudeProvider
     internal static string? ClaudeDesktopConfigPathOverride { get; set; }
 
     internal static string? ClaudeDesktopCookieHeaderOverride { get; set; }
+
+    internal static string? WebSessionCachePathOverride { get; set; }
+
+    private static string WebSessionCachePath => WebSessionCachePathOverride ?? _defaultWebSessionCachePath;
+
+    /// <summary>
+    /// Gets a value indicating whether the session cache should participate.
+    /// </summary>
+    private static bool WebSessionCacheEnabled =>
+        WebSessionCachePathOverride is not null ||
+        (ClaudeDesktopCookiesPathOverride is null &&
+         ClaudeDesktopLocalStatePathOverride is null &&
+         ClaudeDesktopCookieHeaderOverride is null);
 
     internal static string ClaudeDesktopLocalStatePath =>
         ClaudeDesktopLocalStatePathOverride ?? _defaultClaudeDesktopLocalStatePath;
@@ -148,6 +166,11 @@ public sealed partial class ClaudeProvider
             return cached;
         }
 
+        if (IsInBackoff(ref this.webUsageBackoffUntilTicks))
+        {
+            return null;
+        }
+
         if (string.IsNullOrWhiteSpace(accountInfo?.OrganizationUuid))
         {
             return null;
@@ -198,6 +221,15 @@ public sealed partial class ClaudeProvider
                     this.logger,
                     "Claude web usage endpoint failed with status {StatusCode}",
                     (int)response.StatusCode);
+
+                if (response.StatusCode is System.Net.HttpStatusCode.Unauthorized or System.Net.HttpStatusCode.Forbidden)
+                {
+                    // The persisted session is stale or revoked — drop it so the
+                    // next successful live cookie read replaces it.
+                    this.InvalidatePersistedWebSessionCookieHeader();
+                    SetBackoff(ref this.webUsageBackoffUntilTicks, WebUsageForbiddenBackoff);
+                }
+
                 return null;
             }
 
@@ -234,6 +266,8 @@ public sealed partial class ClaudeProvider
         var request = new HttpRequestMessage(HttpMethod.Get, $"{ClaudeWebBaseUrl}/api/organizations/{escapedOrganizationUuid}/usage");
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
         request.Headers.TryAddWithoutValidation("Cookie", cookieHeader);
+        request.Headers.TryAddWithoutValidation("Origin", ClaudeWebBaseUrl);
+        request.Headers.Referrer = new Uri($"{ClaudeWebBaseUrl}/settings/usage");
         request.Headers.TryAddWithoutValidation("x-organization-uuid", organizationUuid);
         request.Headers.UserAgent.ParseAdd("CodexBar/1.0");
         return request;
@@ -244,6 +278,12 @@ public sealed partial class ClaudeProvider
         if (ClaudeDesktopCookieHeaderOverride is not null)
         {
             return ClaudeDesktopCookieHeaderOverride;
+        }
+
+        var configuredCookieHeader = this.ResolveConfiguredClaudeWebCookieHeader();
+        if (!string.IsNullOrWhiteSpace(configuredCookieHeader))
+        {
+            return configuredCookieHeader;
         }
 
 #if WINDOWS
@@ -263,26 +303,150 @@ public sealed partial class ClaudeProvider
             var key = ReadChromiumEncryptionKey(ClaudeDesktopLocalStatePath);
             if (key is null)
             {
-                return null;
+                return this.TryLoadPersistedWebSessionCookieHeader();
             }
 
             var cookies = ReadClaudeDesktopCookies(key, this.logger);
-            return cookies.Count > 0
-                ? string.Join("; ", cookies.Select(cookie => $"{cookie.Name}={cookie.Value}"))
-                : null;
+            if (cookies.Count == 0)
+            {
+                return this.TryLoadPersistedWebSessionCookieHeader();
+            }
+
+            var header = string.Join("; ", cookies.Select(cookie => $"{cookie.Name}={cookie.Value}"));
+            this.PersistWebSessionCookieHeader(header);
+            return header;
+        }
+        catch (Exception ex)
+        {
+            // Claude Desktop holds the cookies DB with an exclusive lock while it
+            // runs, so live reads regularly fail. Fall back to the session header
+            // persisted from the last successful read.
+            Microsoft.Extensions.Logging.LoggerExtensions.LogDebug(
+                this.logger,
+                ex,
+                "Failed to read Claude Desktop web cookies");
+            return this.TryLoadPersistedWebSessionCookieHeader();
+        }
+#else
+        return null;
+#endif
+    }
+
+    private string? ResolveConfiguredClaudeWebCookieHeader()
+    {
+        var configured = EnvironmentVariableProvider("CLAUDE_WEB_SESSION_COOKIE")
+            ?? EnvironmentVariableProvider("CLAUDE_AI_COOKIE")
+            ?? this.settings.GetApiKey(CodexBar.Core.Models.ProviderId.Claude);
+
+        return NormalizeClaudeWebCookieHeader(configured);
+    }
+
+    internal static string? NormalizeClaudeWebCookieHeader(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        var trimmed = value.Trim();
+        if (trimmed.StartsWith("sk-ant-", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+
+        return trimmed.Contains('=') || trimmed.Contains(';')
+            ? trimmed
+            : $"sessionKey={trimmed}";
+    }
+
+#if WINDOWS
+    /// <summary>
+    /// Persists the claude.ai session cookie header, DPAPI-encrypted for the
+    /// current user, so usage keeps working while Claude Desktop holds the
+    /// live cookies DB locked.
+    /// </summary>
+    private void PersistWebSessionCookieHeader(string header)
+    {
+        if (!WebSessionCacheEnabled)
+        {
+            return;
+        }
+
+        try
+        {
+            var directory = Path.GetDirectoryName(WebSessionCachePath);
+            if (!string.IsNullOrEmpty(directory))
+            {
+                Directory.CreateDirectory(directory);
+            }
+
+            var encrypted = ProtectedData.Protect(
+                Encoding.UTF8.GetBytes(header),
+                optionalEntropy: null,
+                DataProtectionScope.CurrentUser);
+            File.WriteAllBytes(WebSessionCachePath, encrypted);
         }
         catch (Exception ex)
         {
             Microsoft.Extensions.Logging.LoggerExtensions.LogDebug(
                 this.logger,
                 ex,
-                "Failed to read Claude Desktop web cookies");
+                "Failed to persist Claude web session cache");
+        }
+    }
+
+    private string? TryLoadPersistedWebSessionCookieHeader()
+    {
+        if (!WebSessionCacheEnabled)
+        {
             return null;
         }
-#else
-        return null;
-#endif
+
+        try
+        {
+            if (!File.Exists(WebSessionCachePath))
+            {
+                return null;
+            }
+
+            var decrypted = ProtectedData.Unprotect(
+                File.ReadAllBytes(WebSessionCachePath),
+                optionalEntropy: null,
+                DataProtectionScope.CurrentUser);
+            Microsoft.Extensions.Logging.LoggerExtensions.LogDebug(
+                this.logger,
+                "Using persisted Claude web session cookie header");
+            return Encoding.UTF8.GetString(decrypted);
+        }
+        catch (Exception ex)
+        {
+            Microsoft.Extensions.Logging.LoggerExtensions.LogDebug(
+                this.logger,
+                ex,
+                "Failed to load persisted Claude web session cache");
+            return null;
+        }
     }
+
+    private void InvalidatePersistedWebSessionCookieHeader()
+    {
+        if (!WebSessionCacheEnabled)
+        {
+            return;
+        }
+
+        TryDeleteFile(WebSessionCachePath);
+        Microsoft.Extensions.Logging.LoggerExtensions.LogDebug(
+            this.logger,
+            "Invalidated persisted Claude web session cache");
+    }
+#else
+    private string? TryLoadPersistedWebSessionCookieHeader() => null;
+
+    private void InvalidatePersistedWebSessionCookieHeader()
+    {
+    }
+#endif
 
 #if WINDOWS
     private static byte[]? ReadChromiumEncryptionKey(string localStatePath)
@@ -308,12 +472,86 @@ public sealed partial class ClaudeProvider
 
     private static List<ClaudeWebCookie> ReadClaudeDesktopCookies(byte[] key, ILogger? logger = null)
     {
+        // Claude Desktop (Chromium) keeps the cookies DB WAL-journaled and locked
+        // while running, so a direct read-only open fails with "unable to open
+        // database file". Read from a private temp copy instead — the standard
+        // approach for Chromium cookie stores.
+        var tempDb = Path.Combine(Path.GetTempPath(), $"codexbar-claude-cookies-{Guid.NewGuid():N}.db");
+        try
+        {
+            CopySharedFile(ClaudeDesktopCookiesPath, tempDb);
+            TryCopySidecarFile(ClaudeDesktopCookiesPath + "-wal", tempDb + "-wal");
+            TryCopySidecarFile(ClaudeDesktopCookiesPath + "-shm", tempDb + "-shm");
+            return ReadCookiesFromDatabase(tempDb, key, logger);
+        }
+        finally
+        {
+            TryDeleteFile(tempDb);
+            TryDeleteFile(tempDb + "-wal");
+            TryDeleteFile(tempDb + "-shm");
+        }
+    }
+
+    private static void TryCopySidecarFile(string source, string destination)
+    {
+        try
+        {
+            if (File.Exists(source))
+            {
+                CopySharedFile(source, destination);
+            }
+        }
+        catch (IOException)
+        {
+            // Sidecar unavailable — the main DB copy alone may miss the newest
+            // cookies but is still readable.
+        }
+        catch (UnauthorizedAccessException)
+        {
+        }
+    }
+
+    /// <summary>
+    /// Copies a file that another process holds open for writing. File.Copy
+    /// opens the source denying writers, which fails against Chromium's live
+    /// databases — a manual stream copy with ReadWrite|Delete sharing works.
+    /// </summary>
+    private static void CopySharedFile(string source, string destination)
+    {
+        using var sourceStream = new FileStream(
+            source,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.ReadWrite | FileShare.Delete);
+        using var destinationStream = File.Create(destination);
+        sourceStream.CopyTo(destinationStream);
+    }
+
+    private static void TryDeleteFile(string path)
+    {
+        try
+        {
+            File.Delete(path);
+        }
+        catch (IOException)
+        {
+        }
+        catch (UnauthorizedAccessException)
+        {
+        }
+    }
+
+    private static List<ClaudeWebCookie> ReadCookiesFromDatabase(string databasePath, byte[] key, ILogger? logger)
+    {
         var cookies = new List<ClaudeWebCookie>();
+
+        // ReadWrite so SQLite can recover the copied WAL; Pooling=false so the
+        // file handle is released before the temp copy is deleted.
         var connectionString = new SqliteConnectionStringBuilder
         {
-            DataSource = ClaudeDesktopCookiesPath,
-            Mode = SqliteOpenMode.ReadOnly,
-            Cache = SqliteCacheMode.Shared,
+            DataSource = databasePath,
+            Mode = SqliteOpenMode.ReadWrite,
+            Pooling = false,
         }.ToString();
 
         using var connection = new SqliteConnection(connectionString);
