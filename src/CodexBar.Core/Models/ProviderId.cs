@@ -14,4 +14,5 @@ public enum ProviderId
     Cursor,
     OpenCodeGo,
     OpenCodeZen,
+    Moonshot,
 }

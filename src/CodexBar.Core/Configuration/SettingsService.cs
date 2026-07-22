@@ -353,7 +353,9 @@ public sealed class SettingsService : ISettingsService
         lock (this._lock)
         {
             var settings = this.EnsureCached();
-            return !settings.Providers.TryGetValue(providerId.ToString(), out var ps) || ps is null || ps.Enabled;
+            return settings.Providers.TryGetValue(providerId.ToString(), out var ps)
+                ? ps is null || ps.Enabled
+                : providerId != ProviderId.Moonshot;
         }
     }
 
@@ -495,7 +497,8 @@ public sealed class SettingsService : ISettingsService
             [ProviderId.Codex.ToString()] = new() { Enabled = true },
             [ProviderId.Cursor.ToString()] = new() { Enabled = true },
             [ProviderId.OpenCodeGo.ToString()] = new() { Enabled = true },
-            [ProviderId.OpenCodeZen.ToString()] = new() { Enabled = true }
+            [ProviderId.OpenCodeZen.ToString()] = new() { Enabled = true },
+            [ProviderId.Moonshot.ToString()] = new() { Enabled = false }
         },
     };
 

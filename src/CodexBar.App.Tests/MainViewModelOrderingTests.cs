@@ -17,7 +17,7 @@ public sealed class MainViewModelOrderingTests
         var settings = CreateSettingsService();
         using var refresh = CreateRefreshService();
         using var viewModel = new MainViewModel(refresh, settings);
-        var expectedOrder = new[] { "cursor", "openrouter" };
+        var expectedOrder = new[] { "cursor", "openrouter", "moonshot" };
 
         Assert.True(viewModel.MoveProviderCard("cursor", "openrouter", insertAfter: false));
 
@@ -35,6 +35,18 @@ public sealed class MainViewModelOrderingTests
         using var viewModel = new MainViewModel(refresh, settings);
 
         Assert.Equal("cursor", viewModel.Providers[0].CardKey);
+    }
+
+    [Fact]
+    public void Constructor_WithMoonshotProvider_UsesKimiCompactCard()
+    {
+        var settings = CreateSettingsService();
+        using var refresh = CreateRefreshService();
+        using var viewModel = new MainViewModel(refresh, settings);
+
+        var card = Assert.Single(viewModel.Providers, provider => provider.ProviderId == ProviderId.Moonshot);
+        Assert.Equal("Moonshot (Kimi)", card.DisplayName);
+        Assert.True(card.IsCompactCard);
     }
 
     private static ISettingsService CreateSettingsService(params string[] initialOrder)

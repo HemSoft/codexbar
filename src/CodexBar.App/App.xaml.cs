@@ -16,6 +16,7 @@ using CodexBar.Core.Providers.Claude;
 using CodexBar.Core.Providers.Codex;
 using CodexBar.Core.Providers.Copilot;
 using CodexBar.Core.Providers.Cursor;
+using CodexBar.Core.Providers.Moonshot;
 using CodexBar.Core.Providers.OpenCodeGo;
 using CodexBar.Core.Providers.OpenCodeZen;
 using CodexBar.Core.Providers.OpenRouter;
@@ -83,6 +84,7 @@ public partial class App : Application
         services.AddSingleton<IUsageProvider, CursorProvider>();
         services.AddSingleton<IUsageProvider, OpenCodeGoProvider>();
         services.AddSingleton<IUsageProvider, OpenCodeZenProvider>();
+        services.AddSingleton<IUsageProvider, MoonshotProvider>();
 
         services.AddSingleton<UsageRefreshService>();
         services.AddSingleton<MainViewModel>();

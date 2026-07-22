@@ -11,6 +11,19 @@ using NSubstitute;
 public sealed class ProviderConfigurationViewModelTests
 {
     [Fact]
+    public void Constructor_WhenMoonshotSettingsAreMissing_ShowsProviderDisabled()
+    {
+        var settings = CreateSettingsService(new AppSettings());
+
+        var viewModel = new ProviderConfigurationViewModel(
+            settings,
+            [new TestUsageProvider(ProviderId.Moonshot)],
+            () => { });
+
+        Assert.False(Assert.Single(viewModel.Providers).IsDisplayed);
+    }
+
+    [Fact]
     public void Constructor_WhenCopilotAccountsAreDiscovered_SelectsAllAccounts()
     {
         var settings = CreateSettingsService(new AppSettings());

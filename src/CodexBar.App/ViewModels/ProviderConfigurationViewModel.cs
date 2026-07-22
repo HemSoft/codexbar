@@ -53,7 +53,7 @@ public sealed class ProviderConfigurationViewModel
         var key = providerId.ToString();
         if (!this._settings.Providers.TryGetValue(key, out var providerSettings) || providerSettings is null)
         {
-            providerSettings = new ProviderSettings();
+            providerSettings = new ProviderSettings { Enabled = providerId != ProviderId.Moonshot };
             this._settings.Providers[key] = providerSettings;
         }
 

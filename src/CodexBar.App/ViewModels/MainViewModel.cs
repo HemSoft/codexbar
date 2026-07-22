@@ -81,10 +81,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
             {
                 ProviderId = id,
                 CardKey = id.ToString().ToLowerInvariant(),
-                DisplayName = id.ToString(),
+                DisplayName = id == ProviderId.Moonshot ? "Moonshot (Kimi)" : id.ToString(),
                 StatusText = "Waiting…",
                 UsedPercent = 0,
-                IsCompactCard = id is ProviderId.OpenRouter or ProviderId.OpenCodeZen,
+                IsCompactCard = id is ProviderId.OpenRouter or ProviderId.OpenCodeZen or ProviderId.Moonshot,
                 ResetSessionSpendingCommand = new RelayCommand(_ => this.ResetSessionSpending(id)),
             };
             this.Providers.Add(card);
