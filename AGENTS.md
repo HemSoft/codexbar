@@ -1,9 +1,5 @@
 # AGENTS.md — CodexBar
 
-## lean_ctx
-
-Always use lean_ctx
-
 ## Search online
 
 Always use web search to support your statements. Good sources are:
