@@ -61,6 +61,10 @@ jobs:
       - name: Markdown Lint
         run: npm run lint:md
 
+      - name: Copilot Metrics PowerShell Tests
+        shell: pwsh
+        run: ./scripts/tests/CopilotMetrics.Core.Tests.ps1
+
       - name: Restore
         run: dotnet restore
 
