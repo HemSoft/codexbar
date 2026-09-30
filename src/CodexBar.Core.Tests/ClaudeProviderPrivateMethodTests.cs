@@ -13,7 +13,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
 
 /// <summary>
-/// Tests for ClaudeProvider private async methods (FetchRateLimitsAsync, TryRefreshTokenAsync)
+/// Tests for ClaudeProvider private async methods (FetchOAuthUsageAsync, TryRefreshTokenAsync)
 /// accessed via reflection. These cover HTTP-based paths that are otherwise only reachable
 /// through <see cref="ClaudeProvider.FetchUsageAsync"/> which depends on filesystem credentials.
 /// </summary>
@@ -124,18 +124,6 @@ public class ClaudeProviderPrivateMethodTests : IDisposable
         }
         """;
 
-    private static async Task<object?> InvokeFetchRateLimitsAsync(
-        ClaudeProvider provider, string? accessToken, CancellationToken ct = default)
-    {
-        var method = typeof(ClaudeProvider).GetMethod(
-            "FetchRateLimitsAsync",
-            BindingFlags.NonPublic | BindingFlags.Instance);
-        Assert.NotNull(method);
-        var task = (Task)method!.Invoke(provider, [accessToken, ct])!;
-        await task;
-        return task.GetType().GetProperty("Result")!.GetValue(task);
-    }
-
     private static async Task<object?> InvokeFetchOAuthUsageAsync(
         ClaudeProvider provider, string? accessToken, CancellationToken ct = default)
     {
@@ -214,7 +202,7 @@ public class ClaudeProviderPrivateMethodTests : IDisposable
         return task.GetType().GetProperty("Result")!.GetValue(task);
     }
 
-    // --- FetchRateLimitsAsync ---
+    // --- Read-only usage endpoints ---
     [Fact]
     public async Task FetchClaudeWebUsageAsync_NullAccount_ReturnsNull()
     {
@@ -445,159 +433,6 @@ public class ClaudeProviderPrivateMethodTests : IDisposable
 
         Assert.Null(result);
         Assert.True(GetBackoff(provider, "usageEndpointBackoffUntilTicks") > DateTimeOffset.UtcNow.UtcTicks);
-    }
-
-    [Fact]
-    public async Task FetchRateLimitsAsync_NullToken_ReturnsNull()
-    {
-        var factory = Substitute.For<IHttpClientFactory>();
-        var provider = CreateProvider(factory);
-
-        var result = await InvokeFetchRateLimitsAsync(provider, null);
-
-        Assert.Null(result);
-    }
-
-    [Fact]
-    public async Task FetchRateLimitsAsync_EmptyToken_ReturnsNull()
-    {
-        var factory = Substitute.For<IHttpClientFactory>();
-        var provider = CreateProvider(factory);
-
-        var result = await InvokeFetchRateLimitsAsync(provider, string.Empty);
-
-        Assert.Null(result);
-    }
-
-    [Fact]
-    public async Task FetchRateLimitsAsync_BackoffActive_ReturnsNullWithoutRequest()
-    {
-        var factory = Substitute.For<IHttpClientFactory>();
-        var provider = CreateProvider(factory);
-        SetBackoff(provider, "probeBackoffUntilTicks");
-
-        var result = await InvokeFetchRateLimitsAsync(provider, "test-token");
-
-        Assert.Null(result);
-        factory.DidNotReceiveWithAnyArgs().CreateClient(default!);
-    }
-
-    [Theory]
-    [InlineData(HttpStatusCode.Forbidden, "probeBackoffUntilTicks")]
-    [InlineData(HttpStatusCode.TooManyRequests, "probeBackoffUntilTicks")]
-    public async Task FetchRateLimitsAsync_NonSuccessStatus_ArmsBackoff(
-        HttpStatusCode statusCode,
-        string fieldName)
-    {
-        var factory = CreateFactory(new HttpResponseMessage(statusCode)
-        {
-            Content = new StringContent("error", Encoding.UTF8, "text/plain"),
-        });
-        var provider = CreateProvider(factory);
-
-        var result = await InvokeFetchRateLimitsAsync(provider, "test-token");
-
-        Assert.Null(result);
-        Assert.True(GetBackoff(provider, fieldName) > DateTimeOffset.UtcNow.UtcTicks);
-    }
-
-    [Fact]
-    public async Task FetchRateLimitsAsync_ValidToken_WithRateLimitHeaders_ReturnsParsedLimits()
-    {
-        var response = new HttpResponseMessage(HttpStatusCode.OK)
-        {
-            Content = new StringContent("{}", Encoding.UTF8, "application/json"),
-        };
-        response.Headers.TryAddWithoutValidation("anthropic-ratelimit-unified-5h-utilization", "0.35");
-        response.Headers.TryAddWithoutValidation("anthropic-ratelimit-unified-5h-reset", "1750000000");
-        response.Headers.TryAddWithoutValidation("anthropic-ratelimit-unified-5h-status", "active");
-        response.Headers.TryAddWithoutValidation("anthropic-ratelimit-unified-7d-utilization", "0.60");
-        response.Headers.TryAddWithoutValidation("anthropic-ratelimit-unified-7d-reset", "1751000000");
-        response.Headers.TryAddWithoutValidation("anthropic-ratelimit-unified-7d-status", "active");
-
-        var factory = CreateFactory(response);
-        var provider = CreateProvider(factory);
-
-        var result = await InvokeFetchRateLimitsAsync(provider, "test-access-token");
-
-        Assert.NotNull(result);
-        var limits = (ClaudeProvider.UnifiedRateLimits)result!;
-        Assert.Equal(0.35, limits.FiveHourUtilization, 2);
-        Assert.Equal(0.60, limits.SevenDayUtilization, 2);
-        Assert.Equal("active", limits.FiveHourStatus);
-    }
-
-    [Fact]
-    public async Task FetchRateLimitsAsync_ValidToken_401Response_ReturnsNull()
-    {
-        var response = new HttpResponseMessage(HttpStatusCode.Unauthorized)
-        {
-            Content = new StringContent("{\"error\":\"unauthorized\"}", Encoding.UTF8, "application/json"),
-        };
-        var factory = CreateFactory(response);
-        var provider = CreateProvider(factory);
-
-        var result = await InvokeFetchRateLimitsAsync(provider, "expired-token");
-
-        Assert.Null(result);
-    }
-
-    [Fact]
-    public async Task FetchRateLimitsAsync_ValidToken_NoRateLimitHeaders_ReturnsCachedOrNull()
-    {
-        var response = new HttpResponseMessage(HttpStatusCode.OK)
-        {
-            Content = new StringContent("{}", Encoding.UTF8, "application/json"),
-        };
-        var factory = CreateFactory(response);
-        var provider = CreateProvider(factory);
-
-        var result = await InvokeFetchRateLimitsAsync(provider, "test-token");
-
-        Assert.Null(result);
-    }
-
-    [Fact]
-    public async Task FetchRateLimitsAsync_HttpException_ReturnsCachedOrNull()
-    {
-        var factory = CreateFactory(new HttpRequestException("Connection refused"));
-        var provider = CreateProvider(factory);
-
-        var result = await InvokeFetchRateLimitsAsync(provider, "test-token");
-
-        Assert.Null(result);
-    }
-
-    [Fact]
-    public async Task FetchRateLimitsAsync_GenericException_ReturnsCachedOrNull()
-    {
-        var factory = CreateFactory(new InvalidOperationException("Unexpected error"));
-        var provider = CreateProvider(factory);
-
-        var result = await InvokeFetchRateLimitsAsync(provider, "test-token");
-
-        Assert.Null(result);
-    }
-
-    [Fact]
-    public async Task FetchRateLimitsAsync_CachesResult_ReturnsSameOnSecondCall()
-    {
-        var response = new HttpResponseMessage(HttpStatusCode.OK)
-        {
-            Content = new StringContent("{}", Encoding.UTF8, "application/json"),
-        };
-        response.Headers.TryAddWithoutValidation("anthropic-ratelimit-unified-5h-utilization", "0.25");
-        response.Headers.TryAddWithoutValidation("anthropic-ratelimit-unified-7d-utilization", "0.40");
-
-        var factory = CreateFactory(response);
-        var provider = CreateProvider(factory);
-
-        var first = await InvokeFetchRateLimitsAsync(provider, "test-token");
-        Assert.NotNull(first);
-
-        var second = await InvokeFetchRateLimitsAsync(provider, "test-token");
-        Assert.NotNull(second);
-        Assert.Same(first, second);
     }
 
     // --- TryRefreshTokenAsync ---
