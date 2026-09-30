@@ -581,14 +581,14 @@ public sealed class RemainingCoverageCopilotProviderEnvironmentTests
 public sealed class RemainingCoverageClaudeProviderTests
 {
     [Fact]
-    public async Task FetchRateLimitsAsync_ConcurrentCallsShareCachedResultAfterLock()
+    public async Task FetchOAuthUsageAsync_ConcurrentCalls_ShareCachedResultAfterLock()
     {
         var handler = new BlockingClaudeRateLimitHandler();
         var provider = CreateProvider(handler);
 
         var firstTask = ReflectionTestHelpers.InvokePrivateAsync<ClaudeProvider.UnifiedRateLimits?>(
             provider,
-            "FetchRateLimitsAsync",
+            "FetchOAuthUsageAsync",
             "access-token",
             CancellationToken.None);
 
@@ -596,7 +596,7 @@ public sealed class RemainingCoverageClaudeProviderTests
 
         var secondTask = ReflectionTestHelpers.InvokePrivateAsync<ClaudeProvider.UnifiedRateLimits?>(
             provider,
-            "FetchRateLimitsAsync",
+            "FetchOAuthUsageAsync",
             "access-token",
             CancellationToken.None);
 
@@ -611,7 +611,7 @@ public sealed class RemainingCoverageClaudeProviderTests
     }
 
     [Fact]
-    public async Task ProbeAndCacheRateLimitsAsync_TimeoutWithoutCallerCancellation_ReturnsCachedLimits()
+    public async Task FetchOAuthUsageAsync_TimeoutWithoutCallerCancellation_ReturnsCachedLimits()
     {
         var cachedLimits = new ClaudeProvider.UnifiedRateLimits
         {
@@ -625,7 +625,7 @@ public sealed class RemainingCoverageClaudeProviderTests
 
         var result = await ReflectionTestHelpers.InvokePrivateAsync<ClaudeProvider.UnifiedRateLimits?>(
             provider,
-            "ProbeAndCacheRateLimitsAsync",
+            "FetchOAuthUsageAsync",
             "access-token",
             CancellationToken.None);
 
@@ -780,17 +780,13 @@ internal sealed class BlockingClaudeRateLimitHandler : HttpMessageHandler
         this.RequestStarted.TrySetResult();
         await this.AllowResponse.Task.WaitAsync(cancellationToken);
 
-        var response = new HttpResponseMessage(HttpStatusCode.OK)
+        return new HttpResponseMessage(HttpStatusCode.OK)
         {
-            Content = new StringContent("{}", Encoding.UTF8, "application/json"),
+            Content = new StringContent(
+                """{"five_hour":{"utilization":40},"seven_day":{"utilization":65}}""",
+                Encoding.UTF8,
+                "application/json"),
         };
-        response.Headers.Add("anthropic-ratelimit-unified-5h-utilization", "0.40");
-        response.Headers.Add("anthropic-ratelimit-unified-5h-reset", DateTimeOffset.UtcNow.AddHours(4).ToUnixTimeSeconds().ToString());
-        response.Headers.Add("anthropic-ratelimit-unified-5h-status", "ok");
-        response.Headers.Add("anthropic-ratelimit-unified-7d-utilization", "0.65");
-        response.Headers.Add("anthropic-ratelimit-unified-7d-reset", DateTimeOffset.UtcNow.AddDays(6).ToUnixTimeSeconds().ToString());
-        response.Headers.Add("anthropic-ratelimit-unified-7d-status", "ok");
-        return response;
     }
 }
 

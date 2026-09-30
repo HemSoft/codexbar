@@ -447,17 +447,17 @@ public class ClaudeProviderMutationTests
         Assert.Equal("unknown", result.SevenDayStatus);
     }
 
-    // === BuildRateLimitProbeRequest ===
+    // === BuildOAuthUsageRequest ===
     [Fact]
-    public void BuildRateLimitProbeRequest_SetsCorrectHeaders()
+    public void BuildOAuthUsageRequest_ValidToken_SetsReadOnlyHeaders()
     {
-        var request = ClaudeProvider.BuildRateLimitProbeRequest("test-token");
+        using var request = ClaudeProvider.BuildOAuthUsageRequest("test-token");
 
-        Assert.Equal(HttpMethod.Post, request.Method);
-        Assert.Equal("https://api.anthropic.com/v1/messages", request.RequestUri!.ToString());
+        Assert.Equal(HttpMethod.Get, request.Method);
+        Assert.Equal("https://api.anthropic.com/api/oauth/usage", request.RequestUri!.ToString());
         Assert.Equal("Bearer", request.Headers.Authorization!.Scheme);
         Assert.Equal("test-token", request.Headers.Authorization!.Parameter);
-        Assert.NotNull(request.Content);
+        Assert.Null(request.Content);
     }
 
     // === BuildSessionSnapshotFromLimits ===

@@ -931,12 +931,11 @@ public sealed class ClaudeProviderRemainderCoverageTests : IDisposable
     }
 
     [Fact]
-    public void CacheAndReturnLimits_EmptySnapshot_ReturnsFallback()
+    public void CacheAndReturnUsageLimits_MissingSnapshot_ReturnsFallback()
     {
-        using var response = new HttpResponseMessage(HttpStatusCode.OK);
         var provider = this.CreateProvider();
 
-        var result = provider.CacheAndReturnLimits(new ClaudeProvider.UnifiedRateLimits(), response.Headers);
+        var result = provider.CacheAndReturnUsageLimits(null);
 
         Assert.Null(result);
     }

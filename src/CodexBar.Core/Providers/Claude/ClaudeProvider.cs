@@ -13,8 +13,7 @@ using CodexBar.Core.Models;
 using Microsoft.Extensions.Logging;
 
 /// <summary>
-/// Fetches Claude Code subscription usage from the OAuth usage endpoint, with
-/// rate-limit response headers as a fallback for older token behavior.
+/// Fetches Claude Code subscription usage from read-only web and OAuth usage endpoints.
 /// </summary>
 public sealed partial class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttpClientFactory httpClientFactory, ISettingsService settings) : IUsageProvider
 {
@@ -69,14 +68,6 @@ public sealed partial class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttp
         "-e61b-44d9",
         "-88ed-5944d1962f5e");
 
-    // Minimal request body: haiku model, 1 token, trivial prompt — just enough to trigger rate-limit headers
-    private static readonly string ProbeRequestBody = JsonSerializer.Serialize(new
-    {
-        model = "claude-haiku-4-5",
-        max_tokens = 1,
-        messages = new[] { new { role = "user", content = "x" } },
-    });
-
     // Anthropic API pricing per million tokens (used to calculate equivalent cost)
     private static readonly Dictionary<string, (double InputPerMTok, double OutputPerMTok, double CacheWritePerMTok, double CacheReadPerMTok)> ModelPricing =
         new(StringComparer.OrdinalIgnoreCase)
@@ -96,8 +87,8 @@ public sealed partial class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttp
             ["haiku"] = (1.0, 5.0, 1.25, 0.10),
         };
 
-    // Cache the last known rate-limit data so we don't probe the API on every refresh.
-    // TTL is 30 min to avoid burning subscription quota with frequent probes (~48 req/day vs ~288).
+    // Keep the last known usage during read-only endpoint failures.
+    // Fresh results avoid repeated requests for 30 minutes.
     private UnifiedRateLimits? cachedLimits;
     private bool cachedLimitsAreAuthoritative;
     private long limitsCachedAtTicks; // stored as ticks for atomic reads via Volatile
@@ -108,7 +99,6 @@ public sealed partial class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttp
     // hammers Anthropic all day (failures are never cached), which is exactly
     // what triggers the persistent 429 rate_limit_error on the usage endpoint.
     private long usageEndpointBackoffUntilTicks;
-    private long probeBackoffUntilTicks;
     private long webUsageBackoffUntilTicks;
     private static readonly TimeSpan RateLimitBackoff = TimeSpan.FromMinutes(15);
     private static readonly TimeSpan PermissionErrorBackoff = TimeSpan.FromHours(6);
@@ -173,10 +163,10 @@ public sealed partial class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttp
             var equivalentCost = CalculateEquivalentCost(stats);
             var totalTokens = CalculateTotalTokens(stats);
             var limits = await this.FetchClaudeWebUsageAsync(accountInfo, ct)
-                ?? await this.FetchOAuthUsageAsync(credentials.AccessToken, ct)
-                ?? await this.FetchRateLimitsAsync(credentials.AccessToken, ct);
+                ?? await this.FetchOAuthUsageAsync(credentials.AccessToken, ct);
+            var hasStaleLimits = limits is not null && !this.TryGetFreshCachedLimits(out _);
 
-            return BuildFetchResult(limits, displaySub, totalTokens, equivalentCost, accountInfo);
+            return BuildFetchResult(limits, displaySub, totalTokens, equivalentCost, accountInfo, hasStaleLimits);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -271,9 +261,18 @@ public sealed partial class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttp
         string displaySub,
         long totalTokens,
         double equivalentCost,
-        ClaudeAccountInfo? accountInfo)
+        ClaudeAccountInfo? accountInfo,
+        bool hasStaleLimits = false)
     {
         var sessionSnapshot = BuildSessionSnapshot(limits, displaySub, totalTokens, equivalentCost, accountInfo);
+        if (hasStaleLimits)
+        {
+            sessionSnapshot = sessionSnapshot with
+            {
+                UsageLabel = $"{sessionSnapshot.UsageLabel} · Cached usage; rate limits unavailable",
+            };
+        }
+
         var weeklySnapshot = BuildWeeklySnapshot(limits);
         var bars = BuildUsageBars(limits);
 
@@ -538,45 +537,6 @@ public sealed partial class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttp
         return string.Join(" · ", parts);
     }
 
-    /// <summary>
-    /// Probes the Anthropic Messages API with the local OAuth token and parses
-    /// the <c>anthropic-ratelimit-unified-*</c> response headers for per-window utilization.
-    /// Results are cached for <see cref="CacheTtl"/> to avoid excessive API calls.
-    /// </summary>
-    private async Task<UnifiedRateLimits?> FetchRateLimitsAsync(string? accessToken, CancellationToken ct)
-    {
-        if (this.TryGetFreshCachedLimits(out var cached))
-        {
-            return cached;
-        }
-
-        if (string.IsNullOrEmpty(accessToken))
-        {
-            this.logger.LogWarning("Claude: no OAuth access token available for rate-limit probe");
-            return this.GetFallbackCachedLimits();
-        }
-
-        if (IsInBackoff(ref this.probeBackoffUntilTicks))
-        {
-            return this.GetFallbackCachedLimits();
-        }
-
-        await this.cacheLock.WaitAsync(ct);
-        try
-        {
-            if (this.TryGetFreshCachedLimits(out cached))
-            {
-                return cached;
-            }
-
-            return await this.ProbeAndCacheRateLimitsAsync(accessToken, ct);
-        }
-        finally
-        {
-            this.cacheLock.Release();
-        }
-    }
-
     private async Task<UnifiedRateLimits?> FetchOAuthUsageAsync(string? accessToken, CancellationToken ct)
     {
         if (this.TryGetFreshCachedLimits(out var cached, requireAuthoritative: true))
@@ -710,106 +670,6 @@ public sealed partial class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttp
         return cached is not null && (cachedIsAuthoritative || !IsEmptyRateLimitSnapshot(cached))
             ? cached
             : null;
-    }
-
-    private async Task<UnifiedRateLimits?> ProbeAndCacheRateLimitsAsync(string accessToken, CancellationToken ct)
-    {
-        try
-        {
-            using var httpClient = this.httpClientFactory.CreateClient();
-            httpClient.Timeout = ApiTimeout;
-
-            using var request = BuildRateLimitProbeRequest(accessToken);
-            using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            cts.CancelAfter(ApiTimeout);
-
-            using var response = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cts.Token);
-
-            this.logger.LogDebug("Claude API probe returned status {StatusCode}", (int)response.StatusCode);
-
-            if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized)
-            {
-                this.logger.LogWarning("Claude API returned 401 — OAuth token may be expired");
-                return null;
-            }
-
-            if (!response.IsSuccessStatusCode)
-            {
-                var errorBody = await ReadTruncatedBodyAsync(response, cts.Token);
-                this.logger.LogWarning(
-                    "Claude API probe failed with status {StatusCode}: {Body}",
-                    (int)response.StatusCode,
-                    errorBody);
-
-                if (response.StatusCode == System.Net.HttpStatusCode.Forbidden)
-                {
-                    // "OAuth authentication is currently not allowed for this
-                    // organization" — an org-level policy that won't change
-                    // between refreshes, so retrying every cycle only burns quota.
-                    SetBackoff(ref this.probeBackoffUntilTicks, PermissionErrorBackoff);
-                }
-                else if (response.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
-                {
-                    SetBackoff(ref this.probeBackoffUntilTicks, RateLimitBackoff);
-                }
-            }
-
-            var result = ParseRateLimitHeaders(response.Headers);
-            return this.CacheAndReturnLimits(result, response.Headers);
-        }
-        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
-        {
-            this.logger.LogDebug("Claude API probe timed out");
-            return this.GetFallbackCachedLimits();
-        }
-        catch (HttpRequestException ex)
-        {
-            this.logger.LogWarning(ex, "Claude API probe failed (HTTP): {Message}", ex.Message);
-            return this.GetFallbackCachedLimits();
-        }
-        catch (Exception ex)
-        {
-            this.logger.LogWarning(ex, "Claude API probe failed: {Type}: {Message}", ex.GetType().Name, ex.Message);
-            return this.GetFallbackCachedLimits();
-        }
-    }
-
-    internal static HttpRequestMessage BuildRateLimitProbeRequest(string accessToken)
-    {
-        var request = new HttpRequestMessage(HttpMethod.Post, "https://api.anthropic.com/v1/messages");
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
-        request.Headers.TryAddWithoutValidation("anthropic-version", "2023-06-01");
-        request.Headers.TryAddWithoutValidation("anthropic-beta", "oauth-2025-04-20");
-        request.Content = new StringContent(ProbeRequestBody, Encoding.UTF8, "application/json");
-        return request;
-    }
-
-    internal UnifiedRateLimits? CacheAndReturnLimits(UnifiedRateLimits? result, HttpResponseHeaders responseHeaders)
-    {
-        if (result is not null)
-        {
-            if (IsEmptyRateLimitSnapshot(result))
-            {
-                this.logger.LogWarning("Claude API rate-limit probe returned 0% for both windows; ignoring non-authoritative empty snapshot");
-                return this.GetFallbackCachedLimits();
-            }
-
-            this.cachedLimits = result;
-            this.cachedLimitsAreAuthoritative = false;
-            Volatile.Write(ref this.limitsCachedAtTicks, DateTimeOffset.UtcNow.UtcTicks);
-            this.logger.LogDebug(
-                "Claude rate limits: 5h={FiveH:P0}, 7d={SevenD:P0}",
-                result.FiveHourUtilization, result.SevenDayUtilization);
-        }
-        else
-        {
-            var headerNames = string.Join(", ", responseHeaders.Select(h => h.Key));
-            this.logger.LogWarning(
-                "Claude API rate-limit headers not found. Response headers: {Headers}",
-                headerNames);
-        }
-
-        return result ?? this.GetFallbackCachedLimits();
     }
 
     internal UnifiedRateLimits? CacheAndReturnUsageLimits(UnifiedRateLimits? result)

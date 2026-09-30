@@ -2,10 +2,12 @@
 
 namespace CodexBar.Core.Tests;
 
+using System.Globalization;
 using System.Net;
 using System.Net.Http;
 using System.Reflection;
 using System.Text;
+using System.Text.Json;
 using CodexBar.Core.Configuration;
 using CodexBar.Core.Models;
 using CodexBar.Core.Providers.Claude;
@@ -623,7 +625,7 @@ public class ClaudeProviderFileIoTests : IDisposable
                 {
                     Content = new StringContent("bad request", Encoding.UTF8, "text/plain"),
                 }
-                : CreateRateLimitResponse("0.12", "0.02"));
+                : CreateUsageResponse("0.12", "0.02"));
         var httpFactory = Substitute.For<IHttpClientFactory>();
         httpFactory.CreateClient(Arg.Any<string>()).Returns(_ => new HttpClient(handler, disposeHandler: false));
 
@@ -642,16 +644,18 @@ public class ClaudeProviderFileIoTests : IDisposable
         Assert.Equal(0.02, result.WeeklyUsage!.UsedPercent, 0.01);
     }
 
-    private static HttpResponseMessage CreateRateLimitResponse(string fiveHour, string sevenDay)
-    {
-        var response = new HttpResponseMessage(HttpStatusCode.OK)
+    private static HttpResponseMessage CreateUsageResponse(string fiveHour, string sevenDay) =>
+        new(HttpStatusCode.OK)
         {
-            Content = new StringContent("""{"id":"msg_123","type":"message","content":[]}""", Encoding.UTF8, "application/json"),
+            Content = new StringContent(
+                JsonSerializer.Serialize(new
+                {
+                    five_hour = new { utilization = double.Parse(fiveHour, CultureInfo.InvariantCulture) * 100 },
+                    seven_day = new { utilization = double.Parse(sevenDay, CultureInfo.InvariantCulture) * 100 },
+                }),
+                Encoding.UTF8,
+                "application/json"),
         };
-        response.Headers.TryAddWithoutValidation("anthropic-ratelimit-unified-5h-utilization", fiveHour);
-        response.Headers.TryAddWithoutValidation("anthropic-ratelimit-unified-7d-utilization", sevenDay);
-        return response;
-    }
 
     [Fact]
     public async Task FetchUsageAsync_CancellationRequested_ThrowsOperationCancelled()
@@ -720,7 +724,7 @@ public class ClaudeProviderFileIoTests : IDisposable
             httpFactory,
             settings);
 
-        // Dispose the internal cacheLock to trigger ObjectDisposedException in FetchRateLimitsAsync
+        // Dispose the internal cacheLock to trigger ObjectDisposedException in FetchOAuthUsageAsync
         // which propagates to the outer catch (Exception ex) block in FetchUsageAsync
         var lockField = typeof(ClaudeProvider).GetField("cacheLock", BindingFlags.NonPublic | BindingFlags.Instance)!;
         var semaphore = (SemaphoreSlim)lockField.GetValue(provider)!;
@@ -865,13 +869,7 @@ public class ClaudeProviderFileIoTests : IDisposable
                     };
                 }
 
-                var msgResponse = new HttpResponseMessage(HttpStatusCode.OK)
-                {
-                    Content = new StringContent("""{"id":"msg_123","type":"message","content":[]}""", Encoding.UTF8, "application/json"),
-                };
-                msgResponse.Headers.TryAddWithoutValidation("anthropic-ratelimit-unified-5h-utilization", "0.3");
-                msgResponse.Headers.TryAddWithoutValidation("anthropic-ratelimit-unified-7d-utilization", "0.1");
-                return msgResponse;
+                return CreateUsageResponse("0.3", "0.1");
             });
 
             var httpFactory = Substitute.For<IHttpClientFactory>();
@@ -925,13 +923,7 @@ public class ClaudeProviderFileIoTests : IDisposable
                     };
                 }
 
-                var response = new HttpResponseMessage(HttpStatusCode.OK)
-                {
-                    Content = new StringContent("""{"id":"msg_123","type":"message","content":[]}""", Encoding.UTF8, "application/json"),
-                };
-                response.Headers.TryAddWithoutValidation("anthropic-ratelimit-unified-5h-utilization", "0.3");
-                response.Headers.TryAddWithoutValidation("anthropic-ratelimit-unified-7d-utilization", "0.1");
-                return response;
+                return CreateUsageResponse("0.3", "0.1");
             });
 
             var httpFactory = Substitute.For<IHttpClientFactory>();

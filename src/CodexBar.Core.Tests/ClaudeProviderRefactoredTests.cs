@@ -8,7 +8,7 @@ using CodexBar.Core.Providers.Claude;
 
 /// <summary>
 /// Tests for refactored ClaudeProvider methods: BuildSessionSnapshot, BuildSessionSnapshotFromLimits,
-/// FormatSubscriptionType, and BuildRateLimitProbeRequest.
+/// FormatSubscriptionType, and BuildOAuthUsageRequest.
 /// </summary>
 public class ClaudeProviderRefactoredTests
 {
@@ -175,56 +175,18 @@ public class ClaudeProviderRefactoredTests
         Assert.Contains("Enterprise plan", snapshot.UsageLabel);
     }
 
-    // --- BuildRateLimitProbeRequest ---
     [Fact]
-    public void BuildRateLimitProbeRequest_SetsAuthorizationHeader()
+    public void BuildOAuthUsageRequest_ValidToken_UsesReadOnlyEndpoint()
     {
-        using var request = ClaudeProvider.BuildRateLimitProbeRequest("test-token");
+        using var request = ClaudeProvider.BuildOAuthUsageRequest("test-token");
 
         Assert.Equal("Bearer", request.Headers.Authorization?.Scheme);
         Assert.Equal("test-token", request.Headers.Authorization?.Parameter);
-    }
-
-    [Fact]
-    public void BuildRateLimitProbeRequest_SetsCorrectUrl()
-    {
-        using var request = ClaudeProvider.BuildRateLimitProbeRequest("token");
-
-        Assert.Equal("https://api.anthropic.com/v1/messages", request.RequestUri?.ToString());
-    }
-
-    [Fact]
-    public void BuildRateLimitProbeRequest_SetsPostMethod()
-    {
-        using var request = ClaudeProvider.BuildRateLimitProbeRequest("token");
-
-        Assert.Equal(HttpMethod.Post, request.Method);
-    }
-
-    [Fact]
-    public void BuildRateLimitProbeRequest_IncludesAnthropicVersion()
-    {
-        using var request = ClaudeProvider.BuildRateLimitProbeRequest("token");
-
-        Assert.True(request.Headers.TryGetValues("anthropic-version", out var values));
-        Assert.Contains("2023-06-01", values);
-    }
-
-    [Fact]
-    public void BuildRateLimitProbeRequest_IncludesBetaHeader()
-    {
-        using var request = ClaudeProvider.BuildRateLimitProbeRequest("token");
-
+        Assert.Equal("https://api.anthropic.com/api/oauth/usage", request.RequestUri?.ToString());
+        Assert.Equal(HttpMethod.Get, request.Method);
+        Assert.Null(request.Content);
+        Assert.Contains(request.Headers.Accept, value => value.MediaType == "application/json");
         Assert.True(request.Headers.TryGetValues("anthropic-beta", out var values));
         Assert.Contains("oauth-2025-04-20", values);
-    }
-
-    [Fact]
-    public void BuildRateLimitProbeRequest_HasJsonContent()
-    {
-        using var request = ClaudeProvider.BuildRateLimitProbeRequest("token");
-
-        Assert.NotNull(request.Content);
-        Assert.Equal("application/json", request.Content!.Headers.ContentType?.MediaType);
     }
 }

@@ -18,10 +18,10 @@ using Xunit;
 /// Comprehensive coverage tests for ClaudeProvider targeting all uncovered branches:
 /// FormatTokenCount, FormatBarReset, FormatResetCountdown, FormatUsageLabel,
 /// BuildSessionSnapshotFromLimits, BuildWeeklySnapshot, BuildUsageBars,
-/// TryGetFreshCachedLimits, CacheAndReturnLimits, ParseTokenRefreshResponse,
+/// TryGetFreshCachedLimits, CacheAndReturnUsageLimits, ParseTokenRefreshResponse,
 /// PersistCredentials, WriteOAuthSection, ParseRateLimitHeaders,
-/// ResolvePricing, CalculateEquivalentCost, FetchRateLimitsAsync,
-/// ProbeAndCacheRateLimitsAsync, TryRefreshTokenAsync, ReadStatsCache, ReadAccountInfo.
+/// ResolvePricing, CalculateEquivalentCost, FetchOAuthUsageAsync,
+/// TryRefreshTokenAsync, ReadStatsCache, ReadAccountInfo.
 /// </summary>
 [Collection("ClaudeProviderFileIo")]
 public class ClaudeProviderFullCoverageTests : IDisposable
@@ -703,11 +703,7 @@ public class ClaudeProviderFullCoverageTests : IDisposable
                 });
             }
 
-            // Rate limit probe response
-            var rateLimitResponse = new HttpResponseMessage(HttpStatusCode.OK);
-            rateLimitResponse.Headers.TryAddWithoutValidation("anthropic-ratelimit-unified-5h-utilization", "0.3");
-            rateLimitResponse.Headers.TryAddWithoutValidation("anthropic-ratelimit-unified-7d-utilization", "0.5");
-            return Task.FromResult(rateLimitResponse);
+            return Task.FromResult(CreateRateLimitResponse("0.3", "0.5"));
         });
 
         var factory = CreateFactory(handler);
@@ -717,7 +713,7 @@ public class ClaudeProviderFullCoverageTests : IDisposable
         var result = await provider.FetchUsageAsync();
 
         Assert.True(result.Success);
-        Assert.True(callCount >= 2); // Refresh + probe
+        Assert.Equal(2, callCount); // Token renewal and read-only usage.
     }
 
     [Fact]
@@ -1019,7 +1015,7 @@ public class ClaudeProviderFullCoverageTests : IDisposable
     }
 
     [Fact]
-    public async Task FetchUsageAsync_CacheHit_DoesNotProbeApi()
+    public async Task FetchUsageAsync_CacheHit_DoesNotRequestUsage()
     {
         this.SetupOverrides();
         var futureExpiry = DateTimeOffset.UtcNow.AddHours(1).ToUnixTimeSeconds();
@@ -1313,7 +1309,7 @@ public class ClaudeProviderFullCoverageTests : IDisposable
     }
 
     [Fact]
-    public async Task FetchUsageAsync_CacheAndReturnLimits_NullResult_LogsHeaderNames()
+    public async Task FetchUsageAsync_EmptyUsageResponse_ReportsUnavailable()
     {
         this.SetupOverrides();
         var futureExpiry = DateTimeOffset.UtcNow.AddHours(1).ToUnixTimeSeconds();
@@ -1323,7 +1319,7 @@ public class ClaudeProviderFullCoverageTests : IDisposable
         {
             var resp = new HttpResponseMessage(HttpStatusCode.OK);
 
-            // No rate limit headers → ParseRateLimitHeaders returns null
+            // No usage payload means no verified limits.
             resp.Headers.TryAddWithoutValidation("x-custom-header", "test");
             return Task.FromResult(resp);
         });
@@ -1397,13 +1393,18 @@ public class ClaudeProviderFullCoverageTests : IDisposable
         return factory;
     }
 
-    private static HttpResponseMessage CreateRateLimitResponse(string fiveHour, string sevenDay)
-    {
-        var response = new HttpResponseMessage(HttpStatusCode.OK);
-        response.Headers.TryAddWithoutValidation("anthropic-ratelimit-unified-5h-utilization", fiveHour);
-        response.Headers.TryAddWithoutValidation("anthropic-ratelimit-unified-7d-utilization", sevenDay);
-        return response;
-    }
+    private static HttpResponseMessage CreateRateLimitResponse(string fiveHour, string sevenDay) =>
+        new(HttpStatusCode.OK)
+        {
+            Content = new StringContent(
+                JsonSerializer.Serialize(new
+                {
+                    five_hour = new { utilization = double.Parse(fiveHour, System.Globalization.CultureInfo.InvariantCulture) * 100 },
+                    seven_day = new { utilization = double.Parse(sevenDay, System.Globalization.CultureInfo.InvariantCulture) * 100 },
+                }),
+                Encoding.UTF8,
+                "application/json"),
+        };
 
     private sealed class DelegatingHandlerFunc(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> handler) : HttpMessageHandler
     {
