@@ -38,4 +38,4 @@ Windows-native packaging, notifications, and widgets remain in the existing back
 
 The new issue bodies and this report pass the repository Markdown rules. GitHub receipts verify seven distinct new issues and the tracker contains all 33 implementation links. Provider source paths were checked against the immutable upstream tree; the cited GitHub billing documentation returned HTTP 200.
 
-No application code changed, so build, format, tests, coverage, and package vulnerability gates were not rerun for this backlog-only update. Those gates are required by every new implementation ticket.
+All repository changes, including documentation-only updates, require build, format, tests, coverage, and package vulnerability checks before merge. The pull request publishing this report records those results.
