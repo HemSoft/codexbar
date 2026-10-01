@@ -9,6 +9,12 @@ using System.Text.Json.Serialization;
 /// </summary>
 public sealed class AppSettings
 {
+    [JsonPropertyName("accountConfigurationVersion")]
+    public int AccountConfigurationVersion { get; set; }
+
+    [JsonPropertyName("accounts")]
+    public List<ProviderAccountSettings> Accounts { get; set; } = [];
+
     [JsonPropertyName("refreshIntervalSeconds")]
     public int RefreshIntervalSeconds { get; set; } = 120;
 

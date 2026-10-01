@@ -62,7 +62,9 @@ public sealed class SettingsService : ISettingsService
     {
         lock (this._lock)
         {
-            return DeepCopy(this.EnsureCached());
+            var cached = this.EnsureCached();
+            AccountConfiguration.Migrate(cached);
+            return DeepCopy(cached);
         }
     }
 
@@ -71,6 +73,7 @@ public sealed class SettingsService : ISettingsService
         lock (this._lock)
         {
             this.MergeFromDisk(settings);
+            AccountConfiguration.Migrate(settings);
             this.SaveInternal(settings);
         }
     }
@@ -95,6 +98,12 @@ public sealed class SettingsService : ISettingsService
             if (disk is null)
             {
                 return;
+            }
+
+            if (settings.AccountConfigurationVersion == 0 && disk.AccountConfigurationVersion > 0)
+            {
+                settings.AccountConfigurationVersion = disk.AccountConfigurationVersion;
+                settings.Accounts = AccountConfiguration.Normalize(disk.Accounts);
             }
 
             MergeProviders(settings, disk);
@@ -279,6 +288,8 @@ public sealed class SettingsService : ISettingsService
     {
         return new AppSettings
         {
+            AccountConfigurationVersion = settings.AccountConfigurationVersion,
+            Accounts = AccountConfiguration.Normalize(settings.Accounts),
             RefreshIntervalSeconds = settings.RefreshIntervalSeconds,
             CopilotAccounts = NormalizeStringList(settings.CopilotAccounts),
             CopilotKnownAccounts = NormalizeStringList(settings.CopilotKnownAccounts),
@@ -504,6 +515,8 @@ public sealed class SettingsService : ISettingsService
 
     private static AppSettings DeepCopy(AppSettings source) => new()
     {
+        AccountConfigurationVersion = source.AccountConfigurationVersion,
+        Accounts = AccountConfiguration.Normalize(source.Accounts),
         RefreshIntervalSeconds = source.RefreshIntervalSeconds,
         CopilotAccounts = NormalizeStringList(source.CopilotAccounts),
         CopilotKnownAccounts = NormalizeStringList(source.CopilotKnownAccounts),
