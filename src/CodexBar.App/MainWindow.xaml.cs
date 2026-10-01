@@ -389,6 +389,14 @@ public partial class MainWindow : Window
     {
         switch (msg)
         {
+            case WindowMessageHandler.WmTimeChange:
+            case WindowMessageHandler.WmSettingChange:
+                if (this.DataContext is MainViewModel viewModel)
+                {
+                    viewModel.RefreshLocalPresentation();
+                }
+
+                break;
             case WMSYSCOMMAND:
                 // A native resize is starting (SC_SIZE | direction, sent by
                 // DefWindowProc when the user grabs a WindowChrome resize border).

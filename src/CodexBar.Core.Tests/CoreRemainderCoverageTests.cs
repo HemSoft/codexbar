@@ -43,35 +43,13 @@ public sealed class CodexProviderRemainderCoverageTests : IDisposable
     }
 
     [Fact]
-    public void GetEasternTimeZoneAbbreviation_UnknownOffset_ReturnsGenericLabel()
+    public void FormatReset_NonUsLocalZone_UsesConfiguredLocalOffset()
     {
-        var result = CodexProvider.GetEasternTimeZoneAbbreviation(
-            new DateTimeOffset(2026, 1, 1, 12, 0, 0, TimeSpan.Zero));
-
-        Assert.Equal("ET", result);
-    }
-
-    [Fact]
-    public void ResolveEasternTimeZone_WindowsIdMissing_UsesIanaFallback()
-    {
-        var iana = TimeZoneInfo.CreateCustomTimeZone("America/New_York", TimeSpan.FromHours(-5), "Eastern", "Eastern");
-        CodexProvider.TimeZoneResolver = id => id == "America/New_York" ? iana : null;
-
-        var result = CodexProvider.ResolveEasternTimeZone();
-
-        Assert.Same(iana, result);
-    }
-
-    [Fact]
-    public void ResolveEasternTimeZone_KnownIdsMissing_UsesLocalFallback()
-    {
-        var local = TimeZoneInfo.CreateCustomTimeZone("LocalTest", TimeSpan.FromHours(2), "Local", "Local");
-        CodexProvider.TimeZoneResolver = _ => null;
-        CodexProvider.LocalTimeZone = local;
-
-        var result = CodexProvider.ResolveEasternTimeZone();
-
-        Assert.Same(local, result);
+        CodexProvider.LocalTimeZone = TimeZoneInfo.CreateCustomTimeZone("India", TimeSpan.FromMinutes(330), "India", "India");
+        var result = CodexProvider.FormatReset(new DateTimeOffset(2026, 1, 1, 12, 0, 0, TimeSpan.Zero));
+        Assert.Contains("UTC+05:30", result);
+        Assert.DoesNotContain("EST", result);
+        Assert.DoesNotContain("EDT", result);
     }
 
     [Fact]
@@ -82,20 +60,19 @@ public sealed class CodexProviderRemainderCoverageTests : IDisposable
         var releaseOverride = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var overrideTask = Task.Run(async () =>
         {
-            CodexProvider.TimeZoneResolver = _ => null;
             CodexProvider.LocalTimeZone = local;
             overrideSet.SetResult();
 
             await releaseOverride.Task;
 
-            return CodexProvider.ResolveEasternTimeZone();
+            return CodexProvider.LocalTimeZone;
         });
 
         await overrideSet.Task;
         TimeZoneInfo siblingTimeZone;
         try
         {
-            siblingTimeZone = await Task.Run(CodexProvider.ResolveEasternTimeZone);
+            siblingTimeZone = await Task.Run(() => CodexProvider.LocalTimeZone);
         }
         finally
         {
@@ -117,14 +94,6 @@ public sealed class CodexProviderRemainderCoverageTests : IDisposable
         CodexProvider.ResetTimeZoneResolverForTests();
 
         Assert.Same(TimeZoneInfo.Local, CodexProvider.LocalTimeZone);
-    }
-
-    [Fact]
-    public void DefaultTimeZoneResolver_MissingId_ReturnsNull()
-    {
-        var result = CodexProvider.TimeZoneResolver($"missing-zone-{Guid.NewGuid():N}");
-
-        Assert.Null(result);
     }
 }
 

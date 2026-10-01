@@ -3,6 +3,7 @@
 namespace CodexBar.App.Tests;
 
 using CodexBar.App.ViewModels;
+using CodexBar.Core.Models;
 
 public sealed class SessionSpendingCalculatorTests
 {
@@ -109,7 +110,7 @@ public sealed class SessionSpendingCalculatorTests
         var time = new DateTimeOffset(2026, 5, 15, 14, 30, 0, TimeSpan.Zero);
         var result = SessionSpendingCalculator.FormatResetTime(time);
 
-        var expected = time.ToLocalTime().ToString("yyyy-MM-dd hh:mm tt");
+        var expected = LocalTimestampFormatter.Format(time);
         Assert.Equal(expected, result);
     }
 

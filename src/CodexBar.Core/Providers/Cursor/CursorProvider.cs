@@ -342,8 +342,7 @@ public sealed class CursorProvider(
             return null;
         }
 
-        var localReset = reset.Value.ToLocalTime();
-        return $"Resets {localReset:MMM d}";
+        return $"Resets {LocalTimestampFormatter.Format(reset.Value)}";
     }
 
     private static string FormatCents(double? cents)
