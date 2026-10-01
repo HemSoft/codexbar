@@ -6,6 +6,7 @@ using System.Globalization;
 using CodexBar.App.ViewModels;
 using CodexBar.Core.Configuration;
 using CodexBar.Core.Models;
+using CodexBar.Core.Providers;
 using CodexBar.Core.Services;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
@@ -44,6 +45,39 @@ public sealed class LocalPresentationTests
         Assert.Null(card.ResetAt);
     }
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void ApplyLegacyProviderResult_ErrorOrEmpty_ClearsRetainedResetInstant(bool success)
+    {
+        var card = new ProviderCardViewModel { ResetAt = DateTimeOffset.UtcNow, ResetText = "Old reset" };
+        MainViewModel.ApplyLegacyProviderResult(card, new ProviderUsageResult { Provider = ProviderId.OpenRouter, Success = success });
+        Assert.Null(card.ResetAt);
+        Assert.Null(card.ResetText);
+    }
+
+    [Fact]
+    public void RefreshLocalPresentation_LegacyCreditsAndDynamicOverage_UsesPersistedSessionKeys()
+    {
+        var settings = Substitute.For<ISettingsService>();
+        settings.Load().Returns(new AppSettings());
+        settings.IsProviderEnabled(Arg.Any<ProviderId>()).Returns(true);
+        var legacyTime = new DateTimeOffset(2026, 1, 1, 12, 0, 0, TimeSpan.Zero);
+        var itemTime = legacyTime.AddDays(1);
+        settings.GetSessionResetTime(ProviderId.OpenRouter).Returns(legacyTime);
+        settings.GetSessionResetTime("copilot:octocat").Returns(itemTime);
+        using var refresh = new UsageRefreshService([], NullLogger<UsageRefreshService>.Instance);
+        using var vm = new MainViewModel(refresh, settings);
+        vm.Providers.Clear();
+        var legacy = new ProviderCardViewModel { ProviderId = ProviderId.OpenRouter, CardKey = "openrouter", CreditsBalance = 5m };
+        var dynamic = new ProviderCardViewModel { ProviderId = ProviderId.Copilot, CardKey = "Copilot:Octocat", OverageCost = 1m };
+        vm.Providers.Add(legacy);
+        vm.Providers.Add(dynamic);
+        vm.RefreshLocalPresentation();
+        Assert.Equal(SessionSpendingCalculator.FormatResetTime(legacyTime), legacy.SessionResetTime);
+        Assert.Equal(SessionSpendingCalculator.FormatResetTime(itemTime), dynamic.SessionResetTime);
+    }
+
     [Fact]
     public void RefreshLocalPresentation_CultureChanges_RefreshesExistingInstantsWithoutProviderFetch()
     {
@@ -55,7 +89,9 @@ public sealed class LocalPresentationTests
             settings.IsProviderEnabled(Arg.Any<ProviderId>()).Returns(true);
             var instant = new DateTimeOffset(2026, 3, 29, 1, 30, 0, TimeSpan.Zero);
             settings.GetSessionResetTime(Arg.Any<string>()).Returns(instant);
-            using var refresh = new UsageRefreshService([], NullLogger<UsageRefreshService>.Instance);
+            var provider = Substitute.For<IUsageProvider>();
+            provider.Metadata.Returns(new ProviderMetadata { Id = ProviderId.Codex, DisplayName = "Synthetic Codex", Description = "Fetch recording substitute" });
+            using var refresh = new UsageRefreshService([provider], NullLogger<UsageRefreshService>.Instance);
             using var vm = new MainViewModel(refresh, settings);
             var card = vm.Providers.First();
             card.ResetAt = instant;
@@ -71,7 +107,7 @@ public sealed class LocalPresentationTests
             Assert.Equal($"Resets {LocalTimestampFormatter.Format(instant)}", bar.ResetDescription);
             Assert.Equal(LocalTimestampFormatter.Format(instant), card.SessionResetTime);
             Assert.Equal(instant, bar.ResetsAt);
-            Assert.Empty(refresh.LatestResults);
+            Assert.DoesNotContain(provider.ReceivedCalls(), call => call.GetMethodInfo().Name == nameof(IUsageProvider.FetchUsageAsync));
             settings.DidNotReceive().Save(Arg.Any<AppSettings>());
             vm.Dispose();
             card.ResetText = "disposed";

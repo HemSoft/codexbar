@@ -181,7 +181,10 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
                 card.ResetText = $"Resets {LocalTimestampFormatter.Format(resetAt)}";
             }
 
-            card.SessionResetTime = SessionSpendingCalculator.FormatResetTime(this.settingsService.GetSessionResetTime(card.CardKey));
+            var sessionResetAt = card.CreditsBalance is not null
+                ? this.settingsService.GetSessionResetTime(card.ProviderId)
+                : this.settingsService.GetSessionResetTime(card.CardKey.ToLowerInvariant());
+            card.SessionResetTime = SessionSpendingCalculator.FormatResetTime(sessionResetAt);
         }
 
         this.UpdateRefreshIndicator();
@@ -378,6 +381,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         card.UsedPercent = 0;
         card.IsCreditsDisplay = false;
         card.CreditsBalance = null;
+        card.ResetAt = null;
         card.ResetText = null;
         card.WeeklyText = null;
         card.WeeklyPercent = 0;
@@ -395,6 +399,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         card.CreditsBalance = null;
         card.StatusText = "No data";
         card.UsedPercent = 0;
+        card.ResetAt = null;
         card.ResetText = null;
         card.WeeklyText = null;
         card.WeeklyPercent = 0;

@@ -53,6 +53,7 @@ public partial class MainWindow : Window
     /// <summary>Delay before hiding the window on deactivation, allowing reactivation to cancel.</summary>
     private static readonly TimeSpan HideDelay = TimeSpan.FromMilliseconds(150);
 
+    private readonly WindowMessageHandler _messageHandler = new();
     private readonly SettingsService settings;
     private readonly IReadOnlyList<IUsageProvider> providers;
     private readonly UsageRefreshService? refreshService;
@@ -387,16 +388,13 @@ public partial class MainWindow : Window
 
     private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
+        if (this._messageHandler.HandleMessage(msg, lParam.ToInt64()) == MessageAction.RefreshLocalPresentation && this.DataContext is MainViewModel viewModel)
+        {
+            viewModel.RefreshLocalPresentation();
+        }
+
         switch (msg)
         {
-            case WindowMessageHandler.WmTimeChange:
-            case WindowMessageHandler.WmSettingChange:
-                if (this.DataContext is MainViewModel viewModel)
-                {
-                    viewModel.RefreshLocalPresentation();
-                }
-
-                break;
             case WMSYSCOMMAND:
                 // A native resize is starting (SC_SIZE | direction, sent by
                 // DefWindowProc when the user grabs a WindowChrome resize border).

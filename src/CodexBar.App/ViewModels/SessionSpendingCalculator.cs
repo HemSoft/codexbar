@@ -2,6 +2,7 @@
 
 namespace CodexBar.App.ViewModels;
 
+using System.Globalization;
 using CodexBar.Core.Models;
 
 /// <summary>
@@ -54,8 +55,8 @@ internal static class SessionSpendingCalculator
     /// <summary>
     /// Formats a reset time for display.
     /// </summary>
-    internal static string? FormatResetTime(DateTimeOffset? resetTime) =>
-        resetTime is { } instant ? LocalTimestampFormatter.Format(instant) : null;
+    internal static string? FormatResetTime(DateTimeOffset? resetTime, TimeZoneInfo? timeZone = null, CultureInfo? culture = null) =>
+        resetTime is { } instant ? LocalTimestampFormatter.Format(instant, timeZone: timeZone, culture: culture) : null;
 }
 
 /// <summary>

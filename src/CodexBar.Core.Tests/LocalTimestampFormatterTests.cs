@@ -16,7 +16,6 @@ public sealed class LocalTimestampFormatterTests
         var zone = TimeZoneInfo.CreateCustomTimeZone("Test", TimeSpan.FromMinutes(offsetMinutes), "Test", "Test");
         var instant = new DateTimeOffset(2026, 1, 1, 12, 0, 0, TimeSpan.Zero);
         Assert.Equal(expected, LocalTimestampFormatter.Format(instant, timeZone: zone, culture: CultureInfo.GetCultureInfo(cultureName)));
-        Assert.Equal(TimeSpan.Zero, instant.Offset);
     }
 
     [Fact]
