@@ -10,6 +10,7 @@ public sealed record ProviderAccountSettings
 {
     public string Id { get; init; } = string.Empty;
 
+    [JsonRequired]
     [JsonConverter(typeof(JsonStringEnumConverter<ProviderId>))]
     public ProviderId ProviderId { get; init; }
 

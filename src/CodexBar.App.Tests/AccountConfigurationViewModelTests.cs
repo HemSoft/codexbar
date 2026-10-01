@@ -117,6 +117,7 @@ public sealed class AccountConfigurationViewModelTests
         Assert.Empty(fixture.ViewModel.ErrorMessage);
         Assert.Equal(1, fixture.Closed);
         Assert.Equal(1, savedEvents);
+        Assert.Equal("Retry me", fixture.Saved!.Accounts[0].DisplayLabel);
     }
 
     [Fact]
@@ -188,6 +189,61 @@ public sealed class AccountConfigurationViewModelTests
         unobserved.DisplayLabel = "new";
         Assert.True(unobserved.IsCopilot);
         Assert.False(unobserved.IsOpenCodeGo);
+    }
+
+    [Fact]
+    public void Save_ClearOrDeleteCopilotIdentities_ClearsCompatibilitySelection()
+    {
+        var fixture = new Fixture();
+        fixture.Original.CopilotAccounts = ["octocat"];
+        fixture.Original.CopilotKnownAccounts = ["octocat"];
+        var vm = new ProviderConfigurationViewModel(fixture.Service, fixture.Providers, () => { });
+        var account = vm.Accounts.Single(option => option.IsCopilot);
+        account.ExternalAccountId = null;
+        vm.SaveCommand.Execute(null);
+        Assert.Empty(fixture.Saved!.CopilotAccounts);
+        Assert.Empty(fixture.Saved.CopilotKnownAccounts);
+        vm.RemoveAccountCommand.Execute(account);
+        vm.SaveCommand.Execute(null);
+        Assert.Empty(fixture.Saved.CopilotAccounts);
+        Assert.False(fixture.Saved.Providers["Copilot"].Enabled);
+    }
+
+    [Fact]
+    public void Save_ReplaceOpenCodeGoAccount_UsesNewWorkspaceThenClearsRemovedWorkspace()
+    {
+        var fixture = new Fixture();
+        var vm = fixture.ViewModel;
+        vm.RemoveAccountCommand.Execute(vm.Accounts.Single(option => option.IsOpenCodeGo));
+        vm.NewAccountProvider = ProviderId.OpenCodeGo;
+        vm.AddAccountCommand.Execute(null);
+        vm.Accounts[0].WorkspaceId = "replacement";
+        vm.SaveCommand.Execute(null);
+        Assert.Equal("replacement", fixture.Saved!.OpenCodeGoWorkspaceId);
+        vm.RemoveAccountCommand.Execute(vm.Accounts[0]);
+        vm.SaveCommand.Execute(null);
+        Assert.Null(fixture.Saved.OpenCodeGoWorkspaceId);
+        Assert.False(fixture.Saved.Providers["OpenCodeGo"].Enabled);
+    }
+
+    [Fact]
+    public void Save_PartialLegacyProviderSettings_PreservesEffectiveDefaults()
+    {
+        var fixture = new Fixture();
+        fixture.Original.Providers = new() { ["Claude"] = new() { Enabled = false } };
+        var vm = new ProviderConfigurationViewModel(fixture.Service, fixture.Providers, () => { });
+        vm.SaveCommand.Execute(null);
+        Assert.Equal(8, fixture.Saved!.Accounts.Count);
+        Assert.True(fixture.Saved.Providers["Codex"].Enabled);
+        Assert.False(fixture.Saved.Providers["Claude"].Enabled);
+        Assert.False(fixture.Saved.Providers["Moonshot"].Enabled);
+    }
+
+    [Fact]
+    public void AccountOption_MetadataDisplayName_UsesProviderName()
+    {
+        var option = new AccountOptionViewModel(AccountConfiguration.Create(ProviderId.Codex, "Research"), "ChatGPT Codex");
+        Assert.Equal("ChatGPT Codex", option.ProviderName);
     }
 
     private sealed class Fixture

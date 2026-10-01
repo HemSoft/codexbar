@@ -1,0 +1,96 @@
+// Copyright (c) HemSoft Developments. All rights reserved.
+
+namespace CodexBar.Core.Tests;
+
+using CodexBar.Core.Configuration;
+using CodexBar.Core.Models;
+using Microsoft.Extensions.Logging.Abstractions;
+
+public sealed class AccountConfigurationGuardTests : IDisposable
+{
+    private readonly string _directory = Directory.CreateTempSubdirectory("codexbar-account-guards-").FullName;
+
+    [Fact]
+    public void Save_FutureSchemaWithUnknownEnum_RefusesOverwrite()
+    {
+        var service = this.CreateService();
+        var draft = service.Load();
+        const string future = """{"accountConfigurationVersion":2,"accounts":[{"id":"future","providerId":"FutureProvider","displayLabel":"Future"}]}""";
+        File.WriteAllText(this.SettingsPath, future);
+        Assert.Throws<InvalidOperationException>(() => service.Save(draft));
+        Assert.Equal(future, File.ReadAllText(this.SettingsPath));
+    }
+
+    [Fact]
+    public void SetSessionBaseline_FutureSchema_RefusesOverwrite()
+    {
+        var service = this.CreateService();
+        service.Load();
+        const string future = """{"accountConfigurationVersion":2,"accounts":[],"futureAccountField":"keep"}""";
+        File.WriteAllText(this.SettingsPath, future);
+        Assert.Throws<InvalidOperationException>(() => service.SetSessionBaseline(ProviderId.Claude, 1m));
+        Assert.Equal(future, File.ReadAllText(this.SettingsPath));
+    }
+
+    [Fact]
+    public void Save_AnotherWriterHoldsCrossProcessLock_LeavesFileUnchanged()
+    {
+        var service = this.CreateService();
+        var draft = service.Load();
+        var original = File.ReadAllText(this.SettingsPath);
+        using var otherWriter = new FileStream(Path.Combine(this._directory, "settings.write.lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+        Assert.Throws<IOException>(() => service.Save(draft));
+        Assert.Equal(original, File.ReadAllText(this.SettingsPath));
+    }
+
+    [Fact]
+    public void Save_CurrentSchemaWithUnknownEnum_RefusesOverwrite()
+    {
+        var service = this.CreateService();
+        var draft = service.Load();
+        const string unreadable = """{"accountConfigurationVersion":1,"accounts":[{"id":"unknown","providerId":"UnknownProvider","displayLabel":"Unknown"}]}""";
+        File.WriteAllText(this.SettingsPath, unreadable);
+        Assert.Throws<InvalidOperationException>(() => service.Save(draft));
+        Assert.Equal(unreadable, File.ReadAllText(this.SettingsPath));
+    }
+
+    [Fact]
+    public void Deserialize_AccountMissingProvider_RejectsInsteadOfAssumingOpenRouter()
+    {
+        Assert.Throws<System.Text.Json.JsonException>(() => System.Text.Json.JsonSerializer.Deserialize<ProviderAccountSettings>("""{"id":"account","displayLabel":"Missing provider"}"""));
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Migrate_CopilotKeyCasing_PreservesDisabledStateAndPlaceholder(bool knownUser)
+    {
+        var settings = new AppSettings { Providers = new() { ["cOpIlOt"] = new() { Enabled = false } }, CopilotKnownAccounts = knownUser ? ["octocat"] : [] };
+        AccountConfiguration.Migrate(settings);
+        var account = Assert.Single(settings.Accounts);
+        Assert.Equal(ProviderId.Copilot, account.ProviderId);
+        Assert.False(account.Enabled);
+    }
+
+    [Fact]
+    public void Save_DiskLockReleasedAfterFutureWrite_RefusesNewerVersion()
+    {
+        var service = this.CreateService();
+        var draft = service.Load();
+        const string future = """{"accountConfigurationVersion":2,"accounts":[]} """;
+        using (var otherWriter = new FileStream(Path.Combine(this._directory, "settings.write.lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None))
+        {
+            File.WriteAllText(this.SettingsPath, future);
+            Assert.Throws<IOException>(() => service.Save(draft));
+        }
+
+        Assert.Throws<InvalidOperationException>(() => service.Save(draft));
+        Assert.Equal(future, File.ReadAllText(this.SettingsPath));
+    }
+
+    public void Dispose() => Directory.Delete(this._directory, true);
+
+    private string SettingsPath => Path.Combine(this._directory, "settings.json");
+
+    private SettingsService CreateService() => new(NullLogger<SettingsService>.Instance, this._directory);
+}

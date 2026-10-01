@@ -23,6 +23,9 @@ public sealed class AccountConfigurationCompatibilityTests
             File.WriteAllText(path, future);
             Assert.Throws<InvalidOperationException>(() => service.Save(draft));
             Assert.Equal(future, File.ReadAllText(path));
+            Assert.Throws<InvalidOperationException>(() => new SettingsService(NullLogger<SettingsService>.Instance, directory).Load());
+
+            // The existing instance keeps its last-good cached state, not a new disk load.
             Assert.Equal(AccountConfiguration.CurrentVersion, service.Load().AccountConfigurationVersion);
         }
         finally
@@ -46,6 +49,9 @@ public sealed class AccountConfigurationCompatibilityTests
             Assert.Throws<ArgumentException>(() => service.Save(draft));
             Assert.Equal(malformed, File.ReadAllText(path));
             Assert.Equal(0, draft.AccountConfigurationVersion);
+            Assert.Throws<ArgumentException>(() => new SettingsService(NullLogger<SettingsService>.Instance, directory).Load());
+
+            // Cache rollback and on-disk integrity are separate assertions.
             Assert.Equal(AccountConfiguration.CurrentVersion, service.Load().AccountConfigurationVersion);
         }
         finally

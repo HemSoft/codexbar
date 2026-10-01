@@ -27,8 +27,13 @@ OpenCode Go record updates the existing workspace setting. Copilot usernames
 and enabled selections update the legacy CLI-selection fields.
 
 A newer account schema cannot be overwritten by this application, including
-when another process upgrades the file after it was loaded. Failed persistence
-leaves the last saved account state available for rollback.
+when another process upgrades the file after it was loaded. All settings writers,
+including session-baseline updates, hold the exclusive `settings.write.lock`
+file while reading the schema and replacing settings. Other CodexBar versions
+must honor the same lock protocol. A competing writer causes a recoverable save
+failure instead of a blocked UI. The raw version is checked before enum
+conversion, so unknown future provider names cannot bypass the guard. Failed
+persistence leaves the last saved account state available for rollback.
 
 ## Scope
 

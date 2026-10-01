@@ -16,8 +16,9 @@ public sealed class AccountOptionViewModel : INotifyPropertyChanged
     private string? _externalAccountId;
     private string? _workspaceId;
 
-    public AccountOptionViewModel(ProviderAccountSettings account)
+    public AccountOptionViewModel(ProviderAccountSettings account, string? providerName = null)
     {
+        this.ProviderName = providerName ?? account.ProviderId.ToString();
         this._original = account;
         this._displayLabel = account.DisplayLabel;
         this._enabled = account.Enabled;
@@ -30,7 +31,7 @@ public sealed class AccountOptionViewModel : INotifyPropertyChanged
 
     public ProviderId ProviderId => this._original.ProviderId;
 
-    public string ProviderName => this.ProviderId.ToString();
+    public string ProviderName { get; }
 
     public bool IsOpenCodeGo => this.ProviderId == ProviderId.OpenCodeGo;
 

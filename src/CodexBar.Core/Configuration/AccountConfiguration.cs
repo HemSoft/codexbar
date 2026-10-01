@@ -138,8 +138,8 @@ public static class AccountConfiguration
     {
         var selected = (settings.CopilotAccounts ?? []).Where(name => !string.IsNullOrWhiteSpace(name)).Select(name => name.Trim()).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var known = (settings.CopilotKnownAccounts ?? []).Concat(selected).Where(name => !string.IsNullOrWhiteSpace(name)).Select(name => name.Trim()).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
-        var provider = settings.Providers?.GetValueOrDefault(ProviderId.Copilot.ToString());
-        var enabled = provider?.Enabled != false;
+        var providerEntry = (settings.Providers ?? []).FirstOrDefault(pair => string.Equals(pair.Key, ProviderId.Copilot.ToString(), StringComparison.OrdinalIgnoreCase));
+        var enabled = providerEntry.Value?.Enabled != false;
         foreach (var username in known)
         {
             AddMigratedAccount(accounts, new ProviderAccountSettings
@@ -154,7 +154,7 @@ public static class AccountConfiguration
             });
         }
 
-        if (known.Count == 0 && settings.Providers?.ContainsKey(ProviderId.Copilot.ToString()) == true)
+        if (known.Count == 0 && providerEntry.Key is not null)
         {
             AddMigratedAccount(accounts, new ProviderAccountSettings { Id = LegacyId(ProviderId.Copilot, string.Empty), ProviderId = ProviderId.Copilot, DisplayLabel = "Copilot", Enabled = enabled, AuthenticationMethod = ProviderAuthenticationMethod.CommandLine, LegacyCardKey = "Copilot" });
         }

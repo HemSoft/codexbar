@@ -72,8 +72,6 @@ public sealed class SettingsService : ISettingsService
     {
         lock (this._lock)
         {
-            this.MergeFromDisk(settings);
-            AccountConfiguration.Migrate(settings);
             this.SaveInternal(settings);
         }
     }
@@ -91,26 +89,27 @@ public sealed class SettingsService : ISettingsService
             return;
         }
 
+        var diskJson = File.ReadAllText(this._settingsPath);
+        var diskVersion = 0;
         AppSettings? disk;
         try
         {
-            var diskJson = File.ReadAllText(this._settingsPath);
+            diskVersion = ReadAccountVersion(diskJson);
             disk = JsonSerializer.Deserialize<AppSettings>(diskJson, JsonOptions);
         }
-        catch (Exception ex)
+        catch (JsonException ex) when (diskVersion == 0)
         {
-            this._logger.LogDebug(ex, "MergeFromDisk skipped — could not read {Path}", this._settingsPath);
+            this._logger.LogDebug(ex, "MergeFromDisk skipped — legacy settings are malformed at {Path}", this._settingsPath);
             return;
+        }
+        catch (JsonException)
+        {
+            throw new InvalidOperationException("Account configuration could not be read. Do not overwrite it.");
         }
 
         if (disk is null)
         {
             return;
-        }
-
-        if (disk.AccountConfigurationVersion > AccountConfiguration.CurrentVersion)
-        {
-            throw new InvalidOperationException("Account configuration was written by a newer application. Do not overwrite it.");
         }
 
         if (settings.AccountConfigurationVersion == 0 && disk.AccountConfigurationVersion > 0)
@@ -127,6 +126,22 @@ public sealed class SettingsService : ISettingsService
         MergeCopilotKnownAccounts(settings, disk);
         MergeSessionBaselines(settings, disk);
         MergeSessionResetTimes(settings, disk);
+    }
+
+    private static int ReadAccountVersion(string json)
+    {
+        using var document = JsonDocument.Parse(json);
+        if (document.RootElement.ValueKind != JsonValueKind.Object || !document.RootElement.TryGetProperty("accountConfigurationVersion", out var version))
+        {
+            return 0;
+        }
+
+        if (version.ValueKind != JsonValueKind.Number || !version.TryGetInt32(out var number) || number > AccountConfiguration.CurrentVersion || number < 0)
+        {
+            throw new InvalidOperationException("Account configuration version is not supported. Do not overwrite it.");
+        }
+
+        return number;
     }
 
     /// <summary>
@@ -169,7 +184,7 @@ public sealed class SettingsService : ISettingsService
     /// </summary>
     private static void MergeWorkspaceId(AppSettings settings, AppSettings disk)
     {
-        if (string.IsNullOrWhiteSpace(settings.OpenCodeGoWorkspaceId) && !string.IsNullOrWhiteSpace(disk.OpenCodeGoWorkspaceId))
+        if ((settings.AccountConfigurationVersion == 0 || settings.Accounts.SequenceEqual(disk.Accounts)) && string.IsNullOrWhiteSpace(settings.OpenCodeGoWorkspaceId) && !string.IsNullOrWhiteSpace(disk.OpenCodeGoWorkspaceId))
         {
             settings.OpenCodeGoWorkspaceId = disk.OpenCodeGoWorkspaceId;
         }
@@ -198,7 +213,7 @@ public sealed class SettingsService : ISettingsService
 
     private static void MergeCopilotKnownAccounts(AppSettings settings, AppSettings disk)
     {
-        if ((settings.CopilotKnownAccounts?.Count ?? 0) == 0 && disk.CopilotKnownAccounts is { Count: > 0 })
+        if ((settings.AccountConfigurationVersion == 0 || settings.Accounts.SequenceEqual(disk.Accounts)) && (settings.CopilotKnownAccounts?.Count ?? 0) == 0 && disk.CopilotKnownAccounts is { Count: > 0 })
         {
             settings.CopilotKnownAccounts = disk.CopilotKnownAccounts.ToList();
         }
@@ -239,6 +254,13 @@ public sealed class SettingsService : ISettingsService
     {
         try
         {
+            // Every writer, including session-baseline updates, uses this protocol.
+            // Exclusive sharing rejects another process instead of blocking the UI.
+            Directory.CreateDirectory(this._settingsDir);
+            this.RestrictDirectoryPermissions(this._settingsDir);
+            using var writeLock = new FileStream(Path.Combine(this._settingsDir, "settings.write.lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+            this.MergeFromDisk(settings);
+            AccountConfiguration.Migrate(settings);
             var sanitized = SanitizeForPersistence(settings);
             var persistedPath = this.WriteSettingsFileWithFallback(sanitized);
 
@@ -477,6 +499,7 @@ public sealed class SettingsService : ISettingsService
         try
         {
             var json = File.ReadAllText(this._settingsPath);
+            _ = ReadAccountVersion(json);
             this._cached = JsonSerializer.Deserialize<AppSettings>(json, JsonOptions) ?? CreateDefaults();
             this._cached.Providers ??= [];
             NormalizeProviders(this._cached.Providers);
@@ -488,7 +511,7 @@ public sealed class SettingsService : ISettingsService
 
             this._logger.LogDebug("Settings loaded from {Path}", this._settingsPath);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not InvalidOperationException)
         {
             this._logger.LogWarning(ex, "Failed to load settings from {Path}, using defaults", this._settingsPath);
             this._cached = CreateDefaults();

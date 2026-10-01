@@ -30,13 +30,27 @@ public sealed class ProviderConfigurationViewModel : INotifyPropertyChanged
         this._settingsService = settingsService;
         this._close = close;
         this._settings = Copy(settingsService.Load());
+        this._settings.Providers ??= [];
+        var providerList = providers.ToList();
+        var missingProviders = providerList.Where(provider => !this._settings.Providers.Keys.Any(key => string.Equals(key, provider.Metadata.Id.ToString(), StringComparison.OrdinalIgnoreCase)))
+            .Select(provider => provider.Metadata.Id).ToHashSet();
         this.Providers = new ObservableCollection<ProviderOptionViewModel>(
-            providers
+            providerList
                 .Select(p => ProviderOptionViewModel.From(p.Metadata, this.GetProviderSettings(p.Metadata.Id).Enabled))
                 .OrderBy(p => p.ProviderId));
         this.CopilotAccounts = BuildCopilotAccountOptions(this._settings, currentProviderCards);
         this._copilotInitialStates = this.CopilotAccounts.ToDictionary(account => account.Username, account => account.IsEnabled, StringComparer.OrdinalIgnoreCase);
         this.InitializeAccounts();
+        var implicitDefaults = new AppSettings
+        {
+            Providers = this.Providers.Where(provider => missingProviders.Contains(provider.ProviderId)).ToDictionary(provider => provider.ProviderId.ToString(), provider => new ProviderSettings { Enabled = provider.IsDisplayed }),
+        };
+        AccountConfiguration.Migrate(implicitDefaults);
+        foreach (var account in implicitDefaults.Accounts.Where(account => !this.Accounts.Any(existing => existing.ProviderId == account.ProviderId)))
+        {
+            this.Accounts.Add(this.CreateAccountOption(account));
+        }
+
         this.NewAccountProvider = this.Providers.FirstOrDefault()?.ProviderId ?? ProviderId.Claude;
         this.AddAccountCommand = new RelayCommand(_ => this.AddAccount());
         this.RemoveAccountCommand = new RelayCommand(account =>
@@ -85,7 +99,7 @@ public sealed class ProviderConfigurationViewModel : INotifyPropertyChanged
     private ProviderSettings GetProviderSettings(ProviderId providerId)
     {
         this._settings.Providers ??= [];
-        var key = providerId.ToString();
+        var key = this._settings.Providers.Keys.FirstOrDefault(name => string.Equals(name, providerId.ToString(), StringComparison.OrdinalIgnoreCase)) ?? providerId.ToString();
         if (!this._settings.Providers.TryGetValue(key, out var providerSettings) || providerSettings is null)
         {
             providerSettings = new ProviderSettings { Enabled = providerId != ProviderId.Moonshot };
@@ -166,14 +180,16 @@ public sealed class ProviderConfigurationViewModel : INotifyPropertyChanged
 
         foreach (var account in this._settings.Accounts)
         {
-            this.Accounts.Add(new AccountOptionViewModel(account));
+            this.Accounts.Add(this.CreateAccountOption(account));
         }
     }
+
+    private AccountOptionViewModel CreateAccountOption(ProviderAccountSettings account) => new(account, this.Providers.FirstOrDefault(provider => provider.ProviderId == account.ProviderId)?.DisplayName);
 
     private void AddAccount()
     {
         var number = this.Accounts.Count(account => account.ProviderId == this.NewAccountProvider) + 1;
-        this.Accounts.Insert(0, new AccountOptionViewModel(AccountConfiguration.Create(this.NewAccountProvider, $"{this.NewAccountProvider} {number}")));
+        this.Accounts.Insert(0, this.CreateAccountOption(AccountConfiguration.Create(this.NewAccountProvider, $"{this.NewAccountProvider} {number}")));
         var provider = this.Providers.FirstOrDefault(option => option.ProviderId == this.NewAccountProvider);
         if (provider is not null)
         {
@@ -183,15 +199,15 @@ public sealed class ProviderConfigurationViewModel : INotifyPropertyChanged
 
     private void SaveAccountIdentities()
     {
-        var workspace = this._settings.Accounts.FirstOrDefault(account => account.ProviderId == ProviderId.OpenCodeGo && account.LegacyCardKey == "OpenCodeGo");
-        if (workspace is not null)
-        {
-            this._settings.OpenCodeGoWorkspaceId = workspace.WorkspaceId;
-        }
+        var workspace = this._settings.Accounts.Where(account => account.ProviderId == ProviderId.OpenCodeGo && account.Enabled)
+            .OrderByDescending(account => account.LegacyCardKey == "OpenCodeGo").FirstOrDefault();
+        this._settings.OpenCodeGoWorkspaceId = workspace?.WorkspaceId;
 
         var copilot = this._settings.Accounts.Where(account => account.ProviderId == ProviderId.Copilot && account.ExternalAccountId is not null).ToList();
         if (copilot.Count == 0)
         {
+            this._settings.CopilotKnownAccounts = [];
+            this._settings.CopilotAccounts = [];
             return;
         }
 
