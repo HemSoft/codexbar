@@ -737,26 +737,46 @@ public class CrapScoreImprovementTests
 
     private static System.Diagnostics.Process CreateExitProcess(int exitCode, string stderr = "", string stdout = "")
     {
-        // Use base64-encoded PowerShell script to avoid quoting issues
-        var script =
-            $"[Console]::Out.Write('{stdout.Replace("'", "''")}'); " +
-            $"[Console]::Error.Write('{stderr.Replace("'", "''")}'); " +
-            $"exit {exitCode}";
-        var bytes = System.Text.Encoding.Unicode.GetBytes(script);
-        var encoded = Convert.ToBase64String(bytes);
-
-        return new System.Diagnostics.Process
+        // This fixture tests process output/exit handling, not PowerShell startup.
+        // The separate slow-process fixture still tests the production timeout path.
+        var startInfo = new System.Diagnostics.ProcessStartInfo
         {
-            StartInfo = new System.Diagnostics.ProcessStartInfo
-            {
-                FileName = "powershell",
-                Arguments = $"-NoProfile -EncodedCommand {encoded}",
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-            },
+            FileName = OperatingSystem.IsWindows() ? "cmd.exe" : "/bin/sh",
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
         };
+        if (OperatingSystem.IsWindows())
+        {
+            static string Escape(string value) => value.Replace("^", "^^").Replace("&", "^&").Replace("|", "^|").Replace("<", "^<").Replace(">", "^>").Replace("(", "^(").Replace(")", "^)");
+            var commands = new List<string>();
+            if (stdout.Length > 0)
+            {
+                commands.Add($"echo {Escape(stdout)}");
+            }
+
+            if (stderr.Length > 0)
+            {
+                commands.Add($"echo {Escape(stderr)} 1>&2");
+            }
+
+            commands.Add($"exit /b {exitCode}");
+            startInfo.ArgumentList.Add("/d");
+            startInfo.ArgumentList.Add("/c");
+            startInfo.ArgumentList.Add(string.Join(" & ", commands));
+        }
+        else
+        {
+            startInfo.ArgumentList.Add("-c");
+            startInfo.ArgumentList.Add("printf '%s' \"$1\"; printf '%s' \"$2\" >&2; exit \"$3\"");
+            startInfo.ArgumentList.Add("fixture");
+            startInfo.ArgumentList.Add(stdout);
+            startInfo.ArgumentList.Add(stderr);
+            startInfo.ArgumentList.Add(exitCode.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
+
+        return new System.Diagnostics.Process { StartInfo = startInfo };
     }
 
     private sealed class CloneableResponseHandler : HttpMessageHandler
