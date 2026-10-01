@@ -305,7 +305,8 @@ public class CopilotProviderFetchTests
 
         Assert.NotNull(result.Items);
         Assert.False(result.Items[0].Success);
-        Assert.Contains("Network failure", result.Items[0].ErrorMessage);
+        Assert.Equal("Provider request failed. Retry or sign in again.", result.Items[0].ErrorMessage);
+        Assert.DoesNotContain("Network failure", result.Items[0].ErrorMessage);
     }
 
     [Fact]

@@ -6,6 +6,7 @@ using System.Net.Http.Headers;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using CodexBar.Core.Security;
 using Microsoft.Extensions.Logging;
 #if WINDOWS
 using Microsoft.Data.Sqlite;
@@ -104,8 +105,8 @@ public sealed partial class ClaudeProvider
         {
             Microsoft.Extensions.Logging.LoggerExtensions.LogDebug(
                 this.logger,
-                ex,
-                "Failed to read Claude Desktop OAuth token cache");
+                "Failed to read Claude Desktop OAuth token cache: {Failure}",
+                AuthenticationErrorFormatter.FormatException(ex));
             return null;
         }
 #else
@@ -253,9 +254,8 @@ public sealed partial class ClaudeProvider
         {
             Microsoft.Extensions.Logging.LoggerExtensions.LogWarning(
                 this.logger,
-                ex,
-                "Claude web usage endpoint failed: {Message}",
-                ex.Message);
+                "Claude web usage endpoint failed: {Failure}",
+                AuthenticationErrorFormatter.FormatException(ex));
             return null;
         }
     }
@@ -323,8 +323,8 @@ public sealed partial class ClaudeProvider
             // persisted from the last successful read.
             Microsoft.Extensions.Logging.LoggerExtensions.LogDebug(
                 this.logger,
-                ex,
-                "Failed to read Claude Desktop web cookies");
+                "Failed to read Claude Desktop web cookies: {Failure}",
+                AuthenticationErrorFormatter.FormatException(ex));
             return this.TryLoadPersistedWebSessionCookieHeader();
         }
 #else
@@ -390,8 +390,8 @@ public sealed partial class ClaudeProvider
         {
             Microsoft.Extensions.Logging.LoggerExtensions.LogDebug(
                 this.logger,
-                ex,
-                "Failed to persist Claude web session cache");
+                "Failed to persist Claude web session cache: {Failure}",
+                AuthenticationErrorFormatter.FormatException(ex));
         }
     }
 
@@ -422,8 +422,8 @@ public sealed partial class ClaudeProvider
         {
             Microsoft.Extensions.Logging.LoggerExtensions.LogDebug(
                 this.logger,
-                ex,
-                "Failed to load persisted Claude web session cache");
+                "Failed to load persisted Claude web session cache: {Failure}",
+                AuthenticationErrorFormatter.FormatException(ex));
             return null;
         }
     }
@@ -592,7 +592,7 @@ public sealed partial class ClaudeProvider
             }
             catch (Exception ex) when (IsRecoverableCookieReadException(ex))
             {
-                logger?.LogDebug(ex, "Skipping unreadable Claude Desktop cookie row");
+                logger?.LogDebug("Skipping unreadable Claude Desktop cookie row: {Failure}", AuthenticationErrorFormatter.FormatException(ex));
             }
         }
 

@@ -10,6 +10,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using CodexBar.Core.Configuration;
 using CodexBar.Core.Models;
+using CodexBar.Core.Security;
 using Microsoft.Extensions.Logging;
 
 /// <summary>
@@ -174,8 +175,9 @@ public sealed partial class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttp
         }
         catch (Exception ex)
         {
-            this.logger.LogWarning(ex, "Claude fetch failed");
-            return ProviderUsageResult.Failure(ProviderId.Claude, ex.Message);
+            var error = AuthenticationErrorFormatter.FormatException(ex);
+            this.logger.LogWarning("Claude fetch failed: {Failure}", error);
+            return ProviderUsageResult.Failure(ProviderId.Claude, error);
         }
     }
 
@@ -246,7 +248,7 @@ public sealed partial class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttp
         }
         catch (Exception ex)
         {
-            this.logger.LogDebug(ex, "Claude OAuth token expiry value {ExpiresAt} could not be parsed", credentials.ExpiresAt);
+            this.logger.LogDebug("Claude OAuth token expiry could not be parsed: {Failure}", AuthenticationErrorFormatter.FormatException(ex));
             return credentials;
         }
     }
@@ -575,11 +577,8 @@ public sealed partial class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttp
 
             if (!response.IsSuccessStatusCode)
             {
-                var errorBody = await ReadTruncatedBodyAsync(response, cts.Token);
-                this.logger.LogWarning(
-                    "Claude OAuth usage endpoint failed with status {StatusCode}: {Body}",
-                    (int)response.StatusCode,
-                    errorBody);
+                var error = await AuthenticationErrorFormatter.FormatResponseAsync(response, cts.Token);
+                this.logger.LogWarning("Claude OAuth usage endpoint failed: {Failure}", error);
 
                 if (response.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
                 {
@@ -615,25 +614,12 @@ public sealed partial class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttp
         }
         catch (Exception ex)
         {
-            this.logger.LogWarning(ex, "Claude OAuth usage endpoint failed: {Message}", ex.Message);
+            this.logger.LogWarning("Claude OAuth usage endpoint failed: {Failure}", AuthenticationErrorFormatter.FormatException(ex));
             return this.GetFallbackCachedLimits();
         }
         finally
         {
             this.cacheLock.Release();
-        }
-    }
-
-    private static async Task<string> ReadTruncatedBodyAsync(HttpResponseMessage response, CancellationToken ct)
-    {
-        try
-        {
-            var body = await response.Content.ReadAsStringAsync(ct);
-            return body.Length > 500 ? body[..500] : body;
-        }
-        catch (Exception)
-        {
-            return "<unreadable>";
         }
     }
 
@@ -714,8 +700,8 @@ public sealed partial class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttp
 
             if (!response.IsSuccessStatusCode)
             {
-                var errorBody = await response.Content.ReadAsStringAsync(ct);
-                this.logger.LogWarning("Claude token refresh failed with status {StatusCode}: {Body}", (int)response.StatusCode, errorBody);
+                var error = await AuthenticationErrorFormatter.FormatResponseAsync(response, ct);
+                this.logger.LogWarning("Claude token refresh failed: {Failure}", error);
                 return null;
             }
 
@@ -728,7 +714,7 @@ public sealed partial class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttp
         }
         catch (Exception ex)
         {
-            this.logger.LogWarning(ex, "Claude token refresh failed: {Message}", ex.Message);
+            this.logger.LogWarning("Claude token refresh failed: {Failure}", AuthenticationErrorFormatter.FormatException(ex));
             return null;
         }
     }
@@ -834,7 +820,7 @@ public sealed partial class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttp
         }
         catch (Exception ex)
         {
-            this.logger.LogWarning(ex, "Failed to persist refreshed Claude credentials");
+            this.logger.LogWarning("Failed to persist refreshed Claude credentials: {Failure}", AuthenticationErrorFormatter.FormatException(ex));
         }
     }
 
@@ -1013,7 +999,7 @@ public sealed partial class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttp
         }
         catch (Exception ex)
         {
-            this.logger.LogDebug(ex, "Failed to read Claude credentials from {Path}", CredentialsPath);
+            this.logger.LogDebug("Failed to read Claude credentials: {Failure}", AuthenticationErrorFormatter.FormatException(ex));
             return null;
         }
     }
@@ -1082,7 +1068,7 @@ public sealed partial class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttp
         }
         catch (Exception ex)
         {
-            this.logger.LogDebug(ex, "Failed to read Claude account info from {Path}", ClaudeJsonPath);
+            this.logger.LogDebug("Failed to read Claude account info: {Failure}", AuthenticationErrorFormatter.FormatException(ex));
             return null;
         }
     }
@@ -1123,7 +1109,7 @@ public sealed partial class ClaudeProvider(ILogger<ClaudeProvider> logger, IHttp
         }
         catch (Exception ex)
         {
-            this.logger.LogDebug(ex, "Failed to read Claude stats from {Path}", StatsCachePath);
+            this.logger.LogDebug("Failed to read Claude stats: {Failure}", AuthenticationErrorFormatter.FormatException(ex));
             return null;
         }
     }

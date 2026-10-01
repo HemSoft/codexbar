@@ -10,6 +10,7 @@ using System.Net.Http.Headers;
 using System.Text.Json;
 using CodexBar.Core.Configuration;
 using CodexBar.Core.Models;
+using CodexBar.Core.Security;
 using Microsoft.Extensions.Logging;
 
 /// <summary>
@@ -411,7 +412,7 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
         }
         catch (Exception ex)
         {
-            this._logger.LogDebug(ex, "Copilot {Operation} request failed", operation);
+            this._logger.LogDebug("Copilot {Operation} request failed: {Failure}", operation, AuthenticationErrorFormatter.FormatException(ex));
             return default;
         }
     }
@@ -680,13 +681,13 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
 
             if (exitCode != 0)
             {
-                this._logger.LogWarning("gh auth status exited with code {ExitCode}: {Stderr}", exitCode, stderr.Trim());
+                this._logger.LogWarning("gh auth status failed: {Failure}", AuthenticationErrorFormatter.FormatCommandFailure(exitCode.Value));
                 this._lastDiscoveryError = $"GitHub CLI (gh) auth failed (exit code {exitCode}). Run 'gh auth login'.";
                 return accounts;
             }
 
             accounts = ExtractUsernamesFromGhStatus(string.Join('\n', stdout, stderr));
-            this._logger.LogDebug("Discovered {Count} gh CLI accounts: {Accounts}", accounts.Count, string.Join(", ", accounts));
+            this._logger.LogDebug("Discovered {Count} gh CLI accounts", accounts.Count);
         }
         catch (OperationCanceledException)
         {
@@ -694,13 +695,13 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
         }
         catch (Win32Exception ex)
         {
-            this._logger.LogWarning(ex, "GitHub CLI (gh) not found on PATH");
+            this._logger.LogWarning("GitHub CLI (gh) not found on PATH: {Failure}", AuthenticationErrorFormatter.FormatException(ex));
             this._lastDiscoveryError = "GitHub CLI (gh) not found. Install from https://cli.github.com and run 'gh auth login'.";
         }
         catch (Exception ex)
         {
-            this._logger.LogWarning(ex, "Failed to discover gh CLI accounts");
-            this._lastDiscoveryError = $"Failed to discover accounts: {ex.Message}";
+            this._lastDiscoveryError = AuthenticationErrorFormatter.FormatException(ex);
+            this._logger.LogWarning("Failed to discover gh CLI accounts: {Failure}", this._lastDiscoveryError);
         }
 
         return accounts;
@@ -856,8 +857,9 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
         }
         catch (Exception ex)
         {
-            this._logger.LogWarning(ex, "Copilot fetch failed for {User}", username);
-            return CopilotAccountResult.Error(username, ex.Message);
+            var error = AuthenticationErrorFormatter.FormatException(ex);
+            this._logger.LogWarning("Copilot fetch failed: {Failure}", error);
+            return CopilotAccountResult.Error(username, error);
         }
     }
 
@@ -884,7 +886,7 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
             return CopilotAccountResult.Error(username, "Empty API response");
         }
 
-        LogQuotaDebug(logger, username, data);
+        LogQuotaDebug(logger);
 
         return new CopilotAccountResult
         {
@@ -898,20 +900,14 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
         };
     }
 
-    private static void LogQuotaDebug(ILogger? logger, string username, CopilotUserResponse data)
+    private static void LogQuotaDebug(ILogger? logger)
     {
         if (logger is null)
         {
             return;
         }
 
-        var plan = data.CopilotPlan ?? "unknown";
-        var premium = data.QuotaSnapshots?.PremiumInteractions;
-        logger.LogDebug(
-            "Copilot {User} ({Plan}): premium remaining={Remaining}/{Entitlement}",
-            username, plan,
-            premium?.Remaining ?? 0,
-            premium?.Entitlement ?? 0);
+        logger.LogDebug("Copilot quota response parsed successfully");
     }
 
     /// <summary>
@@ -964,7 +960,7 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
 
             if (exitCode != 0)
             {
-                this.LogNonZeroGhTokenExit(username, exitCode.Value, stderr);
+                this.LogNonZeroGhTokenExit(exitCode.Value);
                 return null;
             }
 
@@ -976,7 +972,7 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
         }
         catch (Exception ex)
         {
-            this._logger.LogDebug(ex, "Failed to get token for {User}", username);
+            this._logger.LogDebug("Failed to get token: {Failure}", AuthenticationErrorFormatter.FormatException(ex));
             return null;
         }
     }
@@ -1005,17 +1001,8 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
         return new Process { StartInfo = psi };
     }
 
-    private void LogNonZeroGhTokenExit(string username, int exitCode, string stderrOutput)
-    {
-        var sanitizedStderr = string.IsNullOrWhiteSpace(stderrOutput)
-            ? "(no stderr)"
-            : stderrOutput.Trim().Length > 200
-                ? stderrOutput.Trim()[..200] + "…"
-                : stderrOutput.Trim();
-        this._logger.LogDebug(
-            "gh auth token --user {User} exited {Code}: {Stderr}",
-            username, exitCode, sanitizedStderr);
-    }
+    private void LogNonZeroGhTokenExit(int exitCode) =>
+        this._logger.LogDebug("gh auth token failed: {Failure}", AuthenticationErrorFormatter.FormatCommandFailure(exitCode));
 
     private string? CacheTokenIfValid(string username, string stdout)
     {

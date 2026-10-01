@@ -750,7 +750,8 @@ public class CopilotProviderFullCoverageTests
         var result = await provider.FetchUsageAsync();
 
         Assert.False(result.Success);
-        Assert.Contains("Test error", result.ErrorMessage!);
+        Assert.Equal("Provider request failed. Retry or sign in again.", result.ErrorMessage);
+        Assert.DoesNotContain("Test error", result.ErrorMessage);
     }
 
     [Fact]
