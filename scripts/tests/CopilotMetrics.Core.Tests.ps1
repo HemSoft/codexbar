@@ -140,4 +140,13 @@ Assert-True -Value $failedResumePlan[0].ShouldFetch -Because 'failed checkpoints
 $repairPlan = @(Get-CopilotRefreshPlan -Login @('octocat') -UserLookup $lookup -RepairOnly)
 Assert-False -Value $repairPlan[0].ShouldFetch -Because 'repair mode reuses a valid monthly response'
 
+$pendingEntry = ConvertTo-CopilotUserEntry `
+    -Login 'pending-user' `
+    -RefreshRunId '' `
+    -ErrorMessage 'Missing from refresh.' `
+    -RefreshedAtUtc '2026-09-18T05:00:00Z'
+Assert-False -Value $pendingEntry.Success -Because 'a full-refresh checkpoint can represent users that have not been attempted yet'
+Assert-Equal -Expected '' -Actual $pendingEntry.RefreshRunId -Because 'unattempted users are not attributed to the active refresh run'
+Assert-Equal -Expected 0 -Actual @($pendingEntry.Responses).Count -Because 'an unattempted user has no fabricated response'
+
 Write-Output "Passed $script:testCount Copilot metrics assertions."

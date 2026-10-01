@@ -188,7 +188,7 @@ function ConvertTo-CopilotMonthlyResponse {
 function ConvertTo-CopilotUserEntry {
     param(
         [Parameter(Mandatory)][string]$Login,
-        [Parameter(Mandatory)][string]$RefreshRunId,
+        [Parameter(Mandatory)][AllowEmptyString()][string]$RefreshRunId,
         $Response,
         $ExistingEntry,
         [string]$ErrorMessage,
