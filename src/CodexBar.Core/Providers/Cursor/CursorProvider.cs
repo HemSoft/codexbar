@@ -86,8 +86,9 @@ public sealed class CursorProvider(
         }
         catch (Exception ex)
         {
-            this._logger.LogWarning("Cursor fetch failed: {Failure}", AuthenticationErrorFormatter.FormatException(ex));
-            return ProviderUsageResult.Failure(ProviderId.Cursor, $"Cursor usage could not be read. {AuthenticationErrorFormatter.FormatException(ex)}");
+            var error = AuthenticationErrorFormatter.FormatException(ex);
+            this._logger.LogWarning("Cursor fetch failed: {Failure}", error);
+            return ProviderUsageResult.Failure(ProviderId.Cursor, $"Cursor usage could not be read. {error} Sign in to Cursor and try again.");
         }
     }
 

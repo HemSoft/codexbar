@@ -372,7 +372,7 @@ public sealed class CodexProvider : IUsageProvider
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
         {
-            this._logger.LogDebug("Could not read Codex auth file: {Failure}", AuthenticationErrorFormatter.FormatException(ex));
+            this._logger.LogDebug("Could not read local Codex auth file at {Path}. Check the local sign-in state.", this._authPath);
             return null;
         }
     }

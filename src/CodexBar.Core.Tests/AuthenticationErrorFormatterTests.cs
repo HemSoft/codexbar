@@ -3,6 +3,7 @@
 namespace CodexBar.Core.Tests;
 
 using System.Net;
+using System.Text;
 using System.Text.Json;
 using CodexBar.Core.Security;
 
@@ -31,6 +32,8 @@ public sealed class AuthenticationErrorFormatterTests
     [InlineData("not_found_error")]
     [InlineData("overloaded_error")]
     [InlineData("api_error")]
+    [InlineData("invalid_token")]
+    [InlineData("insufficient_scope")]
     public void FormatResponse_KnownError_PreservesOnlyStatusAndCode(string code)
     {
         var body = $$"""{"error":"{{code}}","error_description":"{{Secret}}","access_token":"{{Secret}}","refresh_token":"{{Secret}}","authorization_code":"{{Secret}}","cookie":"session={{Secret}}"}""";
@@ -72,7 +75,7 @@ public sealed class AuthenticationErrorFormatterTests
     [Fact]
     public void FormatResponse_OversizedBody_DiscardsBody()
     {
-        Assert.Equal("Provider request failed (HTTP 500).", AuthenticationErrorFormatter.FormatResponse(HttpStatusCode.InternalServerError, new string('x', 8193)));
+        Assert.Equal("Provider request failed (HTTP 500).", AuthenticationErrorFormatter.FormatResponse(HttpStatusCode.InternalServerError, new string('x', AuthenticationErrorFormatter.MaximumBodyBytes + 1)));
     }
 
     [Theory]
@@ -88,7 +91,7 @@ public sealed class AuthenticationErrorFormatterTests
     [Fact]
     public async Task FormatResponseAsync_OversizedBody_DiscardsBody()
     {
-        using var response = new HttpResponseMessage(HttpStatusCode.BadRequest) { Content = new StringContent(new string('x', 8193)) };
+        using var response = new HttpResponseMessage(HttpStatusCode.BadRequest) { Content = new StringContent(new string('x', AuthenticationErrorFormatter.MaximumBodyBytes + 1)) };
 
         Assert.Equal("Provider request failed (HTTP 400).", await AuthenticationErrorFormatter.FormatResponseAsync(response));
     }
@@ -101,14 +104,36 @@ public sealed class AuthenticationErrorFormatterTests
         Assert.Equal("Provider request failed (HTTP 400).", await AuthenticationErrorFormatter.FormatResponseAsync(response));
     }
 
-    [Fact]
-    public async Task FormatResponseAsync_CallerCanceled_PropagatesCancellation()
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task FormatResponse_ExactByteBoundary_PreservesCodeOnlyWithinLimit(bool multibyte, bool oversized)
     {
-        using var response = new HttpResponseMessage(HttpStatusCode.BadRequest) { Content = new CancelingContent() };
+        var prefix = "{\"error\":\"invalid_token\",\"padding\":\"" + new string(multibyte ? '\u2603' : 'x', 2000) + "\"}";
+        var byteLength = AuthenticationErrorFormatter.MaximumBodyBytes + (oversized ? 1 : 0);
+        var body = prefix + new string(' ', byteLength - Encoding.UTF8.GetByteCount(prefix));
+        Assert.Equal(byteLength, Encoding.UTF8.GetByteCount(body));
+        var expected = oversized ? "Provider request failed (HTTP 401)." : "Provider request failed (HTTP 401; invalid_token).";
+        using var response = new HttpResponseMessage(HttpStatusCode.Unauthorized) { Content = new StringContent(body) };
+
+        Assert.Equal(expected, AuthenticationErrorFormatter.FormatResponse(response.StatusCode, body));
+        Assert.Equal(expected, await AuthenticationErrorFormatter.FormatResponseAsync(response));
+    }
+
+    [Fact]
+    public async Task FormatResponseAsync_CallerCanceledDuringRead_PropagatesTokenAndCancellation()
+    {
+        using var stream = new WaitingStream();
+        using var response = new HttpResponseMessage(HttpStatusCode.BadRequest) { Content = new StreamContent(stream) };
         using var cts = new CancellationTokenSource();
+        var reading = AuthenticationErrorFormatter.FormatResponseAsync(response, cts.Token);
+        await stream.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(cts.Token, stream.ObservedToken);
         cts.Cancel();
 
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => AuthenticationErrorFormatter.FormatResponseAsync(response, cts.Token));
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => reading.WaitAsync(TimeSpan.FromSeconds(5)));
     }
 
     [Fact]
@@ -148,14 +173,54 @@ public sealed class AuthenticationErrorFormatterTests
         }
     }
 
-    private sealed class CancelingContent : HttpContent
+    private sealed class WaitingStream : Stream
     {
-        protected override Task SerializeToStreamAsync(Stream stream, TransportContext? context) => throw new OperationCanceledException(Secret);
+        private readonly CancellationTokenSource _disposal = new();
+        private bool _disposed;
 
-        protected override bool TryComputeLength(out long length)
+        public TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public CancellationToken ObservedToken { get; private set; }
+
+        public override bool CanRead => true;
+
+        public override bool CanSeek => false;
+
+        public override bool CanWrite => false;
+
+        public override long Length => throw new NotSupportedException();
+
+        public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
         {
-            length = 0;
-            return false;
+            this.ObservedToken = cancellationToken;
+            this.Started.SetResult();
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, this._disposal.Token);
+            await Task.Delay(Timeout.InfiniteTimeSpan, linked.Token);
+            return 0;
+        }
+
+        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+        public override void Flush() => throw new NotSupportedException();
+
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+        public override void SetLength(long value) => throw new NotSupportedException();
+
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing && !this._disposed)
+            {
+                this._disposed = true;
+                this._disposal.Cancel();
+                this._disposal.Dispose();
+            }
+
+            base.Dispose(disposing);
         }
     }
 }

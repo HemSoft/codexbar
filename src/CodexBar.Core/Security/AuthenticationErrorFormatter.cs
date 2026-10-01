@@ -9,7 +9,7 @@ using System.Text.Json;
 /// <summary>Formats authentication diagnostics without retaining untrusted bodies or exception details.</summary>
 internal static class AuthenticationErrorFormatter
 {
-    private const int MaximumBodyBytes = 8192;
+    internal const int MaximumBodyBytes = 8192;
 
     internal static string FormatResponse(HttpStatusCode status, string? body)
     {
@@ -62,7 +62,7 @@ internal static class AuthenticationErrorFormatter
 
     private static string? ReadSafeErrorCode(string? body)
     {
-        if (string.IsNullOrWhiteSpace(body) || body.Length > MaximumBodyBytes)
+        if (string.IsNullOrWhiteSpace(body) || Encoding.UTF8.GetByteCount(body) > MaximumBodyBytes)
         {
             return null;
         }
@@ -84,7 +84,7 @@ internal static class AuthenticationErrorFormatter
                     or "temporarily_unavailable" or "authorization_pending" or "slow_down" or "expired_token"
                     or "unsupported_response_type" or "authentication_error" or "permission_error"
                     or "rate_limit_error" or "invalid_request_error" or "not_found_error" or "overloaded_error"
-                    or "api_error" => code,
+                    or "api_error" or "invalid_token" or "insufficient_scope" => code,
                 _ => null,
             };
         }
