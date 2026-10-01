@@ -91,33 +91,42 @@ public sealed class SettingsService : ISettingsService
             return;
         }
 
+        AppSettings? disk;
         try
         {
             var diskJson = File.ReadAllText(this._settingsPath);
-            var disk = JsonSerializer.Deserialize<AppSettings>(diskJson, JsonOptions);
-            if (disk is null)
-            {
-                return;
-            }
-
-            if (settings.AccountConfigurationVersion == 0 && disk.AccountConfigurationVersion > 0)
-            {
-                settings.AccountConfigurationVersion = disk.AccountConfigurationVersion;
-                settings.Accounts = AccountConfiguration.Normalize(disk.Accounts);
-            }
-
-            MergeProviders(settings, disk);
-            MergeProviderCardOrder(settings, disk);
-            MergeWorkspaceId(settings, disk);
-            MergeCopilotBillingSettings(settings, disk);
-            MergeCopilotKnownAccounts(settings, disk);
-            MergeSessionBaselines(settings, disk);
-            MergeSessionResetTimes(settings, disk);
+            disk = JsonSerializer.Deserialize<AppSettings>(diskJson, JsonOptions);
         }
         catch (Exception ex)
         {
             this._logger.LogDebug(ex, "MergeFromDisk skipped — could not read {Path}", this._settingsPath);
+            return;
         }
+
+        if (disk is null)
+        {
+            return;
+        }
+
+        if (disk.AccountConfigurationVersion > AccountConfiguration.CurrentVersion)
+        {
+            throw new InvalidOperationException("Account configuration was written by a newer application. Do not overwrite it.");
+        }
+
+        if (settings.AccountConfigurationVersion == 0 && disk.AccountConfigurationVersion > 0)
+        {
+            var accounts = AccountConfiguration.Normalize(disk.Accounts);
+            settings.AccountConfigurationVersion = disk.AccountConfigurationVersion;
+            settings.Accounts = accounts;
+        }
+
+        MergeProviders(settings, disk);
+        MergeProviderCardOrder(settings, disk);
+        MergeWorkspaceId(settings, disk);
+        MergeCopilotBillingSettings(settings, disk);
+        MergeCopilotKnownAccounts(settings, disk);
+        MergeSessionBaselines(settings, disk);
+        MergeSessionResetTimes(settings, disk);
     }
 
     /// <summary>

@@ -4,18 +4,22 @@ namespace CodexBar.App.ViewModels;
 
 using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.IO;
 using System.Runtime.CompilerServices;
+using System.Text.Json;
 using System.Windows.Input;
 using CodexBar.Core.Configuration;
 using CodexBar.Core.Models;
 using CodexBar.Core.Providers;
 
 [System.Diagnostics.CodeAnalysis.ExcludeFromCodeCoverage]
-public sealed class ProviderConfigurationViewModel
+public sealed class ProviderConfigurationViewModel : INotifyPropertyChanged
 {
     private readonly ISettingsService _settingsService;
     private readonly Action _close;
     private AppSettings _settings;
+    private readonly Dictionary<string, bool> _copilotInitialStates;
+    private string _errorMessage = string.Empty;
 
     public ProviderConfigurationViewModel(
         ISettingsService settingsService,
@@ -25,12 +29,23 @@ public sealed class ProviderConfigurationViewModel
     {
         this._settingsService = settingsService;
         this._close = close;
-        this._settings = settingsService.Load();
+        this._settings = Copy(settingsService.Load());
         this.Providers = new ObservableCollection<ProviderOptionViewModel>(
             providers
                 .Select(p => ProviderOptionViewModel.From(p.Metadata, this.GetProviderSettings(p.Metadata.Id).Enabled))
                 .OrderBy(p => p.ProviderId));
         this.CopilotAccounts = BuildCopilotAccountOptions(this._settings, currentProviderCards);
+        this._copilotInitialStates = this.CopilotAccounts.ToDictionary(account => account.Username, account => account.IsEnabled, StringComparer.OrdinalIgnoreCase);
+        this.InitializeAccounts();
+        this.NewAccountProvider = this.Providers.FirstOrDefault()?.ProviderId ?? ProviderId.Claude;
+        this.AddAccountCommand = new RelayCommand(_ => this.AddAccount());
+        this.RemoveAccountCommand = new RelayCommand(account =>
+        {
+            if (account is AccountOptionViewModel option)
+            {
+                this.Accounts.Remove(option);
+            }
+        });
         this.SaveCommand = new RelayCommand(_ => this.Save());
         this.CancelCommand = new RelayCommand(_ => close());
     }
@@ -40,6 +55,26 @@ public sealed class ProviderConfigurationViewModel
     public ObservableCollection<CopilotAccountOptionViewModel> CopilotAccounts { get; }
 
     public bool HasCopilotAccounts => this.CopilotAccounts.Count > 0;
+
+    public ObservableCollection<AccountOptionViewModel> Accounts { get; } = [];
+
+    public ProviderId NewAccountProvider { get; set; }
+
+    public ICommand AddAccountCommand { get; }
+
+    public ICommand RemoveAccountCommand { get; }
+
+    public string ErrorMessage
+    {
+        get => this._errorMessage;
+        private set
+        {
+            this._errorMessage = value;
+            this.PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(nameof(this.ErrorMessage)));
+        }
+    }
+
+    public event PropertyChangedEventHandler? PropertyChanged;
 
     public ICommand SaveCommand { get; }
 
@@ -62,18 +97,110 @@ public sealed class ProviderConfigurationViewModel
 
     private void Save()
     {
-        this._settings = this._settingsService.Load();
-        this._settings.Providers ??= [];
-        foreach (var provider in this.Providers)
+        this.ErrorMessage = string.Empty;
+        try
         {
-            var providerSettings = this.GetProviderSettings(provider.ProviderId);
-            providerSettings.Enabled = provider.IsDisplayed;
+            var accounts = AccountConfiguration.Normalize(this.Accounts.Select(account => account.ToSettings()));
+            this._settings = Copy(this._settingsService.Load());
+            AccountConfiguration.Migrate(this._settings);
+            this._settings.AccountConfigurationVersion = AccountConfiguration.CurrentVersion;
+            this._settings.Accounts = accounts;
+            this._settings.Providers ??= [];
+            foreach (var provider in this.Providers)
+            {
+                this.GetProviderSettings(provider.ProviderId).Enabled = provider.IsDisplayed && accounts.Any(account => account.ProviderId == provider.ProviderId && account.Enabled);
+            }
+
+            if (this.CopilotAccounts.Any(account => this._copilotInitialStates[account.Username] != account.IsEnabled))
+            {
+                this.SaveCopilotAccountSettings();
+                this._settings.Accounts = accounts.Select(account => account.ProviderId == ProviderId.Copilot && account.ExternalAccountId is not null
+                    ? account with { Enabled = this.CopilotAccounts.FirstOrDefault(option => string.Equals(option.Username, account.ExternalAccountId, StringComparison.OrdinalIgnoreCase))?.IsEnabled ?? account.Enabled }
+                    : account).ToList();
+            }
+            else
+            {
+                this.SaveAccountIdentities();
+            }
+
+            this._settingsService.Save(this._settings);
+            this.Saved?.Invoke(this, EventArgs.Empty);
+            this._close();
+        }
+        catch (ArgumentException)
+        {
+            this.ErrorMessage = "Every account needs a display label and a supported authentication method.";
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidOperationException)
+        {
+            this.ErrorMessage = "Settings could not be saved. Check file access and try again. Your changes are still here.";
+        }
+    }
+
+    private static AppSettings Copy(AppSettings settings) => JsonSerializer.Deserialize<AppSettings>(JsonSerializer.Serialize(settings))!;
+
+    private void InitializeAccounts()
+    {
+        if (this._settings.AccountConfigurationVersion == 0)
+        {
+            this._settings.CopilotKnownAccounts = this.CopilotAccounts.Select(account => account.Username).ToList();
         }
 
-        this.SaveCopilotAccountSettings();
-        this._settingsService.Save(this._settings);
-        this.Saved?.Invoke(this, EventArgs.Empty);
-        this._close();
+        AccountConfiguration.Migrate(this._settings);
+        var placeholder = this._settings.Accounts.FirstOrDefault(account => account.ProviderId == ProviderId.Copilot && account.ExternalAccountId is null && account.LegacyCardKey == "Copilot");
+        if (placeholder is not null && this.CopilotAccounts.Count > 0)
+        {
+            var legacy = new AppSettings
+            {
+                Providers = new() { ["Copilot"] = this.GetProviderSettings(ProviderId.Copilot) },
+                CopilotAccounts = this.CopilotAccounts.Where(account => account.IsEnabled).Select(account => account.Username).ToList(),
+                CopilotKnownAccounts = this.CopilotAccounts.Select(account => account.Username).ToList(),
+            };
+            AccountConfiguration.Migrate(legacy);
+            this._settings.Accounts.Remove(placeholder);
+            foreach (var account in legacy.Accounts)
+            {
+                AccountConfiguration.Upsert(this._settings, account);
+            }
+        }
+
+        foreach (var account in this._settings.Accounts)
+        {
+            this.Accounts.Add(new AccountOptionViewModel(account));
+        }
+    }
+
+    private void AddAccount()
+    {
+        var number = this.Accounts.Count(account => account.ProviderId == this.NewAccountProvider) + 1;
+        this.Accounts.Insert(0, new AccountOptionViewModel(AccountConfiguration.Create(this.NewAccountProvider, $"{this.NewAccountProvider} {number}")));
+        var provider = this.Providers.FirstOrDefault(option => option.ProviderId == this.NewAccountProvider);
+        if (provider is not null)
+        {
+            provider.IsDisplayed = true;
+        }
+    }
+
+    private void SaveAccountIdentities()
+    {
+        var workspace = this._settings.Accounts.FirstOrDefault(account => account.ProviderId == ProviderId.OpenCodeGo && account.LegacyCardKey == "OpenCodeGo");
+        if (workspace is not null)
+        {
+            this._settings.OpenCodeGoWorkspaceId = workspace.WorkspaceId;
+        }
+
+        var copilot = this._settings.Accounts.Where(account => account.ProviderId == ProviderId.Copilot && account.ExternalAccountId is not null).ToList();
+        if (copilot.Count == 0)
+        {
+            return;
+        }
+
+        this._settings.CopilotKnownAccounts = copilot.Select(account => account.ExternalAccountId!).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        this._settings.CopilotAccounts = copilot.Where(account => account.Enabled).Select(account => account.ExternalAccountId!).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        if (this._settings.CopilotAccounts.Count == 0)
+        {
+            this.GetProviderSettings(ProviderId.Copilot).Enabled = false;
+        }
     }
 
     private void SaveCopilotAccountSettings()
