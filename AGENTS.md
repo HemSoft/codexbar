@@ -9,6 +9,12 @@ Reddit
 Microsoft Developer Documentation
 Social Media.
 
+## Repository automation
+
+Keep the normal CI workflow and required Copilot/Codex review integrations.
+Do not install autonomous issue processing, scheduled audit, or PR promotion
+workflows without an explicit maintainer request.
+
 ## Quality Gates
 
 All changes must pass these gates before merge:
