@@ -209,6 +209,22 @@ public class CrapScoreImprovementTests
     }
 
     [Fact]
+    public async Task CreateExitProcess_ShellMetacharacters_PreservesLiteralOutputAndExitCode()
+    {
+        const string stdout = "fixture: %PATH% !value! ^&|<> (keyring) \"quoted\"";
+        const string stderr = "error: %OTHER% !value! ^&|<> (detail) \"quoted\"";
+        using var process = CreateExitProcess(7, stderr, stdout);
+        Assert.True(process.Start());
+        var output = process.StandardOutput.ReadToEndAsync();
+        var error = process.StandardError.ReadToEndAsync();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        await process.WaitForExitAsync(timeout.Token);
+        Assert.Equal(stdout, (await output).TrimEnd('\r', '\n'));
+        Assert.Equal(stderr, (await error).TrimEnd('\r', '\n', ' '));
+        Assert.Equal(7, process.ExitCode);
+    }
+
+    [Fact]
     public async Task FetchUsageAsync_GhProcessTimesOut_ReturnsDiscoveryError()
     {
         var settings = CreateCopilotSettings();
@@ -749,22 +765,14 @@ public class CrapScoreImprovementTests
         };
         if (OperatingSystem.IsWindows())
         {
-            static string Escape(string value) => value.Replace("^", "^^").Replace("&", "^&").Replace("|", "^|").Replace("<", "^<").Replace(">", "^>").Replace("(", "^(").Replace(")", "^)");
-            var commands = new List<string>();
-            if (stdout.Length > 0)
-            {
-                commands.Add($"echo {Escape(stdout)}");
-            }
-
-            if (stderr.Length > 0)
-            {
-                commands.Add($"echo {Escape(stderr)} 1>&2");
-            }
-
-            commands.Add($"exit /b {exitCode}");
+            // Delayed expansion happens after metacharacter parsing. Values are not
+            // rescanned for percent/exclamation expansion or treated as commands.
+            startInfo.Environment["CODEXBAR_FIXTURE_STDOUT"] = stdout;
+            startInfo.Environment["CODEXBAR_FIXTURE_STDERR"] = stderr;
             startInfo.ArgumentList.Add("/d");
+            startInfo.ArgumentList.Add("/v:on");
             startInfo.ArgumentList.Add("/c");
-            startInfo.ArgumentList.Add(string.Join(" & ", commands));
+            startInfo.ArgumentList.Add($"echo(!CODEXBAR_FIXTURE_STDOUT!&echo(!CODEXBAR_FIXTURE_STDERR! 1>&2&exit /b {exitCode}");
         }
         else
         {
