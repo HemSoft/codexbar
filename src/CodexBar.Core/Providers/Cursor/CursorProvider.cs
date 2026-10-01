@@ -11,6 +11,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using CodexBar.Core.Configuration;
 using CodexBar.Core.Models;
+using CodexBar.Core.Security;
 using Microsoft.Extensions.Logging;
 
 /// <summary>
@@ -85,8 +86,9 @@ public sealed class CursorProvider(
         }
         catch (Exception ex)
         {
-            this._logger.LogWarning(ex, "Cursor fetch failed");
-            return ProviderUsageResult.Failure(ProviderId.Cursor, "Cursor usage could not be read. Sign in to Cursor and try again.");
+            var error = AuthenticationErrorFormatter.FormatException(ex);
+            this._logger.LogWarning("Cursor fetch failed: {Failure}", error);
+            return ProviderUsageResult.Failure(ProviderId.Cursor, $"Cursor usage could not be read. {error} Sign in to Cursor and try again.");
         }
     }
 
@@ -180,7 +182,7 @@ public sealed class CursorProvider(
         using var response = await httpClient.SendAsync(request, timeoutCts.Token);
         if (!response.IsSuccessStatusCode)
         {
-            throw new HttpRequestException($"Cursor usage returned HTTP {(int)response.StatusCode}.");
+            throw new HttpRequestException("Cursor usage request failed.", null, response.StatusCode);
         }
 
         var json = await response.Content.ReadAsStringAsync(timeoutCts.Token);

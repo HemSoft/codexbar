@@ -101,11 +101,11 @@ public class MutationKillingRound2Tests
     }
 
     // ==========================================================================
-    // CopilotProvider.LogNonZeroGhTokenExit — L561-563 stderr truncation
-    // Kills: Conditional mutations on string.IsNullOrWhiteSpace and Length > 200
+    // CopilotProvider.LogNonZeroGhTokenExit: discard arbitrary command output.
+    // Diagnostic output retains only the exit code and safe remediation.
     // ==========================================================================
     [Fact]
-    public async Task LogNonZeroGhTokenExit_EmptyStderr_LogsNoStderrPlaceholder()
+    public async Task LogNonZeroGhTokenExit_EmptyStderr_LogsSafeExitCode()
     {
         var logger = Substitute.For<ILogger<CopilotProvider>>();
         var factory = Substitute.For<IHttpClientFactory>();
@@ -142,20 +142,20 @@ public class MutationKillingRound2Tests
         // The result should fail (no token resolved since process exits 1)
         Assert.NotNull(result);
 
-        // Verify LogNonZeroGhTokenExit was invoked with the "(no stderr)" placeholder
+        // Do not forward stderr, even when empty.
         logger.Received().Log(
             LogLevel.Debug,
             Arg.Any<EventId>(),
-            Arg.Is<object>(v => v.ToString()!.Contains("(no stderr)")),
+            Arg.Is<object>(v => v.ToString()!.Contains("Authentication command failed (exit 1). Run 'gh auth login' and try again.")),
             Arg.Any<Exception?>(),
             Arg.Any<Func<object, Exception?, string>>());
     }
 
     [Fact]
-    public async Task LogNonZeroGhTokenExit_LongStderr_TruncatesTo200Chars()
+    public async Task LogNonZeroGhTokenExit_LongStderr_DiscardsEntireOutput()
     {
-        // Test the truncation logic: stderr > 200 chars should be trimmed
-        var longStderr = new string('x', 250);
+        // Secrets near the beginning must disappear too, not just the tail.
+        var longStderr = "SENSITIVE_PAYLOAD_MARKER" + new string('x', 250);
         var logger = Substitute.For<ILogger<CopilotProvider>>();
         var factory = Substitute.For<IHttpClientFactory>();
         var settings = Substitute.For<ISettingsService>();
@@ -196,13 +196,14 @@ public class MutationKillingRound2Tests
         // Token resolution fails, so result will have error
         Assert.NotNull(result);
 
-        // Verify LogNonZeroGhTokenExit logged a truncated stderr ending with "…"
+        // Verify no prefix, suffix, or exception object reaches the logger.
         logger.Received().Log(
             LogLevel.Debug,
             Arg.Any<EventId>(),
-            Arg.Is<object>(v => v.ToString()!.Contains("…") && !v.ToString()!.Contains(longStderr)),
-            Arg.Any<Exception?>(),
+            Arg.Is<object>(v => v.ToString()!.Contains("Authentication command failed (exit 1). Run 'gh auth login' and try again.") && !v.ToString()!.Contains("SENSITIVE_PAYLOAD_MARKER")),
+            Arg.Is<Exception?>(ex => ex == null),
             Arg.Any<Func<object, Exception?, string>>());
+        Assert.DoesNotContain(logger.ReceivedCalls(), call => call.GetArguments().Any(arg => arg?.ToString()?.Contains("SENSITIVE_PAYLOAD_MARKER", StringComparison.Ordinal) == true));
     }
 
     // ==========================================================================

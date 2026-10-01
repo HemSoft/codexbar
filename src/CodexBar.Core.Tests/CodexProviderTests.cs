@@ -315,7 +315,8 @@ public sealed class CodexProviderTests : IDisposable
         var result = await provider.FetchUsageAsync();
 
         Assert.False(result.Success);
-        Assert.Contains("offline", result.ErrorMessage);
+        Assert.Equal("Provider request failed. Retry or sign in again.", result.ErrorMessage);
+        Assert.DoesNotContain("offline", result.ErrorMessage);
     }
 
     [Fact]

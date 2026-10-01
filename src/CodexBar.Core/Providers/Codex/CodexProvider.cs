@@ -9,6 +9,7 @@ using System.Text.Json;
 using System.Threading;
 using CodexBar.Core.Configuration;
 using CodexBar.Core.Models;
+using CodexBar.Core.Security;
 using Microsoft.Extensions.Logging;
 
 /// <summary>
@@ -137,8 +138,9 @@ public sealed class CodexProvider : IUsageProvider
         }
         catch (Exception ex)
         {
-            this._logger.LogWarning(ex, "Codex usage fetch failed");
-            return ProviderUsageResult.Failure(ProviderId.Codex, ex.Message);
+            var error = AuthenticationErrorFormatter.FormatException(ex);
+            this._logger.LogWarning("Codex usage fetch failed: {Failure}", error);
+            return ProviderUsageResult.Failure(ProviderId.Codex, error);
         }
     }
 
@@ -370,7 +372,7 @@ public sealed class CodexProvider : IUsageProvider
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
         {
-            this._logger.LogDebug(ex, "Could not read Codex auth file at {Path}", this._authPath);
+            this._logger.LogDebug("Could not read local Codex auth file at {Path}. Check the local sign-in state.", this._authPath);
             return null;
         }
     }
