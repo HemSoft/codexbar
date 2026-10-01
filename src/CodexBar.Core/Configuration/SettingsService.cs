@@ -386,7 +386,7 @@ public sealed class SettingsService : ISettingsService
         lock (this._lock)
         {
             var settings = this.EnsureCached();
-            return settings.Providers.TryGetValue(providerId.ToString(), out var ps) ? ps.ApiKey : null;
+            return settings.Providers.FirstOrDefault(entry => string.Equals(entry.Key, providerId.ToString(), StringComparison.OrdinalIgnoreCase)).Value?.ApiKey;
         }
     }
 
@@ -395,8 +395,9 @@ public sealed class SettingsService : ISettingsService
         lock (this._lock)
         {
             var settings = this.EnsureCached();
-            return settings.Providers.TryGetValue(providerId.ToString(), out var ps)
-                ? ps is null || ps.Enabled
+            var entry = settings.Providers.FirstOrDefault(entry => string.Equals(entry.Key, providerId.ToString(), StringComparison.OrdinalIgnoreCase));
+            return entry.Key is not null
+                ? entry.Value is null || entry.Value.Enabled
                 : providerId != ProviderId.Moonshot;
         }
     }
@@ -447,10 +448,11 @@ public sealed class SettingsService : ISettingsService
     {
         lock (this._lock)
         {
-            var settings = this.EnsureCached();
+            var settings = JsonSerializer.Deserialize<AppSettings>(JsonSerializer.Serialize(this.EnsureCached(), JsonOptions), JsonOptions)!;
             settings.SessionSpendingBaselines[key] = baseline;
             settings.SessionSpendingResetTimes[key] = DateTimeOffset.Now;
             this.SaveInternal(settings);
+            this._cached = settings;
         }
     }
 

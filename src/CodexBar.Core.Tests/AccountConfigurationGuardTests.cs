@@ -88,6 +88,38 @@ public sealed class AccountConfigurationGuardTests : IDisposable
         Assert.Equal(future, File.ReadAllText(this.SettingsPath));
     }
 
+    [Fact]
+    public void SetSessionBaseline_LockFailure_RetainsCachedAndPersistedBaselineThenRetries()
+    {
+        var service = this.CreateService();
+        service.SetSessionBaseline(ProviderId.Codex, 5m);
+        var before = File.ReadAllText(this.SettingsPath);
+        var reset = service.GetSessionResetTime(ProviderId.Codex);
+        using (var otherWriter = new FileStream(Path.Combine(this._directory, "settings.write.lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None))
+        {
+            Assert.Throws<IOException>(() => service.SetSessionBaseline(ProviderId.Codex, 9m));
+            Assert.Equal(5m, service.GetSessionBaseline(ProviderId.Codex));
+            Assert.Equal(reset, service.GetSessionResetTime(ProviderId.Codex));
+            Assert.Equal(before, File.ReadAllText(this.SettingsPath));
+        }
+
+        service.SetSessionBaseline(ProviderId.Codex, 9m);
+        Assert.Equal(9m, service.GetSessionBaseline(ProviderId.Codex));
+        Assert.Equal(9m, this.CreateService().GetSessionBaseline(ProviderId.Codex));
+    }
+
+    [Fact]
+    public void Load_LowercaseProviderKeys_AllReadersAgreeWithMigration()
+    {
+        const string legacy = """{"providers":{"copilot":{"enabled":false,"apiKey":"synthetic"},"moonshot":{"enabled":true}}}""";
+        File.WriteAllText(this.SettingsPath, legacy);
+        var service = this.CreateService();
+        Assert.False(service.IsProviderEnabled(ProviderId.Copilot));
+        Assert.True(service.IsProviderEnabled(ProviderId.Moonshot));
+        Assert.Equal("synthetic", service.GetApiKey(ProviderId.Copilot));
+        Assert.False(service.Load().Accounts.Single(account => account.ProviderId == ProviderId.Copilot).Enabled);
+    }
+
     public void Dispose() => Directory.Delete(this._directory, true);
 
     private string SettingsPath => Path.Combine(this._directory, "settings.json");
