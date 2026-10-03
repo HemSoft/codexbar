@@ -224,6 +224,45 @@ public class CrapScoreImprovementTests
         Assert.Equal(7, process.ExitCode);
     }
 
+    [Theory]
+    [InlineData("", "", 0)]
+    [InlineData("", "", 7)]
+    [InlineData("fixture output", "", 0)]
+    [InlineData("fixture output", "", 7)]
+    [InlineData("", "fixture error", 0)]
+    [InlineData("", "fixture error", 7)]
+    public async Task CreateExitProcess_EmptyStreams_WriteNoBytesAndPreserveExitCode(string stdout, string stderr, int exitCode)
+    {
+        using var process = CreateExitProcess(exitCode, stderr, stdout);
+        Assert.True(process.Start());
+        var output = process.StandardOutput.ReadToEndAsync();
+        var error = process.StandardError.ReadToEndAsync();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        await process.WaitForExitAsync(timeout.Token);
+        var actualOutput = await output;
+        var actualError = await error;
+
+        if (stdout.Length == 0)
+        {
+            Assert.Empty(actualOutput);
+        }
+        else
+        {
+            Assert.Equal(stdout, actualOutput.TrimEnd('\r', '\n'));
+        }
+
+        if (stderr.Length == 0)
+        {
+            Assert.Empty(actualError);
+        }
+        else
+        {
+            Assert.Equal(stderr, actualError.TrimEnd('\r', '\n', ' '));
+        }
+
+        Assert.Equal(exitCode, process.ExitCode);
+    }
+
     [Fact]
     public async Task FetchUsageAsync_GhProcessTimesOut_ReturnsDiscoveryError()
     {
@@ -772,7 +811,19 @@ public class CrapScoreImprovementTests
             startInfo.ArgumentList.Add("/d");
             startInfo.ArgumentList.Add("/v:on");
             startInfo.ArgumentList.Add("/c");
-            startInfo.ArgumentList.Add($"echo(!CODEXBAR_FIXTURE_STDOUT!&echo(!CODEXBAR_FIXTURE_STDERR! 1>&2&exit /b {exitCode}");
+            var commands = new List<string>();
+            if (stdout.Length > 0)
+            {
+                commands.Add("echo(!CODEXBAR_FIXTURE_STDOUT!");
+            }
+
+            if (stderr.Length > 0)
+            {
+                commands.Add("echo(!CODEXBAR_FIXTURE_STDERR! 1>&2");
+            }
+
+            commands.Add($"exit /b {exitCode}");
+            startInfo.ArgumentList.Add(string.Join("&", commands));
         }
         else
         {
