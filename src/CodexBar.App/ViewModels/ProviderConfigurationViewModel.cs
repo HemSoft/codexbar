@@ -21,6 +21,7 @@ public sealed class ProviderConfigurationViewModel : INotifyPropertyChanged
     private readonly AccountConfigurationSnapshot? _accountSnapshot;
     private readonly HashSet<ProviderId> _providersWithAccountDrafts;
     private readonly Dictionary<string, bool> _copilotInitialStates;
+    private readonly List<(string Id, string? Identity, bool Enabled)> _initialCopilotSelection;
     private string _errorMessage = string.Empty;
 
     public ProviderConfigurationViewModel(
@@ -42,6 +43,7 @@ public sealed class ProviderConfigurationViewModel : INotifyPropertyChanged
         this.CopilotAccounts = BuildCopilotAccountOptions(this._settings, currentProviderCards);
         this._copilotInitialStates = this.CopilotAccounts.ToDictionary(account => account.Username, account => account.IsEnabled, StringComparer.OrdinalIgnoreCase);
         this.InitializeAccounts();
+        this._initialCopilotSelection = CopilotSelection(this.Accounts.Select(account => account.ToSettings())).ToList();
         this._providersWithAccountDrafts = this.Accounts.Select(account => account.ProviderId).ToHashSet();
 
         this.NewAccountProvider = this.Providers.FirstOrDefault()?.ProviderId ?? ProviderId.Claude;
@@ -120,6 +122,7 @@ public sealed class ProviderConfigurationViewModel : INotifyPropertyChanged
                     (accounts.Any(account => account.ProviderId == provider.ProviderId && account.Enabled) || !this._providersWithAccountDrafts.Contains(provider.ProviderId));
             }
 
+            this.SaveWorkspaceIdentity();
             if (this.CopilotAccounts.Any(account => this._copilotInitialStates[account.Username] != account.IsEnabled))
             {
                 this.SaveCopilotAccountSettings();
@@ -202,21 +205,40 @@ public sealed class ProviderConfigurationViewModel : INotifyPropertyChanged
         }
     }
 
+    private void SaveWorkspaceIdentity()
+    {
+        var workspace = this._settings.Accounts.Where(account => account.ProviderId == ProviderId.OpenCodeGo)
+            .OrderByDescending(account => account.Enabled)
+            .ThenByDescending(account => account.LegacyCardKey == "OpenCodeGo").FirstOrDefault();
+        this._settings.OpenCodeGoWorkspaceId = workspace?.WorkspaceId;
+    }
+
+    private static IEnumerable<(string Id, string? Identity, bool Enabled)> CopilotSelection(IEnumerable<ProviderAccountSettings> accounts) =>
+        accounts.Where(account => account.ProviderId == ProviderId.Copilot)
+            .OrderBy(account => account.Id, StringComparer.Ordinal)
+            .Select(account => (account.Id, account.ExternalAccountId, account.Enabled));
+
     private void SaveAccountIdentities()
     {
-        var workspace = this._settings.Accounts.Where(account => account.ProviderId == ProviderId.OpenCodeGo && account.Enabled)
-            .OrderByDescending(account => account.LegacyCardKey == "OpenCodeGo").FirstOrDefault();
-        this._settings.OpenCodeGoWorkspaceId = workspace?.WorkspaceId;
-
+        var selectionChanged = !CopilotSelection(this._settings.Accounts).SequenceEqual(this._initialCopilotSelection);
         var copilot = this._settings.Accounts.Where(account => account.ProviderId == ProviderId.Copilot && account.ExternalAccountId is not null).ToList();
         if (copilot.Count == 0)
         {
-            this._settings.CopilotKnownAccounts = [];
-            this._settings.CopilotAccounts = [];
+            if (selectionChanged)
+            {
+                this._settings.CopilotKnownAccounts = [];
+                this._settings.CopilotAccounts = [];
+            }
+
             return;
         }
 
         this._settings.CopilotKnownAccounts = copilot.Select(account => account.ExternalAccountId!).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        if (!selectionChanged)
+        {
+            return;
+        }
+
         this._settings.CopilotAccounts = copilot.Where(account => account.Enabled).Select(account => account.ExternalAccountId!).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         if (this._settings.CopilotAccounts.Count == 0)
         {

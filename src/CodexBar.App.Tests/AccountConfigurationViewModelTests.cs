@@ -165,6 +165,93 @@ public sealed class AccountConfigurationViewModelTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
+    public void Save_DisabledOpenCodeGoAccount_PreservesRetainedWorkspace(bool initiallyEnabled)
+    {
+        var directory = Directory.CreateTempSubdirectory("codexbar-retained-workspace-").FullName;
+        try
+        {
+            var service = new SettingsService(NullLogger<SettingsService>.Instance, directory);
+            service.Save(new AppSettings
+            {
+                Providers = new() { ["OpenCodeGo"] = new() { Enabled = initiallyEnabled } },
+                OpenCodeGoWorkspaceId = "retained-workspace",
+            });
+            var viewModel = new ProviderConfigurationViewModel(service, CreateProviders(), () => { });
+            viewModel.Accounts.Single(account => account.ProviderId == ProviderId.OpenCodeGo).Enabled = false;
+
+            viewModel.SaveCommand.Execute(null);
+
+            Assert.Empty(viewModel.ErrorMessage);
+            var saved = new SettingsService(NullLogger<SettingsService>.Instance, directory).Load();
+            Assert.Equal("retained-workspace", saved.OpenCodeGoWorkspaceId);
+            Assert.Equal("retained-workspace", saved.Accounts.Single(account => account.ProviderId == ProviderId.OpenCodeGo).WorkspaceId);
+            Assert.False(saved.Providers["OpenCodeGo"].Enabled);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Theory]
+    [InlineData(false, 0)]
+    [InlineData(false, 1)]
+    [InlineData(false, 2)]
+    [InlineData(true, 0)]
+    [InlineData(true, 1)]
+    [InlineData(true, 2)]
+    public void Save_AutomaticCopilotDiscovery_PreservesModeUnlessSelectionChanges(bool fromCards, int selectionEdit)
+    {
+        var directory = Directory.CreateTempSubdirectory("codexbar-copilot-auto-").FullName;
+        try
+        {
+            var service = new SettingsService(NullLogger<SettingsService>.Instance, directory);
+            service.Save(new AppSettings
+            {
+                Providers = Enum.GetValues<ProviderId>().ToDictionary(id => id.ToString(), id => new ProviderSettings { Enabled = id != ProviderId.Moonshot }),
+                CopilotKnownAccounts = fromCards ? [] : ["alice", "bob"],
+                OpenCodeGoWorkspaceId = "retained-workspace",
+            });
+            var cards = fromCards ? new[]
+            {
+                new ProviderCardViewModel { ProviderId = ProviderId.Copilot, CardKey = "copilot:alice", DisplayName = "alice" },
+                new ProviderCardViewModel { ProviderId = ProviderId.Copilot, CardKey = "copilot:bob", DisplayName = "bob" },
+            }
+            : [];
+            var viewModel = new ProviderConfigurationViewModel(service, CreateProviders(), () => { }, cards);
+            viewModel.Accounts.Single(account => account.ProviderId == ProviderId.OpenCodeGo).WorkspaceId = "edited-workspace";
+            var alice = viewModel.Accounts.Single(account => account.IsCopilot && account.ExternalAccountId == "alice");
+            if (selectionEdit == 1)
+            {
+                viewModel.CopilotAccounts.Single(account => account.Username == "alice").IsEnabled = false;
+            }
+            else if (selectionEdit == 2)
+            {
+                alice.Enabled = false;
+            }
+            else
+            {
+                alice.DisplayLabel = "Label only";
+            }
+
+            viewModel.SaveCommand.Execute(null);
+
+            Assert.Empty(viewModel.ErrorMessage);
+            var saved = new SettingsService(NullLogger<SettingsService>.Instance, directory).Load();
+            Assert.Equal(selectionEdit == 0 ? [] : new[] { "bob" }, saved.CopilotAccounts);
+            Assert.Equal(new[] { "alice", "bob" }, saved.CopilotKnownAccounts);
+            Assert.Equal("edited-workspace", saved.OpenCodeGoWorkspaceId);
+            Assert.Equal(2, saved.Accounts.Count(account => account.ProviderId == ProviderId.Copilot));
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
     public void Save_LastAccountDisabledWhileExternalWriterEnablesProvider_KeepsProviderDisabled(bool removeAccount)
     {
         var directory = Directory.CreateTempSubdirectory("codexbar-account-visibility-").FullName;
