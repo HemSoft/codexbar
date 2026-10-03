@@ -177,15 +177,17 @@ public sealed class SettingsService : ISettingsService
         {
             var originalStates = ProviderAccountStates(snapshot.Accounts, key).ToList();
             var statesUnchanged = ProviderAccountStates(proposed, key).SequenceEqual(originalStates);
-            var credentialUnchanged = provider is not null && snapshot.ProviderApiKeys.TryGetValue(key, out var originalCredential) && provider.ApiKey == originalCredential;
-            if (credentialUnchanged && disk.Providers?.ContainsKey(key) != true)
+            var snapshotKey = FindProviderKey(snapshot.ProviderStates, key) ?? key;
+            var diskKey = FindProviderKey(disk.Providers, key);
+            var credentialUnchanged = provider is not null && snapshot.ProviderApiKeys.TryGetValue(snapshotKey, out var originalCredential) && provider.ApiKey == originalCredential;
+            if (credentialUnchanged && diskKey is null)
             {
                 provider!.ApiKey = null;
             }
 
-            if (provider is not null && snapshot.ProviderStates.TryGetValue(key, out var original) && provider.Enabled == original && statesUnchanged)
+            if (provider is not null && snapshot.ProviderStates.TryGetValue(snapshotKey, out var original) && provider.Enabled == original && statesUnchanged)
             {
-                if (disk.Providers?.TryGetValue(key, out var saved) == true)
+                if (diskKey is not null && disk.Providers?.TryGetValue(diskKey, out var saved) == true)
                 {
                     provider.Enabled = saved?.Enabled ?? true;
                 }
@@ -206,9 +208,13 @@ public sealed class SettingsService : ISettingsService
             {
                 // Visibility computed from the old draft cannot enable deleted/disabled disk accounts.
                 provider.Enabled = false;
+                providers[key] = provider;
             }
         }
     }
+
+    private static string? FindProviderKey<T>(IReadOnlyDictionary<string, T>? providers, string key) =>
+        providers?.Keys.FirstOrDefault(candidate => string.Equals(candidate, key, StringComparison.OrdinalIgnoreCase));
 
     private static IEnumerable<(string Id, bool Enabled)> ProviderAccountStates(IEnumerable<ProviderAccountSettings> accounts, string key) =>
         accounts.Where(account => string.Equals(account.ProviderId.ToString(), key, StringComparison.OrdinalIgnoreCase))
@@ -276,16 +282,18 @@ public sealed class SettingsService : ISettingsService
     private static void MergeProviders(AppSettings settings, AppSettings disk)
     {
         settings.Providers ??= [];
-        foreach (var (key, diskProvider) in disk.Providers ?? [])
+        foreach (var (key, diskProvider) in (disk.Providers ?? []).GroupBy(entry => entry.Key, StringComparer.OrdinalIgnoreCase).Select(group => group.First()))
         {
-            if (diskProvider is not null && settings.AccountSnapshot is { } snapshot && snapshot.ProviderApiKeys.TryGetValue(key, out var original) &&
-                settings.Providers.TryGetValue(key, out var memory) && memory is not null && memory.ApiKey == original)
+            var memoryKey = FindProviderKey(settings.Providers, key) ?? key;
+            if (diskProvider is not null && settings.AccountSnapshot is { } snapshot &&
+                snapshot.ProviderApiKeys.TryGetValue(FindProviderKey(snapshot.ProviderApiKeys, key) ?? key, out var original) &&
+                settings.Providers.TryGetValue(memoryKey, out var memory) && memory is not null && memory.ApiKey == original)
             {
                 // Credential changes are independent of account edits and visibility.
                 memory.ApiKey = diskProvider.ApiKey;
             }
 
-            MergeProviderEntry(settings.Providers, key, diskProvider);
+            MergeProviderEntry(settings.Providers, memoryKey, diskProvider);
         }
     }
 

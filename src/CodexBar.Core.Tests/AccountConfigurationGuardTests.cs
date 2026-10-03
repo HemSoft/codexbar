@@ -550,6 +550,70 @@ public sealed class AccountConfigurationGuardTests : IDisposable
         Assert.Equal(edit == 2, saved.Providers["Claude"].Enabled);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Save_CaseVariantDiskProvider_AdoptsCredentialWithoutDuplicatingEntry(bool editAccount)
+    {
+        var service = this.CreateService();
+        var initial = service.Load();
+        initial.Providers["Claude"].ApiKey = "synthetic-original";
+        service.Save(initial);
+        var draft = service.Load();
+        var disk = this.CreateService().Load();
+        var provider = disk.Providers["Claude"];
+        disk.Providers.Remove("Claude");
+        provider.ApiKey = "synthetic-external";
+        provider.Enabled = true;
+        disk.Providers["claude"] = provider;
+        File.WriteAllText(this.SettingsPath, System.Text.Json.JsonSerializer.Serialize(disk, new System.Text.Json.JsonSerializerOptions { PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase }));
+        if (editAccount)
+        {
+            AccountConfiguration.Upsert(draft, draft.Accounts.Single(account => account.ProviderId == ProviderId.Claude) with { Enabled = true });
+            draft.Providers["Claude"].Enabled = true;
+        }
+
+        service.Save(draft);
+
+        var reader = this.CreateService();
+        Assert.Equal("synthetic-external", reader.GetApiKey(ProviderId.Claude));
+        var saved = reader.Load();
+        Assert.Single(saved.Providers.Keys, key => key.Equals("Claude", StringComparison.OrdinalIgnoreCase));
+        Assert.True(saved.Providers["Claude"].Enabled);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Save_DeletedProviderOverrideAndDisabledDiskAccounts_PersistsEffectiveDisabledState(bool removeAccount)
+    {
+        var service = this.CreateService();
+        var initial = service.Load();
+        var account = initial.Accounts.Single(item => item.ProviderId == ProviderId.Claude);
+        AccountConfiguration.Upsert(initial, account with { Enabled = true });
+        initial.Providers["Claude"].Enabled = true;
+        service.Save(initial);
+        var draft = service.Load();
+        var disk = this.CreateService().Load();
+        disk.Providers.Remove("Claude");
+        if (removeAccount)
+        {
+            AccountConfiguration.Remove(disk, account.Id);
+        }
+        else
+        {
+            AccountConfiguration.Upsert(disk, account with { Enabled = false });
+        }
+
+        File.WriteAllText(this.SettingsPath, System.Text.Json.JsonSerializer.Serialize(disk, new System.Text.Json.JsonSerializerOptions { PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase }));
+        draft.WindowWidth = 900;
+        service.Save(draft);
+
+        var reader = this.CreateService();
+        Assert.False(reader.IsProviderEnabled(ProviderId.Claude));
+        Assert.Equal(disk.Accounts, reader.Load().Accounts);
+    }
+
     [Fact]
     public void Load_AccountSnapshot_IsDetachedAndNeverSerialized()
     {
