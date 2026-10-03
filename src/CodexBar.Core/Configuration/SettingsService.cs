@@ -127,6 +127,7 @@ public sealed class SettingsService : ISettingsService
         else if (disk.AccountConfigurationVersion > 0 && settings.AccountSnapshot is { } snapshot)
         {
             MergeAccountDraft(settings, disk, snapshot);
+            PreserveUnchangedAccountCompatibility(settings, disk, snapshot);
         }
 
         MergeProviders(settings, disk);
@@ -145,7 +146,6 @@ public sealed class SettingsService : ISettingsService
         if (proposed.SequenceEqual(snapshot.Accounts))
         {
             settings.Accounts = disk.Accounts;
-            PreserveUnchangedAccountCompatibility(settings, disk, snapshot);
         }
         else if (!disk.Accounts.SequenceEqual(snapshot.Accounts) && !proposed.SequenceEqual(disk.Accounts))
         {
@@ -255,11 +255,11 @@ public sealed class SettingsService : ISettingsService
         settings.Providers ??= [];
         foreach (var (key, diskProvider) in disk.Providers ?? [])
         {
-            if (settings.AccountSnapshot is { } snapshot && snapshot.ProviderApiKeys.TryGetValue(key, out var original) &&
+            if (diskProvider is not null && settings.AccountSnapshot is { } snapshot && snapshot.ProviderApiKeys.TryGetValue(key, out var original) &&
                 settings.Providers.TryGetValue(key, out var memory) && memory is not null && memory.ApiKey == original)
             {
                 // Credential changes are independent of account edits and visibility.
-                memory.ApiKey = diskProvider?.ApiKey;
+                memory.ApiKey = diskProvider.ApiKey;
             }
 
             MergeProviderEntry(settings.Providers, key, diskProvider);

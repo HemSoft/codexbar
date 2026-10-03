@@ -437,6 +437,61 @@ public sealed class AccountConfigurationGuardTests : IDisposable
         }
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Save_AccountEditWithConcurrentCompatibilityUpdates_MergesUnchangedFieldsIndependently(bool editFields)
+    {
+        var service = this.CreateService();
+        var draft = service.Load();
+        var editor = this.CreateService();
+        var edited = editor.Load();
+        edited.OpenCodeGoWorkspaceId = "external-workspace";
+        edited.CopilotAccounts = ["external-user"];
+        edited.CopilotKnownAccounts = ["external-user"];
+        edited.Providers["Claude"].Enabled = true;
+        editor.Save(edited);
+        AccountConfiguration.Upsert(draft, draft.Accounts.First() with { DisplayLabel = "My account edit" });
+        if (editFields)
+        {
+            draft.OpenCodeGoWorkspaceId = "local-workspace";
+            draft.CopilotAccounts = ["local-user"];
+            draft.CopilotKnownAccounts = ["local-user"];
+        }
+
+        service.Save(draft);
+
+        var saved = this.CreateService().Load();
+        Assert.Equal(editFields ? "local-workspace" : "external-workspace", saved.OpenCodeGoWorkspaceId);
+        Assert.Equal(new[] { editFields ? "local-user" : "external-user" }, saved.CopilotAccounts);
+        Assert.Equal(new[] { editFields ? "local-user" : "external-user" }, saved.CopilotKnownAccounts);
+        Assert.True(saved.Providers["Claude"].Enabled);
+        Assert.Equal("My account edit", saved.Accounts.First().DisplayLabel);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Save_NullDiskProviderPlaceholder_PreservesCachedCredential(bool editAccount)
+    {
+        var service = this.CreateService();
+        var initial = service.Load();
+        initial.Providers["Claude"].ApiKey = "synthetic-original";
+        service.Save(initial);
+        var draft = service.Load();
+        var disk = this.CreateService().Load();
+        disk.Providers["Claude"] = null!;
+        File.WriteAllText(this.SettingsPath, System.Text.Json.JsonSerializer.Serialize(disk, new System.Text.Json.JsonSerializerOptions { PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase }));
+        if (editAccount)
+        {
+            AccountConfiguration.Upsert(draft, draft.Accounts.First() with { DisplayLabel = "My account edit" });
+        }
+
+        service.Save(draft);
+
+        Assert.Equal("synthetic-original", this.CreateService().Load().Providers["Claude"].ApiKey);
+    }
+
     [Fact]
     public void Load_AccountSnapshot_IsDetachedAndNeverSerialized()
     {
