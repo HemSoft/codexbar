@@ -165,6 +165,47 @@ public sealed class AccountConfigurationViewModelTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
+    public void Save_ProviderShownWhileExternalWriterDisablesLastAccount_KeepsProviderDisabled(bool removeAccount)
+    {
+        var directory = Directory.CreateTempSubdirectory("codexbar-adopted-visibility-").FullName;
+        try
+        {
+            var service = new SettingsService(NullLogger<SettingsService>.Instance, directory);
+            var initial = service.Load();
+            var original = initial.Accounts.Single(account => account.ProviderId == ProviderId.Claude);
+            AccountConfiguration.Upsert(initial, original with { Enabled = true });
+            initial.Providers["Claude"].Enabled = false;
+            service.Save(initial);
+            var viewModel = new ProviderConfigurationViewModel(service, CreateProviders(), () => { });
+            viewModel.Providers.Single(provider => provider.ProviderId == ProviderId.Claude).IsDisplayed = true;
+            var editor = new SettingsService(NullLogger<SettingsService>.Instance, directory);
+            var external = editor.Load();
+            if (removeAccount)
+            {
+                AccountConfiguration.Remove(external, original.Id);
+            }
+            else
+            {
+                AccountConfiguration.Upsert(external, original with { Enabled = false });
+            }
+
+            editor.Save(external);
+            viewModel.SaveCommand.Execute(null);
+
+            Assert.Empty(viewModel.ErrorMessage);
+            var saved = new SettingsService(NullLogger<SettingsService>.Instance, directory).Load();
+            Assert.False(saved.Providers["Claude"].Enabled);
+            Assert.Equal(external.Accounts, saved.Accounts);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
     public void Save_DisabledOpenCodeGoAccount_PreservesRetainedWorkspace(bool initiallyEnabled)
     {
         var directory = Directory.CreateTempSubdirectory("codexbar-retained-workspace-").FullName;

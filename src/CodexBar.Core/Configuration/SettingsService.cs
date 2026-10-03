@@ -175,14 +175,21 @@ public sealed class SettingsService : ISettingsService
         var providers = settings.Providers ?? [];
         foreach (var (key, provider) in providers.ToList())
         {
-            if (provider is not null && snapshot.ProviderStates.TryGetValue(key, out var original) && provider.Enabled == original &&
-                ProviderAccountStates(proposed, key).SequenceEqual(ProviderAccountStates(snapshot.Accounts, key)))
+            var originalStates = ProviderAccountStates(snapshot.Accounts, key).ToList();
+            var statesUnchanged = ProviderAccountStates(proposed, key).SequenceEqual(originalStates);
+            var credentialUnchanged = provider is not null && snapshot.ProviderApiKeys.TryGetValue(key, out var originalCredential) && provider.ApiKey == originalCredential;
+            if (credentialUnchanged && disk.Providers?.ContainsKey(key) != true)
+            {
+                provider!.ApiKey = null;
+            }
+
+            if (provider is not null && snapshot.ProviderStates.TryGetValue(key, out var original) && provider.Enabled == original && statesUnchanged)
             {
                 if (disk.Providers?.TryGetValue(key, out var saved) == true)
                 {
                     provider.Enabled = saved?.Enabled ?? true;
                 }
-                else if (provider.ApiKey == snapshot.ProviderApiKeys[key])
+                else if (credentialUnchanged)
                 {
                     providers.Remove(key);
                 }
@@ -191,6 +198,14 @@ public sealed class SettingsService : ISettingsService
                     // Preserve a newly entered credential with the provider's default state.
                     provider.Enabled = true;
                 }
+            }
+
+            var adoptedStates = ProviderAccountStates(settings.Accounts, key).ToList();
+            if (provider is not null && statesUnchanged && originalStates.Count > 0 &&
+                !adoptedStates.SequenceEqual(originalStates) && !adoptedStates.Any(account => account.Enabled))
+            {
+                // Visibility computed from the old draft cannot enable deleted/disabled disk accounts.
+                provider.Enabled = false;
             }
         }
     }

@@ -512,6 +512,44 @@ public sealed class AccountConfigurationGuardTests : IDisposable
         Assert.Equal(900, saved.WindowWidth);
     }
 
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(2)]
+    public void Save_DeletedProviderCredentialDuringAccountStateEdits_DoesNotResurrectKey(int edit)
+    {
+        var service = this.CreateService();
+        var initial = service.Load();
+        var account = initial.Accounts.Single(item => item.ProviderId == ProviderId.Claude);
+        AccountConfiguration.Upsert(initial, account with { Enabled = true });
+        initial.Providers["Claude"].ApiKey = "synthetic-original";
+        initial.Providers["Claude"].Enabled = true;
+        service.Save(initial);
+        var draft = service.Load();
+        var disk = this.CreateService().Load();
+        disk.Providers.Remove("Claude");
+        File.WriteAllText(this.SettingsPath, System.Text.Json.JsonSerializer.Serialize(disk, new System.Text.Json.JsonSerializerOptions { PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase }));
+        if (edit == 0)
+        {
+            AccountConfiguration.Upsert(draft, account with { Enabled = false });
+        }
+        else if (edit == 1)
+        {
+            AccountConfiguration.Remove(draft, account.Id);
+        }
+        else
+        {
+            AccountConfiguration.Upsert(draft, AccountConfiguration.Create(ProviderId.Claude, "New account") with { Enabled = true });
+        }
+
+        draft.Providers["Claude"].Enabled = edit == 2;
+        service.Save(draft);
+
+        var saved = this.CreateService().Load();
+        Assert.Null(saved.Providers["Claude"].ApiKey);
+        Assert.Equal(edit == 2, saved.Providers["Claude"].Enabled);
+    }
+
     [Fact]
     public void Load_AccountSnapshot_IsDetachedAndNeverSerialized()
     {
