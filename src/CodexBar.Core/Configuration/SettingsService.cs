@@ -238,6 +238,11 @@ public sealed class SettingsService : ISettingsService
             throw new InvalidOperationException("Account configuration version is not supported. Do not overwrite it.");
         }
 
+        if (number > 0 && (!document.RootElement.TryGetProperty("accounts", out var accounts) || accounts.ValueKind != JsonValueKind.Array))
+        {
+            throw new InvalidOperationException("Versioned account configuration must contain an accounts array. Do not overwrite it.");
+        }
+
         return number;
     }
 

@@ -301,6 +301,31 @@ public sealed class AccountConfigurationGuardTests : IDisposable
     }
 
     [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Save_MissingVersionedDiskAccountArray_RefusesOverwriteAndRetainsCache(bool baselineUpdate)
+    {
+        var service = this.CreateService();
+        var draft = service.Load();
+        const string json = """{"accountConfigurationVersion":1,"syntheticMetadata":"keep"}""";
+        File.WriteAllText(this.SettingsPath, json);
+        Assert.Throws<InvalidOperationException>(() =>
+        {
+            if (baselineUpdate)
+            {
+                service.SetSessionBaseline(ProviderId.Claude, 12m);
+            }
+            else
+            {
+                service.Save(draft);
+            }
+        });
+        Assert.Equal(json, File.ReadAllText(this.SettingsPath));
+        Assert.Equal(draft.Accounts, service.Load().Accounts);
+        Assert.Throws<InvalidOperationException>(() => this.CreateService().Load());
+    }
+
+    [Theory]
     [InlineData("none")]
     [InlineData("unchanged")]
     [InlineData("new")]
