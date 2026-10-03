@@ -108,6 +108,36 @@ public sealed class AccountConfigurationGuardTests : IDisposable
         Assert.Equal(9m, this.CreateService().GetSessionBaseline(ProviderId.Codex));
     }
 
+    [Theory]
+    [InlineData(" ")]
+    [InlineData("")]
+    [InlineData("\t")]
+    public void SetSessionBaseline_UnsanitizedLegacyFields_KeepsCacheConsistentWithDisk(string workspaceId)
+    {
+        File.WriteAllText(this.SettingsPath, System.Text.Json.JsonSerializer.Serialize(new
+        {
+            openCodeGoWorkspaceId = workspaceId,
+            providers = new { Claude = new { enabled = true, apiKey = " " } },
+            copilotAccounts = new[] { " octocat ", "octocat" },
+            zoomLevel = 0,
+        }));
+        var service = this.CreateService();
+        service.Load();
+
+        service.SetSessionBaseline(ProviderId.Codex, 12m);
+
+        var persisted = this.CreateService().Load();
+        var cached = service.Load();
+        Assert.Null(persisted.OpenCodeGoWorkspaceId);
+        Assert.Equal(persisted.OpenCodeGoWorkspaceId, cached.OpenCodeGoWorkspaceId);
+        Assert.Null(service.GetOpenCodeGoWorkspaceId());
+        Assert.Equal(persisted.Providers["Claude"].ApiKey, service.GetApiKey(ProviderId.Claude));
+        Assert.Equal(persisted.CopilotAccounts, cached.CopilotAccounts);
+        Assert.Equal(persisted.ZoomLevel, cached.ZoomLevel);
+        Assert.Equal(12m, service.GetSessionBaseline(ProviderId.Codex));
+        Assert.Equal(persisted.SessionSpendingResetTimes, cached.SessionSpendingResetTimes);
+    }
+
     [Fact]
     public void Load_LowercaseProviderKeys_AllReadersAgreeWithMigration()
     {

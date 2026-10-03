@@ -452,7 +452,6 @@ public sealed class SettingsService : ISettingsService
             settings.SessionSpendingBaselines[key] = baseline;
             settings.SessionSpendingResetTimes[key] = DateTimeOffset.Now;
             this.SaveInternal(settings);
-            this._cached = settings;
         }
     }
 
