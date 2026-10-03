@@ -70,6 +70,26 @@ public sealed class AccountConfigurationTests : IDisposable
     }
 
     [Fact]
+    public void Migrate_OpenCodeGoLegacyCredential_PreservesBrowserSessionAuthentication()
+    {
+        var settings = new AppSettings
+        {
+            Providers = new() { ["OpenCodeGo"] = new() { ApiKey = "synthetic-session-value", Enabled = false } },
+            OpenCodeGoWorkspaceId = "synthetic-workspace",
+        };
+
+        AccountConfiguration.Migrate(settings);
+        var account = Assert.Single(settings.Accounts);
+        AccountConfiguration.Migrate(settings);
+
+        Assert.Equal(ProviderAuthenticationMethod.BrowserSession, account.AuthenticationMethod);
+        Assert.False(account.Enabled);
+        Assert.Equal("synthetic-workspace", account.WorkspaceId);
+        Assert.Equal("synthetic-session-value", settings.Providers["OpenCodeGo"].ApiKey);
+        Assert.Equal(account, Assert.Single(settings.Accounts));
+    }
+
+    [Fact]
     public void Migrate_CopilotSelections_PreservesKnownDisabledAccountsAndCaseInsensitiveIds()
     {
         var settings = new AppSettings { CopilotAccounts = [" Alice ", "alice", " "], CopilotKnownAccounts = ["Alice", "Bob", "bob", " "], Providers = new() { ["Copilot"] = new() } };

@@ -46,7 +46,8 @@ public static class AccountConfiguration
                 ProviderId = provider,
                 DisplayLabel = provider.ToString(),
                 Enabled = legacy.Enabled,
-                AuthenticationMethod = string.IsNullOrWhiteSpace(legacy.ApiKey) ? ProviderAuthenticationMethod.Automatic : ProviderAuthenticationMethod.ApiKey,
+                AuthenticationMethod = string.IsNullOrWhiteSpace(legacy.ApiKey) ? ProviderAuthenticationMethod.Automatic
+                    : provider == ProviderId.OpenCodeGo ? ProviderAuthenticationMethod.BrowserSession : ProviderAuthenticationMethod.ApiKey,
                 WorkspaceId = provider == ProviderId.OpenCodeGo ? settings.OpenCodeGoWorkspaceId : null,
                 LegacyCardKey = provider.ToString(),
             };
