@@ -255,6 +255,13 @@ public sealed class SettingsService : ISettingsService
         settings.Providers ??= [];
         foreach (var (key, diskProvider) in disk.Providers ?? [])
         {
+            if (settings.AccountSnapshot is { } snapshot && snapshot.ProviderApiKeys.TryGetValue(key, out var original) &&
+                settings.Providers.TryGetValue(key, out var memory) && memory is not null && memory.ApiKey == original)
+            {
+                // Credential changes are independent of account edits and visibility.
+                memory.ApiKey = diskProvider?.ApiKey;
+            }
+
             MergeProviderEntry(settings.Providers, key, diskProvider);
         }
     }

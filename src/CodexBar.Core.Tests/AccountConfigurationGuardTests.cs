@@ -392,6 +392,51 @@ public sealed class AccountConfigurationGuardTests : IDisposable
         }
     }
 
+    [Theory]
+    [InlineData(false, false, false, "synthetic-updated")]
+    [InlineData(false, true, false, "synthetic-updated")]
+    [InlineData(true, false, false, "synthetic-updated")]
+    [InlineData(false, false, true, "synthetic-updated")]
+    [InlineData(false, false, false, null)]
+    [InlineData(true, false, false, null)]
+    public void Save_AnotherInstanceChangedApiKey_MergesCredentialIndependentlyFromVisibilityAndAccounts(bool editAccount, bool editVisibility, bool editKey, string? diskKey)
+    {
+        var service = this.CreateService();
+        var initial = service.Load();
+        initial.Providers["Claude"].ApiKey = "synthetic-original";
+        service.Save(initial);
+        var draft = service.Load();
+        var disk = this.CreateService().Load();
+        disk.Providers["Claude"].ApiKey = diskKey;
+        File.WriteAllText(this.SettingsPath, System.Text.Json.JsonSerializer.Serialize(disk, new System.Text.Json.JsonSerializerOptions { PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase }));
+        if (editAccount)
+        {
+            AccountConfiguration.Upsert(draft, draft.Accounts.First() with { DisplayLabel = "My account edit" });
+        }
+
+        if (editVisibility)
+        {
+            draft.Providers["Claude"].Enabled = !draft.Providers["Claude"].Enabled;
+        }
+
+        if (editKey)
+        {
+            draft.Providers["Claude"].ApiKey = "synthetic-local";
+        }
+
+        draft.WindowWidth = 900;
+        service.Save(draft);
+
+        var saved = this.CreateService().Load();
+        Assert.Equal(editKey ? "synthetic-local" : diskKey, saved.Providers["Claude"].ApiKey);
+        Assert.Equal(editVisibility, saved.Providers["Claude"].Enabled);
+        Assert.Equal(900, saved.WindowWidth);
+        if (editAccount)
+        {
+            Assert.Equal("My account edit", saved.Accounts.First().DisplayLabel);
+        }
+    }
+
     [Fact]
     public void Load_AccountSnapshot_IsDetachedAndNeverSerialized()
     {
