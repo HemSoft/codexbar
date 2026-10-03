@@ -165,6 +165,48 @@ public sealed class AccountConfigurationViewModelTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
+    public void Save_LastAccountDisabledWhileExternalWriterEnablesProvider_KeepsProviderDisabled(bool removeAccount)
+    {
+        var directory = Directory.CreateTempSubdirectory("codexbar-account-visibility-").FullName;
+        try
+        {
+            var service = new SettingsService(NullLogger<SettingsService>.Instance, directory);
+            var initial = service.Load();
+            var original = initial.Accounts.Single(account => account.ProviderId == ProviderId.Claude);
+            AccountConfiguration.Upsert(initial, original with { Enabled = true });
+            initial.Providers["Claude"].Enabled = false;
+            service.Save(initial);
+            var viewModel = new ProviderConfigurationViewModel(service, CreateProviders(), () => { });
+            var editor = new SettingsService(NullLogger<SettingsService>.Instance, directory);
+            var external = editor.Load();
+            external.Providers["Claude"].Enabled = true;
+            editor.Save(external);
+            var account = viewModel.Accounts.Single(option => option.ProviderId == ProviderId.Claude);
+            if (removeAccount)
+            {
+                viewModel.RemoveAccountCommand.Execute(account);
+            }
+            else
+            {
+                account.Enabled = false;
+            }
+
+            viewModel.SaveCommand.Execute(null);
+
+            Assert.Empty(viewModel.ErrorMessage);
+            var saved = new SettingsService(NullLogger<SettingsService>.Instance, directory).Load();
+            Assert.False(saved.Providers["Claude"].Enabled);
+            Assert.DoesNotContain(saved.Accounts, option => option.ProviderId == ProviderId.Claude && option.Enabled);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
     public void Save_VersionedAccountsAndProviderEntriesRemoved_DoesNotRecreateRecordsOrDisableLegacyDefaults(bool removeAll)
     {
         var directory = Directory.CreateTempSubdirectory("codexbar-account-deletion-").FullName;

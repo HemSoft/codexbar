@@ -126,8 +126,8 @@ public sealed class SettingsService : ISettingsService
         }
         else if (disk.AccountConfigurationVersion > 0 && settings.AccountSnapshot is { } snapshot)
         {
-            MergeAccountDraft(settings, disk, snapshot);
-            PreserveUnchangedAccountCompatibility(settings, disk, snapshot);
+            var proposed = MergeAccountDraft(settings, disk, snapshot);
+            PreserveUnchangedAccountCompatibility(settings, disk, snapshot, proposed);
         }
 
         MergeProviders(settings, disk);
@@ -140,7 +140,7 @@ public sealed class SettingsService : ISettingsService
         return settings;
     }
 
-    private static void MergeAccountDraft(AppSettings settings, AppSettings disk, AccountConfigurationSnapshot snapshot)
+    private static List<ProviderAccountSettings> MergeAccountDraft(AppSettings settings, AppSettings disk, AccountConfigurationSnapshot snapshot)
     {
         var proposed = AccountConfiguration.Normalize(settings.Accounts);
         if (proposed.SequenceEqual(snapshot.Accounts))
@@ -151,9 +151,11 @@ public sealed class SettingsService : ISettingsService
         {
             throw new InvalidOperationException("Account configuration changed in another process. Do not overwrite it.");
         }
+
+        return proposed;
     }
 
-    private static void PreserveUnchangedAccountCompatibility(AppSettings settings, AppSettings disk, AccountConfigurationSnapshot snapshot)
+    private static void PreserveUnchangedAccountCompatibility(AppSettings settings, AppSettings disk, AccountConfigurationSnapshot snapshot, IEnumerable<ProviderAccountSettings> proposed)
     {
         if (settings.OpenCodeGoWorkspaceId == snapshot.WorkspaceId)
         {
@@ -173,7 +175,8 @@ public sealed class SettingsService : ISettingsService
         var providers = settings.Providers ?? [];
         foreach (var (key, provider) in providers.ToList())
         {
-            if (provider is not null && snapshot.ProviderStates.TryGetValue(key, out var original) && provider.Enabled == original)
+            if (provider is not null && snapshot.ProviderStates.TryGetValue(key, out var original) && provider.Enabled == original &&
+                ProviderAccountStates(proposed, key).SequenceEqual(ProviderAccountStates(snapshot.Accounts, key)))
             {
                 if (disk.Providers?.TryGetValue(key, out var saved) == true)
                 {
@@ -191,6 +194,11 @@ public sealed class SettingsService : ISettingsService
             }
         }
     }
+
+    private static IEnumerable<(string Id, bool Enabled)> ProviderAccountStates(IEnumerable<ProviderAccountSettings> accounts, string key) =>
+        accounts.Where(account => string.Equals(account.ProviderId.ToString(), key, StringComparison.OrdinalIgnoreCase))
+            .OrderBy(account => account.Id, StringComparer.Ordinal)
+            .Select(account => (account.Id, account.Enabled));
 
     private static AppSettings? DeserializeDiskSettings(string json)
     {

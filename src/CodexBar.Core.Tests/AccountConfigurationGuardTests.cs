@@ -493,6 +493,26 @@ public sealed class AccountConfigurationGuardTests : IDisposable
     }
 
     [Fact]
+    public void Save_ConcurrentAccountStateChangeOnDisk_UnrelatedDraftPreservesProviderVisibility()
+    {
+        var service = this.CreateService();
+        var draft = service.Load();
+        var editor = this.CreateService();
+        var edited = editor.Load();
+        AccountConfiguration.Upsert(edited, edited.Accounts.Single(account => account.ProviderId == ProviderId.Claude) with { Enabled = true });
+        edited.Providers["Claude"].Enabled = true;
+        editor.Save(edited);
+        draft.WindowWidth = 900;
+
+        service.Save(draft);
+
+        var saved = this.CreateService().Load();
+        Assert.Equal(edited.Accounts, saved.Accounts);
+        Assert.True(saved.Providers["Claude"].Enabled);
+        Assert.Equal(900, saved.WindowWidth);
+    }
+
+    [Fact]
     public void Load_AccountSnapshot_IsDetachedAndNeverSerialized()
     {
         var draft = this.CreateService().Load();
