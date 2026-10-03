@@ -219,8 +219,8 @@ public class CrapScoreImprovementTests
         var error = process.StandardError.ReadToEndAsync();
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
         await process.WaitForExitAsync(timeout.Token);
-        Assert.Equal(stdout, (await output).TrimEnd('\r', '\n'));
-        Assert.Equal(stderr, (await error).TrimEnd('\r', '\n', ' '));
+        Assert.Equal(stdout, await output);
+        Assert.Equal(stderr, await error);
         Assert.Equal(7, process.ExitCode);
     }
 
@@ -231,7 +231,11 @@ public class CrapScoreImprovementTests
     [InlineData("fixture output", "", 7)]
     [InlineData("", "fixture error", 0)]
     [InlineData("", "fixture error", 7)]
-    public async Task CreateExitProcess_EmptyStreams_WriteNoBytesAndPreserveExitCode(string stdout, string stderr, int exitCode)
+    [InlineData("fixture output", "fixture error", 7)]
+    [InlineData(" \tfixture output\r\ntrailing  ", " \tfixture error\r\ntrailing  ", 7)]
+    [InlineData("=fixture output", "\"fixture error\"", 0)]
+    [InlineData("Français 日本語", "Grüße 🌍", 7)]
+    public async Task CreateExitProcess_OutputStreams_PreservesExactContentAndExitCode(string stdout, string stderr, int exitCode)
     {
         using var process = CreateExitProcess(exitCode, stderr, stdout);
         Assert.True(process.Start());
@@ -239,28 +243,26 @@ public class CrapScoreImprovementTests
         var error = process.StandardError.ReadToEndAsync();
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
         await process.WaitForExitAsync(timeout.Token);
-        var actualOutput = await output;
-        var actualError = await error;
-
-        if (stdout.Length == 0)
-        {
-            Assert.Empty(actualOutput);
-        }
-        else
-        {
-            Assert.Equal(stdout, actualOutput.TrimEnd('\r', '\n'));
-        }
-
-        if (stderr.Length == 0)
-        {
-            Assert.Empty(actualError);
-        }
-        else
-        {
-            Assert.Equal(stderr, actualError.TrimEnd('\r', '\n', ' '));
-        }
-
+        Assert.Equal(stdout, await output);
+        Assert.Equal(stderr, await error);
         Assert.Equal(exitCode, process.ExitCode);
+    }
+
+    [Fact]
+    public void CreateExitProcess_Disposed_DeletesTemporaryOutputFiles()
+    {
+        using var process = CreateExitProcess(0, stdout: "fixture output");
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        var outputFile = process.StartInfo.Environment["CODEXBAR_FIXTURE_STDOUT_FILE"]!;
+        var errorFile = process.StartInfo.Environment["CODEXBAR_FIXTURE_STDERR_FILE"]!;
+        Assert.True(File.Exists(outputFile));
+        Assert.True(File.Exists(errorFile));
+        process.Dispose();
+        Assert.False(Directory.Exists(Path.GetDirectoryName(outputFile)));
     }
 
     [Fact]
@@ -801,29 +803,35 @@ public class CrapScoreImprovementTests
             CreateNoWindow = true,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
+            StandardOutputEncoding = Encoding.UTF8,
+            StandardErrorEncoding = Encoding.UTF8,
         };
-        if (OperatingSystem.IsWindows())
+        System.Diagnostics.Process process = OperatingSystem.IsWindows()
+            ? new FileOutputProcess()
+            : new System.Diagnostics.Process();
+        process.StartInfo = startInfo;
+        if (process is FileOutputProcess fileOutputProcess)
         {
-            // Delayed expansion happens after metacharacter parsing. Values are not
-            // rescanned for percent/exclamation expansion or treated as commands.
-            startInfo.Environment["CODEXBAR_FIXTURE_STDOUT"] = stdout;
-            startInfo.Environment["CODEXBAR_FIXTURE_STDERR"] = stderr;
-            startInfo.ArgumentList.Add("/d");
-            startInfo.ArgumentList.Add("/v:on");
-            startInfo.ArgumentList.Add("/c");
-            var commands = new List<string>();
-            if (stdout.Length > 0)
+            // type copies bytes without echo's newline or set /p's whitespace trimming.
+            var directory = fileOutputProcess.OutputDirectory;
+            try
             {
-                commands.Add("echo(!CODEXBAR_FIXTURE_STDOUT!");
-            }
+                var outputFile = Path.Combine(directory, "stdout.txt");
+                var errorFile = Path.Combine(directory, "stderr.txt");
+                File.WriteAllText(outputFile, stdout);
+                File.WriteAllText(errorFile, stderr);
+                startInfo.Environment["CODEXBAR_FIXTURE_STDOUT_FILE"] = outputFile;
+                startInfo.Environment["CODEXBAR_FIXTURE_STDERR_FILE"] = errorFile;
 
-            if (stderr.Length > 0)
+                // cmd uses literal quotes, not CRT backslash-escaping. Only paths travel
+                // through delayed expansion; fixture content is never shell syntax.
+                startInfo.Arguments = $"/d /v:on /c type \"!CODEXBAR_FIXTURE_STDOUT_FILE!\"&1>&2 type \"!CODEXBAR_FIXTURE_STDERR_FILE!\"&exit /b {exitCode}";
+            }
+            catch
             {
-                commands.Add("echo(!CODEXBAR_FIXTURE_STDERR! 1>&2");
+                process.Dispose();
+                throw;
             }
-
-            commands.Add($"exit /b {exitCode}");
-            startInfo.ArgumentList.Add(string.Join("&", commands));
         }
         else
         {
@@ -835,7 +843,27 @@ public class CrapScoreImprovementTests
             startInfo.ArgumentList.Add(exitCode.ToString(System.Globalization.CultureInfo.InvariantCulture));
         }
 
-        return new System.Diagnostics.Process { StartInfo = startInfo };
+        return process;
+    }
+
+    private sealed class FileOutputProcess : System.Diagnostics.Process
+    {
+        internal string OutputDirectory { get; } = Directory.CreateTempSubdirectory("codexbar-process-fixture-").FullName;
+
+        protected override void Dispose(bool disposing)
+        {
+            try
+            {
+                base.Dispose(disposing);
+            }
+            finally
+            {
+                if (disposing && Directory.Exists(this.OutputDirectory))
+                {
+                    Directory.Delete(this.OutputDirectory, recursive: true);
+                }
+            }
+        }
     }
 
     private sealed class CloneableResponseHandler : HttpMessageHandler
