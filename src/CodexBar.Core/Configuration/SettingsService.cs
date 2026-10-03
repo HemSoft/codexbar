@@ -234,12 +234,21 @@ public sealed class SettingsService : ISettingsService
             throw new InvalidOperationException("Account configuration could not be read. Do not overwrite it.");
         }
 
+        ValidateProviderKeys(settings?.Providers);
         if (settings is not null && version > 0)
         {
             settings.Accounts = NormalizeDiskAccounts(settings.Accounts);
         }
 
         return settings;
+    }
+
+    private static void ValidateProviderKeys(IReadOnlyDictionary<string, ProviderSettings>? providers)
+    {
+        if (providers?.Keys.GroupBy(key => key, StringComparer.OrdinalIgnoreCase).Any(group => group.Count() > 1) == true)
+        {
+            throw new InvalidOperationException("Provider configuration contains ambiguous case variants. Do not overwrite it.");
+        }
     }
 
     private static List<ProviderAccountSettings> NormalizeDiskAccounts(IEnumerable<ProviderAccountSettings>? accounts)
@@ -282,7 +291,7 @@ public sealed class SettingsService : ISettingsService
     private static void MergeProviders(AppSettings settings, AppSettings disk)
     {
         settings.Providers ??= [];
-        foreach (var (key, diskProvider) in (disk.Providers ?? []).GroupBy(entry => entry.Key, StringComparer.OrdinalIgnoreCase).Select(group => group.First()))
+        foreach (var (key, diskProvider) in disk.Providers ?? [])
         {
             var memoryKey = FindProviderKey(settings.Providers, key) ?? key;
             if (diskProvider is not null && settings.AccountSnapshot is { } snapshot &&
@@ -399,6 +408,7 @@ public sealed class SettingsService : ISettingsService
             Directory.CreateDirectory(this._settingsDir);
             this.RestrictDirectoryPermissions(this._settingsDir);
             using var writeLock = new FileStream(Path.Combine(this._settingsDir, "settings.write.lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+            ValidateProviderKeys(settings.Providers);
             settings = this.MergeFromDisk(settings, baselineKey);
             AccountConfiguration.Migrate(settings);
             var sanitized = SanitizeForPersistence(settings);

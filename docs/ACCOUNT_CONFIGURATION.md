@@ -43,9 +43,11 @@ current disk accounts and unchanged legacy account fields; conflicting account
 edits are refused rather than silently replacing another process's changes.
 The configuration window keeps its original snapshot even when a background
 refresh advances the cache. Detected unsupported versions, invalid versioned
-account records and account-edit conflicts explain that the file was not
-overwritten, preserve the draft, and announce the error through WPF UI
-Automation's polite live region. Syntax-invalid JSON retains the existing
+account records, ambiguous case-variant provider keys and account-edit conflicts
+explain that the file was not overwritten, preserve the draft, and announce the
+error through WPF UI Automation's polite live region. A single provider key is
+case-insensitive; colliding spellings are refused on load or write instead of
+silently discarding credentials or visibility. Syntax-invalid JSON retains the existing
 legacy defaults/fallback behavior; it is not a recognized account-schema error.
 
 ## Scope

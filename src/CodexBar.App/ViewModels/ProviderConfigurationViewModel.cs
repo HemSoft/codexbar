@@ -20,6 +20,7 @@ public sealed class ProviderConfigurationViewModel : INotifyPropertyChanged
     private AppSettings _settings;
     private readonly AccountConfigurationSnapshot? _accountSnapshot;
     private readonly HashSet<ProviderId> _providersWithAccountDrafts;
+    private readonly Dictionary<ProviderId, bool> _initialProviderVisibility;
     private readonly Dictionary<string, bool> _copilotInitialStates;
     private readonly List<(string Id, string? Identity, bool Enabled)> _initialCopilotSelection;
     private string _errorMessage = string.Empty;
@@ -40,6 +41,7 @@ public sealed class ProviderConfigurationViewModel : INotifyPropertyChanged
             providerList
                 .Select(p => ProviderOptionViewModel.From(p.Metadata, this.GetProviderSettings(p.Metadata.Id).Enabled))
                 .OrderBy(p => p.ProviderId));
+        this._initialProviderVisibility = this.Providers.ToDictionary(provider => provider.ProviderId, provider => provider.IsDisplayed);
         this.CopilotAccounts = BuildCopilotAccountOptions(this._settings, currentProviderCards);
         this._copilotInitialStates = this.CopilotAccounts.ToDictionary(account => account.Username, account => account.IsEnabled, StringComparer.OrdinalIgnoreCase);
         this.InitializeAccounts();
@@ -118,6 +120,11 @@ public sealed class ProviderConfigurationViewModel : INotifyPropertyChanged
             this._settings.Providers ??= [];
             foreach (var provider in this.Providers)
             {
+                if (!this._providersWithAccountDrafts.Contains(provider.ProviderId) && provider.IsDisplayed == this._initialProviderVisibility[provider.ProviderId])
+                {
+                    continue;
+                }
+
                 this.GetProviderSettings(provider.ProviderId).Enabled = provider.IsDisplayed &&
                     (accounts.Any(account => account.ProviderId == provider.ProviderId && account.Enabled) || !this._providersWithAccountDrafts.Contains(provider.ProviderId));
             }

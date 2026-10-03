@@ -165,6 +165,41 @@ public sealed class AccountConfigurationViewModelTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
+    public void Save_ExternalFirstDisabledAccount_UntouchedDefaultVisibilityPreservesDisk(bool advanceCache)
+    {
+        var directory = Directory.CreateTempSubdirectory("codexbar-default-visibility-").FullName;
+        try
+        {
+            var service = new SettingsService(NullLogger<SettingsService>.Instance, directory);
+            service.Save(new AppSettings { AccountConfigurationVersion = AccountConfiguration.CurrentVersion, Accounts = [], Providers = [] });
+            var viewModel = new ProviderConfigurationViewModel(service, CreateProviders(), () => { });
+            Assert.Empty(viewModel.Accounts);
+            var editor = new SettingsService(NullLogger<SettingsService>.Instance, directory);
+            var external = editor.Load();
+            AccountConfiguration.Upsert(external, AccountConfiguration.Create(ProviderId.Claude, "External disabled account"));
+            external.Providers["Claude"] = new ProviderSettings { Enabled = false };
+            editor.Save(external);
+            if (advanceCache)
+            {
+                service.SetSessionBaseline("synthetic", 4m);
+            }
+
+            viewModel.SaveCommand.Execute(null);
+
+            Assert.Empty(viewModel.ErrorMessage);
+            var reader = new SettingsService(NullLogger<SettingsService>.Instance, directory);
+            Assert.False(reader.IsProviderEnabled(ProviderId.Claude));
+            Assert.Equal(external.Accounts, reader.Load().Accounts);
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
     public void Save_ProviderShownWhileExternalWriterDisablesLastAccount_KeepsProviderDisabled(bool removeAccount)
     {
         var directory = Directory.CreateTempSubdirectory("codexbar-adopted-visibility-").FullName;

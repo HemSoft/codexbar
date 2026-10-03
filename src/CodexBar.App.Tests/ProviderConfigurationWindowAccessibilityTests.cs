@@ -41,7 +41,9 @@ public sealed class ProviderConfigurationWindowAccessibilityTests(WpfApplication
                 Assert.True(window.Top >= area.Top);
                 Assert.True(window.Left + window.Width <= area.Right);
                 Assert.True(window.Top + window.Height <= area.Bottom);
-                foreach (var action in FindButtons(window).Where(button => Equals(button.Content, "Save") || Equals(button.Content, "Cancel")))
+                var actions = FindButtons(window).Where(button => Equals(button.Content, "Save") || Equals(button.Content, "Cancel")).ToList();
+                Assert.Equal(new[] { "Cancel", "Save" }, actions.Select(button => button.Content).OrderBy(content => content).ToArray());
+                foreach (var action in actions)
                 {
                     var bounds = action.TransformToAncestor(window).TransformBounds(new Rect(action.RenderSize));
                     Assert.True(bounds.Top >= 0);

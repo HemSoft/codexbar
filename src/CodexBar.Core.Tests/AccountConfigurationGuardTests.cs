@@ -614,6 +614,43 @@ public sealed class AccountConfigurationGuardTests : IDisposable
         Assert.Equal(disk.Accounts, reader.Load().Accounts);
     }
 
+    [Theory]
+    [InlineData("load")]
+    [InlineData("save")]
+    [InlineData("baseline")]
+    public void Save_AmbiguousCaseVariantProviders_RefusesLossyDiskAdoption(string operation)
+    {
+        var service = this.CreateService();
+        var draft = service.Load();
+        var disk = this.CreateService().Load();
+        disk.Providers["Claude"] = null!;
+        disk.Providers["claude"] = new ProviderSettings { Enabled = false, ApiKey = "synthetic-preserve" };
+        var contents = System.Text.Json.JsonSerializer.Serialize(disk, new System.Text.Json.JsonSerializerOptions { PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase });
+        File.WriteAllText(this.SettingsPath, contents);
+
+        Action action = operation == "load" ? () => this.CreateService().Load()
+            : operation == "save" ? () => service.Save(draft)
+            : () => service.SetSessionBaseline("synthetic", 4m);
+        Assert.Throws<InvalidOperationException>(action);
+        Assert.Equal(contents, File.ReadAllText(this.SettingsPath));
+        Assert.Equal(draft.Accounts, service.Load().Accounts);
+    }
+
+    [Fact]
+    public void Save_AmbiguousDraftProviderKeys_RefusesWithoutChangingCacheOrDisk()
+    {
+        var service = this.CreateService();
+        var draft = service.Load();
+        var contents = File.ReadAllText(this.SettingsPath);
+        draft.Providers["claude"] = new ProviderSettings { ApiKey = "synthetic-preserve" };
+
+        Assert.Throws<InvalidOperationException>(() => service.Save(draft));
+
+        Assert.Equal(contents, File.ReadAllText(this.SettingsPath));
+        Assert.DoesNotContain("claude", service.Load().Providers.Keys);
+        Assert.Equal("synthetic-preserve", draft.Providers["claude"].ApiKey);
+    }
+
     [Fact]
     public void Load_AccountSnapshot_IsDetachedAndNeverSerialized()
     {
