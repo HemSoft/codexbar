@@ -16,8 +16,10 @@ public sealed record ProviderAccountSettings
 
     public string DisplayLabel { get; init; } = string.Empty;
 
+    [JsonRequired]
     public bool Enabled { get; init; } = true;
 
+    [JsonRequired]
     [JsonConverter(typeof(JsonStringEnumConverter<ProviderAuthenticationMethod>))]
     public ProviderAuthenticationMethod AuthenticationMethod { get; init; }
 

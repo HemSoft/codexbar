@@ -326,6 +326,36 @@ public sealed class AccountConfigurationGuardTests : IDisposable
     }
 
     [Theory]
+    [InlineData(false, "\"authenticationMethod\":\"Automatic\"")]
+    [InlineData(true, "\"authenticationMethod\":\"Automatic\"")]
+    [InlineData(false, "\"enabled\":true")]
+    [InlineData(true, "\"enabled\":true")]
+    [InlineData(false, "")]
+    [InlineData(true, "")]
+    public void Save_VersionedAccountMissingStateFields_RefusesOverwriteAndRetainsCache(bool baselineUpdate, string fields)
+    {
+        var service = this.CreateService();
+        var draft = service.Load();
+        var suffix = fields.Length == 0 ? string.Empty : "," + fields;
+        var json = "{\"accountConfigurationVersion\":1,\"accounts\":[{\"id\":\"one\",\"providerId\":\"Claude\",\"displayLabel\":\"Known\"" + suffix + "}]}";
+        File.WriteAllText(this.SettingsPath, json);
+        Assert.Throws<InvalidOperationException>(() =>
+        {
+            if (baselineUpdate)
+            {
+                service.SetSessionBaseline(ProviderId.Claude, 12m);
+            }
+            else
+            {
+                service.Save(draft);
+            }
+        });
+        Assert.Equal(json, File.ReadAllText(this.SettingsPath));
+        Assert.Equal(draft.Accounts, service.Load().Accounts);
+        Assert.Throws<InvalidOperationException>(() => this.CreateService().Load());
+    }
+
+    [Theory]
     [InlineData("none")]
     [InlineData("unchanged")]
     [InlineData("new")]

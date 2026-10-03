@@ -19,6 +19,7 @@ public sealed class ProviderConfigurationViewModel : INotifyPropertyChanged
     private readonly Action _close;
     private AppSettings _settings;
     private readonly AccountConfigurationSnapshot? _accountSnapshot;
+    private readonly HashSet<ProviderId> _providersWithAccountDrafts;
     private readonly Dictionary<string, bool> _copilotInitialStates;
     private string _errorMessage = string.Empty;
 
@@ -34,8 +35,6 @@ public sealed class ProviderConfigurationViewModel : INotifyPropertyChanged
         this._accountSnapshot = this._settings.AccountSnapshot;
         this._settings.Providers ??= [];
         var providerList = providers.ToList();
-        var missingProviders = providerList.Where(provider => !this._settings.Providers.Keys.Any(key => string.Equals(key, provider.Metadata.Id.ToString(), StringComparison.OrdinalIgnoreCase)))
-            .Select(provider => provider.Metadata.Id).ToHashSet();
         this.Providers = new ObservableCollection<ProviderOptionViewModel>(
             providerList
                 .Select(p => ProviderOptionViewModel.From(p.Metadata, this.GetProviderSettings(p.Metadata.Id).Enabled))
@@ -43,15 +42,7 @@ public sealed class ProviderConfigurationViewModel : INotifyPropertyChanged
         this.CopilotAccounts = BuildCopilotAccountOptions(this._settings, currentProviderCards);
         this._copilotInitialStates = this.CopilotAccounts.ToDictionary(account => account.Username, account => account.IsEnabled, StringComparer.OrdinalIgnoreCase);
         this.InitializeAccounts();
-        var implicitDefaults = new AppSettings
-        {
-            Providers = this.Providers.Where(provider => missingProviders.Contains(provider.ProviderId)).ToDictionary(provider => provider.ProviderId.ToString(), provider => new ProviderSettings { Enabled = provider.IsDisplayed }),
-        };
-        AccountConfiguration.Migrate(implicitDefaults);
-        foreach (var account in implicitDefaults.Accounts.Where(account => !this.Accounts.Any(existing => existing.ProviderId == account.ProviderId)))
-        {
-            this.Accounts.Add(this.CreateAccountOption(account));
-        }
+        this._providersWithAccountDrafts = this.Accounts.Select(account => account.ProviderId).ToHashSet();
 
         this.NewAccountProvider = this.Providers.FirstOrDefault()?.ProviderId ?? ProviderId.Claude;
         this.AddAccountCommand = new RelayCommand(_ => this.AddAccount());
@@ -125,7 +116,8 @@ public sealed class ProviderConfigurationViewModel : INotifyPropertyChanged
             this._settings.Providers ??= [];
             foreach (var provider in this.Providers)
             {
-                this.GetProviderSettings(provider.ProviderId).Enabled = provider.IsDisplayed && accounts.Any(account => account.ProviderId == provider.ProviderId && account.Enabled);
+                this.GetProviderSettings(provider.ProviderId).Enabled = provider.IsDisplayed &&
+                    (accounts.Any(account => account.ProviderId == provider.ProviderId && account.Enabled) || !this._providersWithAccountDrafts.Contains(provider.ProviderId));
             }
 
             if (this.CopilotAccounts.Any(account => this._copilotInitialStates[account.Username] != account.IsEnabled))
@@ -202,6 +194,7 @@ public sealed class ProviderConfigurationViewModel : INotifyPropertyChanged
     {
         var number = this.Accounts.Count(account => account.ProviderId == this.NewAccountProvider) + 1;
         this.Accounts.Insert(0, this.CreateAccountOption(AccountConfiguration.Create(this.NewAccountProvider, $"{this.NewAccountProvider} {number}")));
+        this._providersWithAccountDrafts.Add(this.NewAccountProvider);
         var provider = this.Providers.FirstOrDefault(option => option.ProviderId == this.NewAccountProvider);
         if (provider is not null)
         {

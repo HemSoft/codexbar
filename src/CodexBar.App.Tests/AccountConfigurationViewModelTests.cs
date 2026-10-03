@@ -163,6 +163,57 @@ public sealed class AccountConfigurationViewModelTests
         }
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Save_VersionedAccountsAndProviderEntriesRemoved_DoesNotRecreateRecordsOrDisableLegacyDefaults(bool removeAll)
+    {
+        var directory = Directory.CreateTempSubdirectory("codexbar-account-deletion-").FullName;
+        try
+        {
+            var initial = new SettingsService(NullLogger<SettingsService>.Instance, directory).Load();
+            initial.Accounts.RemoveAll(account => removeAll || account.ProviderId == ProviderId.Claude);
+            foreach (var key in initial.Providers.Keys.Where(key => removeAll || key == "Claude").ToList())
+            {
+                initial.Providers.Remove(key);
+            }
+
+            File.WriteAllText(Path.Combine(directory, "settings.json"), System.Text.Json.JsonSerializer.Serialize(initial, new System.Text.Json.JsonSerializerOptions { PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase }));
+            var service = new SettingsService(NullLogger<SettingsService>.Instance, directory);
+            var fixture = new Fixture();
+            var closed = 0;
+            var viewModel = new ProviderConfigurationViewModel(service, fixture.Providers, () => closed++);
+            Assert.DoesNotContain(viewModel.Accounts, account => account.ProviderId == ProviderId.Claude);
+            if (removeAll)
+            {
+                Assert.Empty(viewModel.Accounts);
+            }
+
+            viewModel.SaveCommand.Execute(null);
+            Assert.Equal(1, closed);
+            Assert.Equal(initial.Accounts, service.Load().Accounts);
+            Assert.True(service.IsProviderEnabled(ProviderId.Claude));
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void Save_AddThenRemoveFirstAccount_DisablesProviderWithoutRecreatingRecord()
+    {
+        var fixture = new Fixture();
+        fixture.Service.Load().Returns(new AppSettings { AccountConfigurationVersion = 1 });
+        var viewModel = new ProviderConfigurationViewModel(fixture.Service, fixture.Providers, () => { });
+        viewModel.NewAccountProvider = ProviderId.Claude;
+        viewModel.AddAccountCommand.Execute(null);
+        viewModel.RemoveAccountCommand.Execute(viewModel.Accounts.Single());
+        viewModel.SaveCommand.Execute(null);
+        Assert.Empty(fixture.Saved!.Accounts);
+        Assert.False(fixture.Saved.Providers["Claude"].Enabled);
+    }
+
     [Fact]
     public void Save_BlankLabel_ReportsValidationWithoutPersisting()
     {
