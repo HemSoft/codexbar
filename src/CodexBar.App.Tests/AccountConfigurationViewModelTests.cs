@@ -130,9 +130,8 @@ public sealed class AccountConfigurationViewModelTests
         try
         {
             var service = new SettingsService(NullLogger<SettingsService>.Instance, directory);
-            var fixture = new Fixture();
             var closed = 0;
-            var viewModel = new ProviderConfigurationViewModel(service, fixture.Providers, () => closed++);
+            var viewModel = new ProviderConfigurationViewModel(service, CreateProviders(), () => closed++);
             var account = viewModel.Accounts.First();
             account.DisplayLabel = "My draft";
             var editor = new SettingsService(NullLogger<SettingsService>.Instance, directory);
@@ -180,9 +179,8 @@ public sealed class AccountConfigurationViewModelTests
 
             File.WriteAllText(Path.Combine(directory, "settings.json"), System.Text.Json.JsonSerializer.Serialize(initial, new System.Text.Json.JsonSerializerOptions { PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase }));
             var service = new SettingsService(NullLogger<SettingsService>.Instance, directory);
-            var fixture = new Fixture();
             var closed = 0;
-            var viewModel = new ProviderConfigurationViewModel(service, fixture.Providers, () => closed++);
+            var viewModel = new ProviderConfigurationViewModel(service, CreateProviders(), () => closed++);
             Assert.DoesNotContain(viewModel.Accounts, account => account.ProviderId == ProviderId.Claude);
             if (removeAll)
             {
@@ -374,6 +372,19 @@ public sealed class AccountConfigurationViewModelTests
         Assert.Equal("ChatGPT Codex", option.ProviderName);
     }
 
+    private static List<IUsageProvider> CreateProviders()
+    {
+        var providers = new List<IUsageProvider>();
+        foreach (var id in Enum.GetValues<ProviderId>())
+        {
+            var provider = Substitute.For<IUsageProvider>();
+            provider.Metadata.Returns(new ProviderMetadata { Id = id, DisplayName = id.ToString(), Description = "Test provider" });
+            providers.Add(provider);
+        }
+
+        return providers;
+    }
+
     private sealed class Fixture
     {
         public AppSettings Original { get; } = new()
@@ -385,7 +396,7 @@ public sealed class AccountConfigurationViewModelTests
 
         public ISettingsService Service { get; } = Substitute.For<ISettingsService>();
 
-        public List<IUsageProvider> Providers { get; } = [];
+        public List<IUsageProvider> Providers { get; } = CreateProviders();
 
         public ProviderConfigurationViewModel ViewModel { get; }
 
@@ -397,13 +408,6 @@ public sealed class AccountConfigurationViewModelTests
         {
             this.Service.Load().Returns(this.Original);
             this.Service.When(service => service.Save(Arg.Any<AppSettings>())).Do(call => this.Saved = call.Arg<AppSettings>());
-            foreach (var id in Enum.GetValues<ProviderId>())
-            {
-                var provider = Substitute.For<IUsageProvider>();
-                provider.Metadata.Returns(new ProviderMetadata { Id = id, DisplayName = id.ToString(), Description = "Test provider" });
-                this.Providers.Add(provider);
-            }
-
             this.ViewModel = new ProviderConfigurationViewModel(this.Service, this.Providers, () => this.Closed++);
         }
     }
