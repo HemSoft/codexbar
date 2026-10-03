@@ -35,8 +35,9 @@ public sealed class ProviderConfigurationViewModel : INotifyPropertyChanged
     {
         this._settingsService = settingsService;
         this._close = close;
-        this._settings = Copy(settingsService.Load());
-        this._startedInRecoveryMode = settingsService is SettingsRecoveryService { IsRecovering: true };
+        var loaded = settingsService.Load();
+        this._startedInRecoveryMode = settingsService is SettingsRecoveryService recovery && recovery.IsRecoveryDraft(loaded);
+        this._settings = Copy(loaded);
         if (this._startedInRecoveryMode)
         {
             this.ErrorMessage = SettingsRecoveryService.RecoveryMessage;

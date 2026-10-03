@@ -203,7 +203,7 @@ public sealed class SettingsService : ISettingsService
             }
 
             var adoptedStates = ProviderAccountStates(settings.Accounts, key).ToList();
-            if (provider is not null && statesUnchanged && originalStates.Count > 0 &&
+            if (provider is not null && statesUnchanged &&
                 !adoptedStates.SequenceEqual(originalStates) && !adoptedStates.Any(account => account.Enabled))
             {
                 // Visibility computed from the old draft cannot enable deleted/disabled disk accounts.
@@ -235,9 +235,9 @@ public sealed class SettingsService : ISettingsService
         }
 
         ValidateProviderKeys(settings?.Providers);
-        if (settings is not null && version > 0)
+        if (settings is not null)
         {
-            settings.Accounts = NormalizeDiskAccounts(settings.Accounts);
+            settings.Accounts = NormalizeDiskAccounts(settings.Accounts ?? []);
         }
 
         return settings;

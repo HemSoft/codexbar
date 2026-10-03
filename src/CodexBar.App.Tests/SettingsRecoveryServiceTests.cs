@@ -8,6 +8,7 @@ using CodexBar.App.ViewModels;
 using CodexBar.Core.Configuration;
 using CodexBar.Core.Models;
 using CodexBar.Core.Providers;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
 
@@ -48,10 +49,47 @@ public sealed class SettingsRecoveryServiceTests
         inner.Received().SetSessionBaseline("key", 5m);
     }
 
+    [Fact]
+    public void Load_SuccessfulReadClearsSharedFlagBeforeFallbackReturns_KeepsConfigurationDraftReadOnly()
+    {
+        var inner = Substitute.For<ISettingsService>();
+        var reads = 0;
+        inner.Load().Returns(_ => ++reads == 1 ? throw new InvalidOperationException("Synthetic integrity failure") : new AppSettings { AccountConfigurationVersion = 1, Accounts = [], Providers = [] });
+        SettingsRecoveryService? recovery = null;
+        var logger = new CallbackLogger(() => recovery!.Load());
+        recovery = new SettingsRecoveryService(inner, logger);
+        var closed = false;
+
+        var viewModel = new ProviderConfigurationViewModel(recovery, [], () => closed = true);
+
+        Assert.False(recovery.IsRecovering);
+        Assert.Equal(SettingsRecoveryService.RecoveryMessage, viewModel.ErrorMessage);
+        viewModel.SaveCommand.Execute(null);
+        Assert.False(closed);
+        inner.DidNotReceive().Save(Arg.Any<AppSettings>());
+    }
+
+    [Fact]
+    public void Load_LegacyValidationException_UsesMarkedRecoveryAndSuppressesCredentials()
+    {
+        var inner = Substitute.For<ISettingsService>();
+        inner.Load().Returns(_ => throw new ArgumentException("Invalid synthetic account"));
+        inner.GetApiKey(ProviderId.Claude).Returns("synthetic-should-not-be-read");
+        var recovery = new SettingsRecoveryService(inner, NullLogger<SettingsRecoveryService>.Instance);
+
+        var fallback = recovery.Load();
+
+        Assert.True(recovery.IsRecoveryDraft(fallback));
+        Assert.True(recovery.IsRecovering);
+        Assert.Null(recovery.GetApiKey(ProviderId.Claude));
+        inner.DidNotReceive().GetApiKey(ProviderId.Claude);
+    }
+
     [Theory]
     [InlineData("ambiguous")]
     [InlineData("future")]
     [InlineData("accounts")]
+    [InlineData("legacy-accounts")]
     public void Load_InvalidDisk_KeepsRecoveryAvailableWithoutPermittingStaleRecoveryDraftSave(string corruption)
     {
         var directory = Directory.CreateTempSubdirectory("codexbar-read-only-recovery-").FullName;
@@ -64,6 +102,7 @@ public sealed class SettingsRecoveryServiceTests
             var original = File.ReadAllText(path);
             var invalid = corruption == "future" ? "{\"accountConfigurationVersion\":2,\"accounts\":[]}"
                 : corruption == "accounts" ? "{\"accountConfigurationVersion\":1,\"accounts\":null}"
+                : corruption == "legacy-accounts" ? "{\"accounts\":[{\"id\":\"\",\"providerId\":\"Claude\",\"displayLabel\":\"Malformed\",\"enabled\":false,\"authenticationMethod\":\"Automatic\"}],\"providers\":{\"Claude\":{\"enabled\":true,\"apiKey\":\"synthetic-preserve\"}}}"
                 : "{\"accountConfigurationVersion\":1,\"accounts\":[],\"providers\":{\"Claude\":null,\"claude\":{\"enabled\":false,\"apiKey\":\"synthetic-preserve\"}}}";
             File.WriteAllText(path, invalid);
             var strict = new SettingsService(NullLogger<SettingsService>.Instance, directory);
@@ -95,6 +134,7 @@ public sealed class SettingsRecoveryServiceTests
             File.WriteAllText(path, original);
             Assert.NotEmpty(recovery.Load().Accounts);
             Assert.False(recovery.IsRecovering);
+            Assert.True(recovery.IsRecoveryDraft(fallback));
             Assert.Throws<InvalidOperationException>(() => recovery.Save(fallback));
             viewModel.SaveCommand.Execute(null);
             Assert.False(closed);
@@ -110,5 +150,16 @@ public sealed class SettingsRecoveryServiceTests
         {
             Directory.Delete(directory, recursive: true);
         }
+    }
+
+    private sealed class CallbackLogger(Action callback) : ILogger<SettingsRecoveryService>
+    {
+        public IDisposable? BeginScope<TState>(TState state)
+            where TState : notnull
+            => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception, Func<TState, Exception?, string> formatter) => callback();
     }
 }

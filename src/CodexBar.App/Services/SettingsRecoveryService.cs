@@ -18,23 +18,31 @@ internal sealed class SettingsRecoveryService(ISettingsService settings, ILogger
 
     public AppSettings Load()
     {
-        var value = this.Read(settings.Load, new AppSettings
+        var fallback = new AppSettings
         {
             AccountConfigurationVersion = AccountConfiguration.CurrentVersion,
             Accounts = [],
             Providers = Enum.GetValues<ProviderId>().ToDictionary(id => id.ToString(), _ => new ProviderSettings { Enabled = false }),
-        });
-        if (this.IsRecovering)
-        {
-            this._recoveryDrafts.Add(value, new object());
-        }
+        };
+        this._recoveryDrafts.Add(fallback, new object());
+        return this.Read(settings.Load, fallback);
+    }
 
-        return value;
+    internal bool IsRecoveryDraft(AppSettings value) => this._recoveryDrafts.TryGetValue(value, out _);
+
+    private T ReadValidated<T>(Func<T> read, T fallback)
+    {
+        return this.Read(
+            () =>
+        {
+            settings.Load();
+            return read();
+        }, fallback);
     }
 
     public void Save(AppSettings value)
     {
-        if (this._recoveryDrafts.TryGetValue(value, out _))
+        if (this.IsRecoveryDraft(value))
         {
             throw new InvalidOperationException(RecoveryMessage);
         }
@@ -42,21 +50,21 @@ internal sealed class SettingsRecoveryService(ISettingsService settings, ILogger
         settings.Save(value);
     }
 
-    public string? GetApiKey(ProviderId id) => this.Read(() => settings.GetApiKey(id), (string?)null);
+    public string? GetApiKey(ProviderId id) => this.ReadValidated(() => settings.GetApiKey(id), (string?)null);
 
-    public bool IsProviderEnabled(ProviderId id) => this.Read(() => settings.IsProviderEnabled(id), false);
+    public bool IsProviderEnabled(ProviderId id) => this.ReadValidated(() => settings.IsProviderEnabled(id), false);
 
-    public string? GetOpenCodeGoWorkspaceId() => this.Read(settings.GetOpenCodeGoWorkspaceId, (string?)null);
+    public string? GetOpenCodeGoWorkspaceId() => this.ReadValidated(settings.GetOpenCodeGoWorkspaceId, (string?)null);
 
-    public IReadOnlyList<string> GetCopilotAccounts() => this.Read(settings.GetCopilotAccounts, Array.Empty<string>());
+    public IReadOnlyList<string> GetCopilotAccounts() => this.ReadValidated(settings.GetCopilotAccounts, Array.Empty<string>());
 
-    public decimal? GetSessionBaseline(ProviderId id) => this.Read(() => settings.GetSessionBaseline(id), (decimal?)null);
+    public decimal? GetSessionBaseline(ProviderId id) => this.ReadValidated(() => settings.GetSessionBaseline(id), (decimal?)null);
 
-    public decimal? GetSessionBaseline(string key) => this.Read(() => settings.GetSessionBaseline(key), (decimal?)null);
+    public decimal? GetSessionBaseline(string key) => this.ReadValidated(() => settings.GetSessionBaseline(key), (decimal?)null);
 
-    public DateTimeOffset? GetSessionResetTime(ProviderId id) => this.Read(() => settings.GetSessionResetTime(id), (DateTimeOffset?)null);
+    public DateTimeOffset? GetSessionResetTime(ProviderId id) => this.ReadValidated(() => settings.GetSessionResetTime(id), (DateTimeOffset?)null);
 
-    public DateTimeOffset? GetSessionResetTime(string key) => this.Read(() => settings.GetSessionResetTime(key), (DateTimeOffset?)null);
+    public DateTimeOffset? GetSessionResetTime(string key) => this.ReadValidated(() => settings.GetSessionResetTime(key), (DateTimeOffset?)null);
 
     public void SetSessionBaseline(ProviderId id, decimal balance) => settings.SetSessionBaseline(id, balance);
 
@@ -70,7 +78,7 @@ internal sealed class SettingsRecoveryService(ISettingsService settings, ILogger
             this.IsRecovering = false;
             return value;
         }
-        catch (InvalidOperationException error)
+        catch (Exception error) when (error is InvalidOperationException or ArgumentException)
         {
             this.IsRecovering = true;
             logger.LogWarning(error, "Settings integrity check failed; only read-only recovery is available");

@@ -652,6 +652,22 @@ public sealed class AccountConfigurationGuardTests : IDisposable
     }
 
     [Fact]
+    public void Load_InvalidUnversionedAccountRecord_RefusesWithoutCachingAndAllowsCorrectedFile()
+    {
+        var service = this.CreateService();
+        const string invalid = """{"accounts":[{"id":"","providerId":"Claude","displayLabel":"Invalid","enabled":false,"authenticationMethod":"Automatic"}],"providers":{"Claude":{"enabled":true,"apiKey":"synthetic-preserve"}}}""";
+        File.WriteAllText(this.SettingsPath, invalid);
+
+        Assert.Throws<InvalidOperationException>(() => service.Load());
+        Assert.Throws<InvalidOperationException>(() => service.GetApiKey(ProviderId.Claude));
+        Assert.Throws<InvalidOperationException>(() => service.SetSessionBaseline("synthetic", 4m));
+        Assert.Equal(invalid, File.ReadAllText(this.SettingsPath));
+        File.WriteAllText(this.SettingsPath, "{\"providers\":{\"Claude\":{\"enabled\":true,\"apiKey\":\"synthetic-preserve\"}}}");
+        Assert.NotEmpty(service.Load().Accounts);
+        Assert.Equal("synthetic-preserve", service.GetApiKey(ProviderId.Claude));
+    }
+
+    [Fact]
     public void Load_AccountSnapshot_IsDetachedAndNeverSerialized()
     {
         var draft = this.CreateService().Load();

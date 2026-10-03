@@ -163,9 +163,11 @@ public sealed class AccountConfigurationViewModelTests
     }
 
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public void Save_ExternalFirstDisabledAccount_UntouchedDefaultVisibilityPreservesDisk(bool advanceCache)
+    [InlineData(false, ProviderId.Claude)]
+    [InlineData(true, ProviderId.Claude)]
+    [InlineData(false, ProviderId.Moonshot)]
+    [InlineData(true, ProviderId.Moonshot)]
+    public void Save_ExternalFirstDisabledAccount_UntouchedOrExplicitVisibilityPreservesDisk(bool advanceCache, ProviderId provider)
     {
         var directory = Directory.CreateTempSubdirectory("codexbar-default-visibility-").FullName;
         try
@@ -174,10 +176,15 @@ public sealed class AccountConfigurationViewModelTests
             service.Save(new AppSettings { AccountConfigurationVersion = AccountConfiguration.CurrentVersion, Accounts = [], Providers = [] });
             var viewModel = new ProviderConfigurationViewModel(service, CreateProviders(), () => { });
             Assert.Empty(viewModel.Accounts);
+            if (provider == ProviderId.Moonshot)
+            {
+                viewModel.Providers.Single(option => option.ProviderId == provider).IsDisplayed = true;
+            }
+
             var editor = new SettingsService(NullLogger<SettingsService>.Instance, directory);
             var external = editor.Load();
-            AccountConfiguration.Upsert(external, AccountConfiguration.Create(ProviderId.Claude, "External disabled account") with { Enabled = false });
-            external.Providers["Claude"] = new ProviderSettings { Enabled = false };
+            AccountConfiguration.Upsert(external, AccountConfiguration.Create(provider, "External disabled account") with { Enabled = false });
+            external.Providers[provider.ToString()] = new ProviderSettings { Enabled = false };
             editor.Save(external);
             if (advanceCache)
             {
@@ -188,7 +195,7 @@ public sealed class AccountConfigurationViewModelTests
 
             Assert.Empty(viewModel.ErrorMessage);
             var reader = new SettingsService(NullLogger<SettingsService>.Instance, directory);
-            Assert.False(reader.IsProviderEnabled(ProviderId.Claude));
+            Assert.False(reader.IsProviderEnabled(provider));
             Assert.Equal(external.Accounts, reader.Load().Accounts);
         }
         finally
