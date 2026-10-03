@@ -8,6 +8,7 @@ using CodexBar.App.ViewModels;
 using CodexBar.Core.Configuration;
 using CodexBar.Core.Models;
 using CodexBar.Core.Providers;
+using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
 using NSubstitute.ExceptionExtensions;
 
@@ -118,6 +119,48 @@ public sealed class AccountConfigurationViewModelTests
         Assert.Equal(1, fixture.Closed);
         Assert.Equal(1, savedEvents);
         Assert.Equal("Retry me", fixture.Saved!.Accounts[0].DisplayLabel);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Save_AnotherInstanceEditedAccounts_PreservesDiskAndDraftEvenAfterBackgroundRefresh(bool advanceCache)
+    {
+        var directory = Directory.CreateTempSubdirectory("codexbar-account-conflict-").FullName;
+        try
+        {
+            var service = new SettingsService(NullLogger<SettingsService>.Instance, directory);
+            var fixture = new Fixture();
+            var closed = 0;
+            var viewModel = new ProviderConfigurationViewModel(service, fixture.Providers, () => closed++);
+            var account = viewModel.Accounts.First();
+            account.DisplayLabel = "My draft";
+            var editor = new SettingsService(NullLogger<SettingsService>.Instance, directory);
+            var edited = editor.Load();
+            AccountConfiguration.Upsert(edited, edited.Accounts.First() with { DisplayLabel = "Concurrent label" });
+            editor.Save(edited);
+            if (advanceCache)
+            {
+                service.SetSessionBaseline(ProviderId.Claude, 3m);
+            }
+
+            var path = Path.Combine(directory, "settings.json");
+            var before = File.ReadAllText(path);
+            viewModel.SaveCommand.Execute(null);
+
+            Assert.Equal(0, closed);
+            Assert.Equal(before, File.ReadAllText(path));
+            Assert.Equal("My draft", account.DisplayLabel);
+            Assert.Contains("changed in another process", viewModel.ErrorMessage);
+            Assert.Contains("not overwritten", viewModel.ErrorMessage);
+            viewModel.SaveCommand.Execute(null);
+            Assert.Equal(0, closed);
+            Assert.Equal(before, File.ReadAllText(path));
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
     }
 
     [Fact]

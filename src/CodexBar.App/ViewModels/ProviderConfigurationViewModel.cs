@@ -18,6 +18,7 @@ public sealed class ProviderConfigurationViewModel : INotifyPropertyChanged
     private readonly ISettingsService _settingsService;
     private readonly Action _close;
     private AppSettings _settings;
+    private readonly AccountConfigurationSnapshot? _accountSnapshot;
     private readonly Dictionary<string, bool> _copilotInitialStates;
     private string _errorMessage = string.Empty;
 
@@ -30,6 +31,7 @@ public sealed class ProviderConfigurationViewModel : INotifyPropertyChanged
         this._settingsService = settingsService;
         this._close = close;
         this._settings = Copy(settingsService.Load());
+        this._accountSnapshot = this._settings.AccountSnapshot;
         this._settings.Providers ??= [];
         var providerList = providers.ToList();
         var missingProviders = providerList.Where(provider => !this._settings.Providers.Keys.Any(key => string.Equals(key, provider.Metadata.Id.ToString(), StringComparison.OrdinalIgnoreCase)))
@@ -116,6 +118,7 @@ public sealed class ProviderConfigurationViewModel : INotifyPropertyChanged
         {
             var accounts = AccountConfiguration.Normalize(this.Accounts.Select(account => account.ToSettings()));
             this._settings = Copy(this._settingsService.Load());
+            this._settings.AccountSnapshot = this._accountSnapshot;
             AccountConfiguration.Migrate(this._settings);
             this._settings.AccountConfigurationVersion = AccountConfiguration.CurrentVersion;
             this._settings.Accounts = accounts;
@@ -147,7 +150,7 @@ public sealed class ProviderConfigurationViewModel : INotifyPropertyChanged
         }
         catch (InvalidOperationException)
         {
-            this.ErrorMessage = "Account configuration is newer or unreadable. It was not overwritten. Update CodexBar or restore a compatible settings file. Your changes are still here.";
+            this.ErrorMessage = "Account configuration is newer or unreadable, or changed in another process. It was not overwritten. Update or restart CodexBar with compatible settings. Your changes are still here.";
         }
         catch (Exception error) when (error is IOException or UnauthorizedAccessException)
         {
@@ -155,7 +158,12 @@ public sealed class ProviderConfigurationViewModel : INotifyPropertyChanged
         }
     }
 
-    private static AppSettings Copy(AppSettings settings) => JsonSerializer.Deserialize<AppSettings>(JsonSerializer.Serialize(settings))!;
+    private static AppSettings Copy(AppSettings settings)
+    {
+        var copy = JsonSerializer.Deserialize<AppSettings>(JsonSerializer.Serialize(settings))!;
+        copy.AccountSnapshot = settings.AccountSnapshot;
+        return copy;
+    }
 
     private void InitializeAccounts()
     {

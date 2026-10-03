@@ -64,7 +64,9 @@ public sealed class SettingsService : ISettingsService
         {
             var cached = this.EnsureCached();
             AccountConfiguration.Migrate(cached);
-            return DeepCopy(cached);
+            var draft = DeepCopy(cached);
+            draft.AccountSnapshot = new AccountConfigurationSnapshot(draft);
+            return draft;
         }
     }
 
@@ -81,42 +83,50 @@ public sealed class SettingsService : ISettingsService
     /// the in-memory settings. Prevents an in-flight Save from clobbering credentials that
     /// were added to the file while the app was running.
     /// </summary>
-    private void MergeFromDisk(AppSettings settings)
+    private AppSettings MergeFromDisk(AppSettings settings, string? baselineKey)
     {
         this.UseFallbackSettingsPathIfPrimaryIsMissing();
         if (!File.Exists(this._settingsPath))
         {
-            return;
+            return settings;
         }
 
         var diskJson = File.ReadAllText(this._settingsPath);
-        var diskVersion = 0;
         AppSettings? disk;
         try
         {
-            diskVersion = ReadAccountVersion(diskJson);
-            disk = JsonSerializer.Deserialize<AppSettings>(diskJson, JsonOptions);
+            disk = DeserializeDiskSettings(diskJson);
         }
-        catch (JsonException ex) when (diskVersion == 0)
+        catch (JsonException ex)
         {
             this._logger.LogDebug(ex, "MergeFromDisk skipped — legacy settings are malformed at {Path}", this._settingsPath);
-            return;
-        }
-        catch (JsonException)
-        {
-            throw new InvalidOperationException("Account configuration could not be read. Do not overwrite it.");
+            return settings;
         }
 
         if (disk is null)
         {
-            return;
+            return settings;
+        }
+
+        if (baselineKey is not null)
+        {
+            // A background update owns only this baseline, not the cached account draft.
+            // Apply its delta to the latest disk snapshot while holding the writer lock.
+            disk.SessionSpendingBaselines ??= [];
+            disk.SessionSpendingResetTimes ??= [];
+            disk.SessionSpendingBaselines[baselineKey] = settings.SessionSpendingBaselines[baselineKey];
+            disk.SessionSpendingResetTimes[baselineKey] = settings.SessionSpendingResetTimes[baselineKey];
+            return disk;
         }
 
         if (settings.AccountConfigurationVersion == 0 && disk.AccountConfigurationVersion > 0)
         {
-            var accounts = AccountConfiguration.Normalize(disk.Accounts);
             settings.AccountConfigurationVersion = disk.AccountConfigurationVersion;
-            settings.Accounts = accounts;
+            settings.Accounts = disk.Accounts;
+        }
+        else if (disk.AccountConfigurationVersion > 0 && settings.AccountSnapshot is { } snapshot)
+        {
+            MergeAccountDraft(settings, disk, snapshot);
         }
 
         MergeProviders(settings, disk);
@@ -126,6 +136,80 @@ public sealed class SettingsService : ISettingsService
         MergeCopilotKnownAccounts(settings, disk);
         MergeSessionBaselines(settings, disk);
         MergeSessionResetTimes(settings, disk);
+        return settings;
+    }
+
+    private static void MergeAccountDraft(AppSettings settings, AppSettings disk, AccountConfigurationSnapshot snapshot)
+    {
+        var proposed = AccountConfiguration.Normalize(settings.Accounts);
+        if (proposed.SequenceEqual(snapshot.Accounts))
+        {
+            settings.Accounts = disk.Accounts;
+            PreserveUnchangedAccountCompatibility(settings, disk, snapshot);
+        }
+        else if (!disk.Accounts.SequenceEqual(snapshot.Accounts) && !proposed.SequenceEqual(disk.Accounts))
+        {
+            throw new InvalidOperationException("Account configuration changed in another process. Do not overwrite it.");
+        }
+    }
+
+    private static void PreserveUnchangedAccountCompatibility(AppSettings settings, AppSettings disk, AccountConfigurationSnapshot snapshot)
+    {
+        if (settings.OpenCodeGoWorkspaceId == snapshot.WorkspaceId)
+        {
+            settings.OpenCodeGoWorkspaceId = disk.OpenCodeGoWorkspaceId;
+        }
+
+        if ((settings.CopilotAccounts ?? []).SequenceEqual(snapshot.CopilotAccounts))
+        {
+            settings.CopilotAccounts = (disk.CopilotAccounts ?? []).ToList();
+        }
+
+        if ((settings.CopilotKnownAccounts ?? []).SequenceEqual(snapshot.CopilotKnownAccounts))
+        {
+            settings.CopilotKnownAccounts = (disk.CopilotKnownAccounts ?? []).ToList();
+        }
+
+        foreach (var (key, provider) in settings.Providers ?? [])
+        {
+            if (provider is not null && snapshot.ProviderStates.TryGetValue(key, out var original) && provider.Enabled == original && disk.Providers?.TryGetValue(key, out var saved) == true)
+            {
+                provider.Enabled = saved?.Enabled ?? true;
+            }
+        }
+    }
+
+    private static AppSettings? DeserializeDiskSettings(string json)
+    {
+        var version = ReadAccountVersion(json);
+        AppSettings? settings;
+        try
+        {
+            settings = JsonSerializer.Deserialize<AppSettings>(json, JsonOptions);
+        }
+        catch (JsonException) when (version > 0)
+        {
+            throw new InvalidOperationException("Account configuration could not be read. Do not overwrite it.");
+        }
+
+        if (settings is not null && version > 0)
+        {
+            settings.Accounts = NormalizeDiskAccounts(settings.Accounts);
+        }
+
+        return settings;
+    }
+
+    private static List<ProviderAccountSettings> NormalizeDiskAccounts(IEnumerable<ProviderAccountSettings>? accounts)
+    {
+        try
+        {
+            return AccountConfiguration.Normalize(accounts);
+        }
+        catch (ArgumentException)
+        {
+            throw new InvalidOperationException("Account configuration could not be read. Do not overwrite it.");
+        }
     }
 
     private static int ReadAccountVersion(string json)
@@ -250,7 +334,7 @@ public sealed class SettingsService : ISettingsService
         }
     }
 
-    private void SaveInternal(AppSettings settings)
+    private void SaveInternal(AppSettings settings, string? baselineKey = null)
     {
         try
         {
@@ -259,12 +343,13 @@ public sealed class SettingsService : ISettingsService
             Directory.CreateDirectory(this._settingsDir);
             this.RestrictDirectoryPermissions(this._settingsDir);
             using var writeLock = new FileStream(Path.Combine(this._settingsDir, "settings.write.lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
-            this.MergeFromDisk(settings);
+            settings = this.MergeFromDisk(settings, baselineKey);
             AccountConfiguration.Migrate(settings);
             var sanitized = SanitizeForPersistence(settings);
             var persistedPath = this.WriteSettingsFileWithFallback(sanitized);
 
             this._cached = sanitized;
+            settings.AccountSnapshot = new AccountConfigurationSnapshot(sanitized);
             this._logger.LogDebug("Settings saved to {Path}", persistedPath);
         }
         catch (Exception ex)
@@ -451,7 +536,7 @@ public sealed class SettingsService : ISettingsService
             var settings = JsonSerializer.Deserialize<AppSettings>(JsonSerializer.Serialize(this.EnsureCached(), JsonOptions), JsonOptions)!;
             settings.SessionSpendingBaselines[key] = baseline;
             settings.SessionSpendingResetTimes[key] = DateTimeOffset.Now;
-            this.SaveInternal(settings);
+            this.SaveInternal(settings, key);
         }
     }
 
@@ -500,8 +585,7 @@ public sealed class SettingsService : ISettingsService
         try
         {
             var json = File.ReadAllText(this._settingsPath);
-            _ = ReadAccountVersion(json);
-            this._cached = JsonSerializer.Deserialize<AppSettings>(json, JsonOptions) ?? CreateDefaults();
+            this._cached = DeserializeDiskSettings(json) ?? CreateDefaults();
             this._cached.Providers ??= [];
             NormalizeProviders(this._cached.Providers);
             this._cached.CopilotEnterprise = NormalizeCopilotEnterprise(this._cached.CopilotEnterprise);
@@ -550,6 +634,7 @@ public sealed class SettingsService : ISettingsService
     {
         AccountConfigurationVersion = source.AccountConfigurationVersion,
         Accounts = AccountConfiguration.Normalize(source.Accounts),
+        AccountSnapshot = source.AccountSnapshot,
         RefreshIntervalSeconds = source.RefreshIntervalSeconds,
         CopilotAccounts = NormalizeStringList(source.CopilotAccounts),
         CopilotKnownAccounts = NormalizeStringList(source.CopilotKnownAccounts),

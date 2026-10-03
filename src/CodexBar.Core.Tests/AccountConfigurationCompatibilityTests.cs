@@ -46,10 +46,10 @@ public sealed class AccountConfigurationCompatibilityTests
             const string malformed = """{"accountConfigurationVersion":1,"accounts":[{"id":"same","providerId":"Claude","displayLabel":"First"},{"id":"same","providerId":"Claude","displayLabel":"Second"}]}""";
             var path = Path.Combine(directory, "settings.json");
             File.WriteAllText(path, malformed);
-            Assert.Throws<ArgumentException>(() => service.Save(draft));
+            Assert.Throws<InvalidOperationException>(() => service.Save(draft));
             Assert.Equal(malformed, File.ReadAllText(path));
             Assert.Equal(0, draft.AccountConfigurationVersion);
-            Assert.Throws<ArgumentException>(() => new SettingsService(NullLogger<SettingsService>.Instance, directory).Load());
+            Assert.Throws<InvalidOperationException>(() => new SettingsService(NullLogger<SettingsService>.Instance, directory).Load());
 
             // Cache rollback and on-disk integrity are separate assertions.
             Assert.Equal(AccountConfiguration.CurrentVersion, service.Load().AccountConfigurationVersion);

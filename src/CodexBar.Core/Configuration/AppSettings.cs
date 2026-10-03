@@ -15,6 +15,13 @@ public sealed class AppSettings
     [JsonPropertyName("accounts")]
     public List<ProviderAccountSettings> Accounts { get; set; } = [];
 
+    /// <summary>
+    /// Gets or sets the original account state returned by Load. Preserve it when
+    /// copying a draft; it detects concurrent edits and is never persisted.
+    /// </summary>
+    [JsonIgnore]
+    public AccountConfigurationSnapshot? AccountSnapshot { get; set; }
+
     [JsonPropertyName("refreshIntervalSeconds")]
     public int RefreshIntervalSeconds { get; set; } = 120;
 
