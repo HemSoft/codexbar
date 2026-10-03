@@ -138,8 +138,42 @@ public sealed class AccountConfigurationViewModelTests
         fixture.Service.Load().Returns(new AppSettings { AccountConfigurationVersion = 2 });
         fixture.ViewModel.SaveCommand.Execute(null);
         fixture.Service.DidNotReceive().Save(Arg.Any<AppSettings>());
-        Assert.NotEmpty(fixture.ViewModel.ErrorMessage);
+        Assert.Contains("not overwritten", fixture.ViewModel.ErrorMessage);
+        Assert.Contains("newer", fixture.ViewModel.ErrorMessage);
+        Assert.DoesNotContain("file access", fixture.ViewModel.ErrorMessage);
         Assert.Equal(0, fixture.Closed);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Save_SchemaIntegrityFailure_PreservesDraftAndExplainsNonOverwrite(bool failOnSave)
+    {
+        var fixture = new Fixture();
+        var account = fixture.ViewModel.Accounts[0];
+        var id = account.Id;
+        account.DisplayLabel = "Preserve my draft";
+        var savedEvents = 0;
+        fixture.ViewModel.Saved += (_, _) => savedEvents++;
+        if (failOnSave)
+        {
+            fixture.Service.When(service => service.Save(Arg.Any<AppSettings>())).Do(_ => throw new InvalidOperationException("sensitive schema details"));
+        }
+        else
+        {
+            fixture.Service.Load().Throws(new InvalidOperationException("sensitive schema details"));
+        }
+
+        fixture.ViewModel.SaveCommand.Execute(null);
+
+        Assert.Equal(0, fixture.Closed);
+        Assert.Equal(0, savedEvents);
+        Assert.Equal(id, fixture.ViewModel.Accounts[0].Id);
+        Assert.Equal("Preserve my draft", fixture.ViewModel.Accounts[0].DisplayLabel);
+        Assert.Contains("not overwritten", fixture.ViewModel.ErrorMessage);
+        Assert.Contains("newer or unreadable", fixture.ViewModel.ErrorMessage);
+        Assert.DoesNotContain("file access", fixture.ViewModel.ErrorMessage);
+        Assert.DoesNotContain("sensitive", fixture.ViewModel.ErrorMessage);
     }
 
     [Fact]

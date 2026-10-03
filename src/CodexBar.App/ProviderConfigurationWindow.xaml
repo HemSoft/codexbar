@@ -122,7 +122,8 @@
 
             <Grid Grid.Row="2" Margin="0,16,0,0">
                 <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
-                <TextBlock Text="{Binding ErrorMessage}" TextWrapping="Wrap" Foreground="#FFB4AB" VerticalAlignment="Center" Margin="0,0,16,0" />
+                <TextBlock Text="{Binding ErrorMessage, NotifyOnTargetUpdated=True}" TargetUpdated="OnErrorMessageTargetUpdated"
+                           AutomationProperties.LiveSetting="Polite" TextWrapping="Wrap" Foreground="#FFB4AB" VerticalAlignment="Center" Margin="0,0,16,0" />
                 <StackPanel Grid.Column="1" Orientation="Horizontal">
                     <Button Content="Cancel" Command="{Binding CancelCommand}" MinWidth="78" Padding="12,6" Margin="0,0,8,0" IsCancel="True" />
                     <Button Content="Save" Command="{Binding SaveCommand}" MinWidth="78" Padding="12,6" IsDefault="True" />

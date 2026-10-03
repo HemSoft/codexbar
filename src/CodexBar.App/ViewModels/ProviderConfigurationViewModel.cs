@@ -145,7 +145,11 @@ public sealed class ProviderConfigurationViewModel : INotifyPropertyChanged
         {
             this.ErrorMessage = "Every account needs a display label and a supported authentication method.";
         }
-        catch (Exception error) when (error is IOException or UnauthorizedAccessException or InvalidOperationException)
+        catch (InvalidOperationException)
+        {
+            this.ErrorMessage = "Account configuration is newer or unreadable. It was not overwritten. Update CodexBar or restore a compatible settings file. Your changes are still here.";
+        }
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException)
         {
             this.ErrorMessage = "Settings could not be saved. Check file access and try again. Your changes are still here.";
         }
