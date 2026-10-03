@@ -170,11 +170,24 @@ public sealed class SettingsService : ISettingsService
             settings.CopilotKnownAccounts = (disk.CopilotKnownAccounts ?? []).ToList();
         }
 
-        foreach (var (key, provider) in settings.Providers ?? [])
+        var providers = settings.Providers ?? [];
+        foreach (var (key, provider) in providers.ToList())
         {
-            if (provider is not null && snapshot.ProviderStates.TryGetValue(key, out var original) && provider.Enabled == original && disk.Providers?.TryGetValue(key, out var saved) == true)
+            if (provider is not null && snapshot.ProviderStates.TryGetValue(key, out var original) && provider.Enabled == original)
             {
-                provider.Enabled = saved?.Enabled ?? true;
+                if (disk.Providers?.TryGetValue(key, out var saved) == true)
+                {
+                    provider.Enabled = saved?.Enabled ?? true;
+                }
+                else if (provider.ApiKey == snapshot.ProviderApiKeys[key])
+                {
+                    providers.Remove(key);
+                }
+                else
+                {
+                    // Preserve a newly entered credential with the provider's default state.
+                    provider.Enabled = true;
+                }
             }
         }
     }
@@ -204,7 +217,7 @@ public sealed class SettingsService : ISettingsService
     {
         try
         {
-            return AccountConfiguration.Normalize(accounts);
+            return AccountConfiguration.Normalize(accounts ?? throw new ArgumentException("Account configuration must contain an account list.", nameof(accounts)));
         }
         catch (ArgumentException)
         {

@@ -42,9 +42,11 @@ serialized. Keep that snapshot when copying a draft. An unrelated save retains
 current disk accounts and unchanged legacy account fields; conflicting account
 edits are refused rather than silently replacing another process's changes.
 The configuration window keeps its original snapshot even when a background
-refresh advances the cache. Schema errors and conflicts explain that the file
-was not overwritten, preserve the draft, and announce the error through WPF
-UI Automation's polite live region.
+refresh advances the cache. Detected unsupported versions, invalid versioned
+account records and account-edit conflicts explain that the file was not
+overwritten, preserve the draft, and announce the error through WPF UI
+Automation's polite live region. Syntax-invalid JSON retains the existing
+legacy defaults/fallback behavior; it is not a recognized account-schema error.
 
 ## Scope
 

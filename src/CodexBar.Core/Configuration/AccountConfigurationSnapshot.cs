@@ -14,6 +14,7 @@ public sealed class AccountConfigurationSnapshot
     {
         this.Accounts = Array.AsReadOnly(settings.Accounts.ToArray());
         this.ProviderStates = new ReadOnlyDictionary<string, bool>(settings.Providers.ToDictionary(entry => entry.Key, entry => entry.Value.Enabled));
+        this.ProviderApiKeys = new ReadOnlyDictionary<string, string?>(settings.Providers.ToDictionary(entry => entry.Key, entry => entry.Value.ApiKey));
         this.WorkspaceId = settings.OpenCodeGoWorkspaceId;
         this.CopilotAccounts = Array.AsReadOnly(settings.CopilotAccounts.ToArray());
         this.CopilotKnownAccounts = Array.AsReadOnly(settings.CopilotKnownAccounts.ToArray());
@@ -22,6 +23,8 @@ public sealed class AccountConfigurationSnapshot
     internal IReadOnlyList<ProviderAccountSettings> Accounts { get; }
 
     internal IReadOnlyDictionary<string, bool> ProviderStates { get; }
+
+    internal IReadOnlyDictionary<string, string?> ProviderApiKeys { get; }
 
     internal string? WorkspaceId { get; }
 

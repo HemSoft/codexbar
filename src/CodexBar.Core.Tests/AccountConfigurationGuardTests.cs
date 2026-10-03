@@ -275,6 +275,68 @@ public sealed class AccountConfigurationGuardTests : IDisposable
         Assert.Null(service.GetSessionBaseline(ProviderId.Claude));
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Save_NullVersionedDiskAccounts_RefusesOverwriteAndRetainsCache(bool baselineUpdate)
+    {
+        var service = this.CreateService();
+        var draft = service.Load();
+        const string json = """{"accountConfigurationVersion":1,"accounts":null}""";
+        File.WriteAllText(this.SettingsPath, json);
+        Assert.Throws<InvalidOperationException>(() =>
+        {
+            if (baselineUpdate)
+            {
+                service.SetSessionBaseline(ProviderId.Claude, 12m);
+            }
+            else
+            {
+                service.Save(draft);
+            }
+        });
+        Assert.Equal(json, File.ReadAllText(this.SettingsPath));
+        Assert.Equal(draft.Accounts, service.Load().Accounts);
+        Assert.Throws<InvalidOperationException>(() => this.CreateService().Load());
+    }
+
+    [Theory]
+    [InlineData("none")]
+    [InlineData("unchanged")]
+    [InlineData("new")]
+    public void Save_DiskDeletedProviderOverride_PreservesDeletionUnlessDraftChangedCredential(string credential)
+    {
+        var service = this.CreateService();
+        var initial = service.Load();
+        initial.Providers["Claude"].Enabled = false;
+        initial.Providers["Claude"].ApiKey = credential == "none" ? null : "synthetic-previous";
+        service.Save(initial);
+        var draft = service.Load();
+        var disk = this.CreateService().Load();
+        disk.Providers.Remove("Claude");
+        File.WriteAllText(this.SettingsPath, System.Text.Json.JsonSerializer.Serialize(disk, new System.Text.Json.JsonSerializerOptions { PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase }));
+        if (credential == "new")
+        {
+            draft.Providers["Claude"].ApiKey = "synthetic-new";
+        }
+
+        draft.WindowWidth = 900;
+        service.Save(draft);
+
+        var saved = this.CreateService().Load();
+        Assert.Equal(900, saved.WindowWidth);
+        Assert.Equal(disk.Accounts, saved.Accounts);
+        if (credential == "new")
+        {
+            Assert.True(saved.Providers["Claude"].Enabled);
+            Assert.Equal("synthetic-new", saved.Providers["Claude"].ApiKey);
+        }
+        else
+        {
+            Assert.False(saved.Providers.ContainsKey("Claude"));
+        }
+    }
+
     [Fact]
     public void Load_AccountSnapshot_IsDetachedAndNeverSerialized()
     {
