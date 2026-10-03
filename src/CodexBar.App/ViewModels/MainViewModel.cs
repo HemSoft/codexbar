@@ -159,6 +159,37 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         this.settingsService.Save(settings);
     }
 
+    public void RefreshLocalPresentation()
+    {
+        if (this.isDisposed)
+        {
+            return;
+        }
+
+        TimeZoneInfo.ClearCachedData();
+        CultureInfo.CurrentCulture.ClearCachedData();
+        foreach (var card in this.Providers)
+        {
+            foreach (var bar in card.Bars)
+            {
+                bar.RefreshLocalTimestamp();
+                bar.UpdateProjection(DateTimeOffset.UtcNow);
+            }
+
+            if (card.ResetAt is { } resetAt)
+            {
+                card.ResetText = $"Resets {LocalTimestampFormatter.Format(resetAt)}";
+            }
+
+            var sessionResetAt = card.CreditsBalance is not null
+                ? this.settingsService.GetSessionResetTime(card.ProviderId)
+                : this.settingsService.GetSessionResetTime(card.CardKey.ToLowerInvariant());
+            card.SessionResetTime = SessionSpendingCalculator.FormatResetTime(sessionResetAt);
+        }
+
+        this.UpdateRefreshIndicator();
+    }
+
     public void ReloadProviderVisibility()
     {
         foreach (var card in this.Providers)
@@ -350,6 +381,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         card.UsedPercent = 0;
         card.IsCreditsDisplay = false;
         card.CreditsBalance = null;
+        card.ResetAt = null;
         card.ResetText = null;
         card.WeeklyText = null;
         card.WeeklyPercent = 0;
@@ -367,6 +399,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         card.CreditsBalance = null;
         card.StatusText = "No data";
         card.UsedPercent = 0;
+        card.ResetAt = null;
         card.ResetText = null;
         card.WeeklyText = null;
         card.WeeklyPercent = 0;
@@ -382,7 +415,8 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
         {
             card.UsedPercent = result.SessionUsage.UsedPercent;
             card.StatusText = result.SessionUsage.UsageLabel ?? $"{result.SessionUsage.UsedPercent:P0} used";
-            card.ResetText = result.SessionUsage.ResetDescription;
+            card.ResetAt = result.SessionUsage.ResetsAt;
+            card.ResetText = result.SessionUsage.ResetsAt is { } resetAt ? $"Resets {LocalTimestampFormatter.Format(resetAt)}" : result.SessionUsage.ResetDescription;
             card.IsHighUsage = result.SessionUsage.UsedPercent >= UsageSeverityThresholds.High;
             card.ShowUsagePercent = !result.SessionUsage.IsUnlimited;
         }
@@ -507,10 +541,7 @@ public sealed class MainViewModel : INotifyPropertyChanged, IDisposable
 
 public sealed class UsageBarViewModel : INotifyPropertyChanged
 {
-    private static readonly string[] EasternTimeZoneIds = ["Eastern Standard Time", "America/New_York"];
     private const string LimitNotReachedDescription = "Limit not reached";
-    private static readonly Lazy<TimeZoneInfo?> EasternTimeZone = new(
-        () => ResolveEasternTimeZone(EasternTimeZoneIds, TimeZoneInfo.FindSystemTimeZoneById));
 
     private string label = string.Empty;
 
@@ -556,6 +587,16 @@ public sealed class UsageBarViewModel : INotifyPropertyChanged
     {
         get => this._projectionDescription;
         set => this.SetField(ref this._projectionDescription, value);
+    }
+
+    public DateTimeOffset? ResetsAt { get; set; }
+
+    public void RefreshLocalTimestamp()
+    {
+        if (this.ResetsAt is { } resetAt)
+        {
+            this.ResetDescription = $"Resets {LocalTimestampFormatter.Format(resetAt)}";
+        }
     }
 
     private string? resetDescription;
@@ -689,21 +730,8 @@ public sealed class UsageBarViewModel : INotifyPropertyChanged
             ? $" - {FormatEarlyDuration(periodEnd - hitAt)} early"
             : string.Empty;
 
-        return $"Limit hit {FormatEasternTime(hitAt)}{earlyDescription}";
+        return $"Limit hit {LocalTimestampFormatter.Format(hitAt)}{earlyDescription}";
     }
-
-    internal static string FormatEasternTime(DateTimeOffset timestamp, TimeZoneInfo? easternTimeZone)
-    {
-        if (easternTimeZone is null)
-        {
-            return $"{timestamp.ToUniversalTime().ToString("ddd h:mm tt", CultureInfo.InvariantCulture)} UTC";
-        }
-
-        var easternTime = TimeZoneInfo.ConvertTime(timestamp, easternTimeZone);
-        return $"{easternTime.ToString("ddd h:mm tt", CultureInfo.InvariantCulture)} {GetEasternTimeZoneAbbreviation(easternTime)}";
-    }
-
-    private static string FormatEasternTime(DateTimeOffset timestamp) => FormatEasternTime(timestamp, EasternTimeZone.Value);
 
     internal static string FormatEarlyDuration(TimeSpan duration)
     {
@@ -730,32 +758,6 @@ public sealed class UsageBarViewModel : INotifyPropertyChanged
         return string.Join(" ", parts);
     }
 
-    private static string GetEasternTimeZoneAbbreviation(DateTimeOffset easternTime) => easternTime.Offset switch
-    {
-        { Hours: -4 } => "EDT",
-        { Hours: -5 } => "EST",
-        _ => "ET",
-    };
-
-    internal static TimeZoneInfo? ResolveEasternTimeZone(IEnumerable<string> timeZoneIds, Func<string, TimeZoneInfo> findTimeZoneById)
-    {
-        foreach (var timeZoneId in timeZoneIds)
-        {
-            try
-            {
-                return findTimeZoneById(timeZoneId);
-            }
-            catch (TimeZoneNotFoundException)
-            {
-            }
-            catch (InvalidTimeZoneException)
-            {
-            }
-        }
-
-        return null;
-    }
-
     private bool SetField<T>(ref T field, T value, [CallerMemberName] string? name = null)
     {
         if (EqualityComparer<T>.Default.Equals(field, value))
@@ -771,6 +773,8 @@ public sealed class UsageBarViewModel : INotifyPropertyChanged
 
 public sealed class ProviderCardViewModel : INotifyPropertyChanged
 {
+    public DateTimeOffset? ResetAt { get; set; }
+
     public ProviderId ProviderId { get; init; }
 
     /// <summary>Gets stable key for reconciliation (e.g., "gemini", "copilot:HemSoft").</summary>

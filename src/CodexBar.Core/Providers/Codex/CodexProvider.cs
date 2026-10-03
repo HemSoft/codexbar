@@ -20,14 +20,7 @@ public sealed class CodexProvider : IUsageProvider
 {
     private const string UsageEndpoint = "https://chatgpt.com/backend-api/wham/usage";
     private static readonly TimeSpan CacheTtl = TimeSpan.FromSeconds(90);
-    private static readonly AsyncLocal<Func<string, TimeZoneInfo?>?> TimeZoneResolverOverride = new();
     private static readonly AsyncLocal<TimeZoneInfo?> LocalTimeZoneOverride = new();
-
-    internal static Func<string, TimeZoneInfo?> TimeZoneResolver
-    {
-        get => TimeZoneResolverOverride.Value ?? FindTimeZoneById;
-        set => TimeZoneResolverOverride.Value = value;
-    }
 
     internal static TimeZoneInfo LocalTimeZone
     {
@@ -37,11 +30,8 @@ public sealed class CodexProvider : IUsageProvider
 
     internal static void ResetTimeZoneResolverForTests()
     {
-        TimeZoneResolverOverride.Value = null;
         LocalTimeZoneOverride.Value = null;
     }
-
-    private static TimeZoneInfo EasternTimeZone => ResolveEasternTimeZone();
 
     private readonly ILogger<CodexProvider> _logger;
     private readonly IHttpClientFactory _httpClientFactory;
@@ -214,10 +204,10 @@ public sealed class CodexProvider : IUsageProvider
     internal static string FormatReset(DateTimeOffset resetAt)
     {
         var remaining = resetAt - DateTimeOffset.UtcNow;
-        var easternReset = FormatEasternResetTime(resetAt, remaining);
+        var localReset = LocalTimestampFormatter.Format(resetAt, remaining.TotalDays >= 1, LocalTimeZone);
         if (remaining <= TimeSpan.Zero)
         {
-            return $"Resets now ({easternReset})";
+            return $"Resets now ({localReset})";
         }
 
         string relativeReset;
@@ -234,42 +224,8 @@ public sealed class CodexProvider : IUsageProvider
             relativeReset = $"Resets {Math.Max(1, (int)remaining.TotalMinutes)}m";
         }
 
-        return $"{relativeReset} ({easternReset})";
+        return $"{relativeReset} ({localReset})";
     }
-
-    private static string FormatEasternResetTime(DateTimeOffset resetAt, TimeSpan remaining)
-    {
-        var eastern = TimeZoneInfo.ConvertTime(resetAt, EasternTimeZone);
-        var timeFormat = remaining.TotalDays >= 1 ? "ddd h:mm tt" : "h:mm tt";
-        return $"{eastern.ToString(timeFormat, CultureInfo.InvariantCulture)} {GetEasternTimeZoneAbbreviation(eastern)}";
-    }
-
-    internal static string GetEasternTimeZoneAbbreviation(DateTimeOffset easternTime) => easternTime.Offset switch
-    {
-        { Hours: -4 } => "EDT",
-        { Hours: -5 } => "EST",
-        _ => "ET",
-    };
-
-    internal static TimeZoneInfo ResolveEasternTimeZone()
-    {
-        if (TimeZoneResolver("Eastern Standard Time") is { } windowsEasternTimeZone)
-        {
-            return windowsEasternTimeZone;
-        }
-
-        if (TimeZoneResolver("America/New_York") is { } ianaEasternTimeZone)
-        {
-            return ianaEasternTimeZone;
-        }
-
-        return LocalTimeZone;
-    }
-
-    private static TimeZoneInfo? FindTimeZoneById(string id) =>
-        TimeZoneInfo.TryFindSystemTimeZoneById(id, out var timeZone)
-            ? timeZone
-            : null;
 
     private static void AddWindow(JsonElement rateLimit, string propertyName, List<WindowData> windows)
     {

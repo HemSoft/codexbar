@@ -2,6 +2,9 @@
 
 namespace CodexBar.App.ViewModels;
 
+using System.Globalization;
+using CodexBar.Core.Models;
+
 /// <summary>
 /// Pure calculation helpers for session spending tracking.
 /// Extracted from <see cref="MainViewModel"/> to enable unit testing without WPF Dispatcher.
@@ -52,8 +55,8 @@ internal static class SessionSpendingCalculator
     /// <summary>
     /// Formats a reset time for display.
     /// </summary>
-    internal static string? FormatResetTime(DateTimeOffset? resetTime) =>
-        resetTime?.ToLocalTime().ToString("yyyy-MM-dd hh:mm tt");
+    internal static string? FormatResetTime(DateTimeOffset? resetTime, TimeZoneInfo? timeZone = null, CultureInfo? culture = null) =>
+        resetTime is { } instant ? LocalTimestampFormatter.Format(instant, timeZone: timeZone, culture: culture) : null;
 }
 
 /// <summary>

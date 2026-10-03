@@ -8,6 +8,8 @@ namespace CodexBar.App;
 /// </summary>
 internal sealed class WindowMessageHandler
 {
+    internal const int WmTimeChange = 0x001E;
+    internal const int WmSettingChange = 0x001A;
     internal const int WmNcHitTest = 0x0084;
     internal const int WmEnterSizeMove = 0x0231;
     internal const int WmExitSizeMove = 0x0232;
@@ -31,6 +33,10 @@ internal sealed class WindowMessageHandler
     {
         switch (msg)
         {
+            case WmTimeChange:
+            case WmSettingChange:
+                return MessageAction.RefreshLocalPresentation;
+
             case WmSetCursor:
                 if (DecodeLowWord(lParam) == HtCaption)
                 {
@@ -105,4 +111,5 @@ internal enum MessageAction
     SetSizeAllCursor,
     DragStarted,
     DragEnded,
+    RefreshLocalPresentation,
 }

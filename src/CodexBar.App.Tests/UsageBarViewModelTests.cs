@@ -4,6 +4,7 @@ namespace CodexBar.App.Tests;
 
 using System.ComponentModel;
 using CodexBar.App.ViewModels;
+using CodexBar.Core.Models;
 
 public sealed class UsageBarViewModelTests
 {
@@ -264,43 +265,21 @@ public sealed class UsageBarViewModelTests
     }
 
     [Fact]
-    public void FormatEasternTime_WhenTimeZoneMissing_UsesUtc()
+    public void RefreshLocalTimestamp_WithSourceInstant_UpdatesTextWithoutChangingInstant()
     {
         var timestamp = new DateTimeOffset(2026, 6, 20, 0, 0, 0, TimeSpan.Zero);
-
-        var result = UsageBarViewModel.FormatEasternTime(timestamp, easternTimeZone: null);
-
-        Assert.Equal("Sat 12:00 AM UTC", result);
+        var bar = new UsageBarViewModel { ResetsAt = timestamp, ResetDescription = "stale timezone" };
+        bar.RefreshLocalTimestamp();
+        Assert.Equal($"Resets {LocalTimestampFormatter.Format(timestamp)}", bar.ResetDescription);
+        Assert.Equal(timestamp, bar.ResetsAt);
     }
 
     [Fact]
-    public void FormatEasternTime_WhenOffsetIsStandardEastern_UsesEst()
+    public void RefreshLocalTimestamp_WithoutSourceInstant_PreservesProviderDescription()
     {
-        var timestamp = new DateTimeOffset(2026, 1, 20, 0, 0, 0, TimeSpan.Zero);
-        var timeZone = TimeZoneInfo.CreateCustomTimeZone(
-            "fixed-est",
-            TimeSpan.FromHours(-5),
-            "Fixed EST",
-            "Fixed EST");
-
-        var result = UsageBarViewModel.FormatEasternTime(timestamp, timeZone);
-
-        Assert.Equal("Mon 7:00 PM EST", result);
-    }
-
-    [Fact]
-    public void FormatEasternTime_WhenOffsetIsNotEastern_UsesEt()
-    {
-        var timestamp = new DateTimeOffset(2026, 6, 20, 0, 0, 0, TimeSpan.Zero);
-        var timeZone = TimeZoneInfo.CreateCustomTimeZone(
-            "fixed-other",
-            TimeSpan.FromHours(-3),
-            "Fixed Other",
-            "Fixed Other");
-
-        var result = UsageBarViewModel.FormatEasternTime(timestamp, timeZone);
-
-        Assert.Equal("Fri 9:00 PM ET", result);
+        var bar = new UsageBarViewModel { ResetDescription = "Unavailable" };
+        bar.RefreshLocalTimestamp();
+        Assert.Equal("Unavailable", bar.ResetDescription);
     }
 
     [Fact]
@@ -349,7 +328,7 @@ public sealed class UsageBarViewModelTests
             periodEnd,
             nowUtc: now);
 
-        Assert.Equal("Limit hit Mon 12:00 AM EDT - 1h early", result);
+        Assert.Equal($"Limit hit {LocalTimestampFormatter.Format(periodStart.AddHours(4))} - 1h early", result);
     }
 
     [Fact]
@@ -366,26 +345,6 @@ public sealed class UsageBarViewModelTests
             nowUtc: periodStart.AddDays(1));
 
         Assert.Equal("Limit hit unknown", result);
-    }
-
-    [Fact]
-    public void ResolveEasternTimeZone_WhenFirstZoneMissing_ReturnsNextZone()
-    {
-        var resolved = UsageBarViewModel.ResolveEasternTimeZone(
-            ["missing-zone", "UTC"],
-            id => id == "UTC" ? TimeZoneInfo.Utc : throw new TimeZoneNotFoundException(id));
-
-        Assert.Same(TimeZoneInfo.Utc, resolved);
-    }
-
-    [Fact]
-    public void ResolveEasternTimeZone_WhenZoneInvalid_ReturnsNull()
-    {
-        var resolved = UsageBarViewModel.ResolveEasternTimeZone(
-            ["invalid-zone"],
-            id => throw new InvalidTimeZoneException(id));
-
-        Assert.Null(resolved);
     }
 
     private static bool AssertPropertyChanged(INotifyPropertyChanged vm, string propertyName, Action action)

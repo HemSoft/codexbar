@@ -1157,7 +1157,7 @@ public sealed class CopilotProvider(ILogger<CopilotProvider> logger, IHttpClient
 
     internal static (DateTimeOffset? ResetsAt, string? ResetDescription) ParseReset(string? resetDateUtc)
     {
-        if (resetDateUtc is null || !DateTimeOffset.TryParse(resetDateUtc, out var parsed))
+        if (resetDateUtc is null || !DateTimeOffset.TryParse(resetDateUtc, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.AssumeUniversal, out var parsed))
         {
             return (null, null);
         }

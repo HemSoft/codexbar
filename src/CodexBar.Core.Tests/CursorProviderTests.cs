@@ -96,7 +96,7 @@ public sealed class CursorProviderTests : IDisposable
         Assert.Equal("Cursor (Pro) · dev@example.com", result.Items![0].DisplayName);
         var expectedReset = DateTimeOffset.FromUnixTimeMilliseconds(1780613438000);
         Assert.Equal(expectedReset, result.SessionUsage!.ResetsAt);
-        Assert.Equal($"Resets {expectedReset.ToLocalTime():MMM d}", result.SessionUsage.ResetDescription);
+        Assert.Equal($"Resets {LocalTimestampFormatter.Format(expectedReset)}", result.SessionUsage.ResetDescription);
         Assert.Equal("Included usage · Auto 3% · API 6%", result.SessionUsage!.UsageLabel);
         Assert.Equal(0.03343589743589744, result.SessionUsage.UsedPercent, 6);
         Assert.Contains(result.Items[0].Bars!, b => b is { Label: "Total" } && Math.Abs(b.UsedPercent - 0.03343589743589744) < 0.000001);

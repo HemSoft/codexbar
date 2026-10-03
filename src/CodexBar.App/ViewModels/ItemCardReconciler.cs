@@ -137,6 +137,7 @@ internal sealed class ItemCardReconciler
         card.UsedPercent = 0;
         card.WeeklyText = null;
         card.WeeklyPercent = 0;
+        card.ResetAt = null;
         card.ResetText = null;
         card.IsHighUsage = false;
         card.IsCreditsDisplay = false;
@@ -192,6 +193,7 @@ internal sealed class ItemCardReconciler
     {
         card.StatusText = errorMessage ?? "Error";
         card.UsedPercent = 0;
+        card.ResetAt = null;
         card.ResetText = null;
         card.WeeklyText = null;
         card.WeeklyPercent = 0;
@@ -235,6 +237,7 @@ internal sealed class ItemCardReconciler
         card.ShowUsagePercent = false;
         card.WeeklyText = null;
         card.WeeklyPercent = 0;
+        card.ResetAt = null;
         card.ResetText = null;
 
         if (item.PrimaryUsage is not null)
@@ -273,11 +276,13 @@ internal sealed class ItemCardReconciler
     /// </summary>
     internal static void ApplyPrimaryOrFallbackUsage(ProviderCardViewModel card, UsageItem item)
     {
+        card.ResetAt = null;
         if (item.PrimaryUsage is not null)
         {
             card.UsedPercent = item.PrimaryUsage.UsedPercent;
             card.StatusText = item.PrimaryUsage.UsageLabel ?? $"{item.PrimaryUsage.UsedPercent:P0} used";
-            card.ResetText = item.PrimaryUsage.ResetDescription;
+            card.ResetAt = item.PrimaryUsage.ResetsAt;
+            card.ResetText = item.PrimaryUsage.ResetsAt is { } resetAt ? $"Resets {LocalTimestampFormatter.Format(resetAt)}" : item.PrimaryUsage.ResetDescription;
             card.IsHighUsage = item.PrimaryUsage.UsedPercent >= UsageSeverityThresholds.High;
             card.ShowUsagePercent = !item.PrimaryUsage.IsUnlimited;
         }
@@ -294,7 +299,8 @@ internal sealed class ItemCardReconciler
         {
             card.UsedPercent = item.SecondaryUsage.UsedPercent;
             card.StatusText = item.SecondaryUsage.UsageLabel ?? $"{item.SecondaryUsage.UsedPercent:P0} used";
-            card.ResetText = item.SecondaryUsage.ResetDescription;
+            card.ResetAt = item.SecondaryUsage.ResetsAt;
+            card.ResetText = item.SecondaryUsage.ResetsAt is { } resetAt ? $"Resets {LocalTimestampFormatter.Format(resetAt)}" : item.SecondaryUsage.ResetDescription;
             card.IsHighUsage = item.SecondaryUsage.UsedPercent >= UsageSeverityThresholds.High;
             card.ShowUsagePercent = !item.SecondaryUsage.IsUnlimited;
         }
@@ -357,6 +363,8 @@ internal sealed class ItemCardReconciler
                 existing.Label = bar.Label;
                 existing.UsedPercent = bar.UsedPercent;
                 existing.ResetDescription = bar.ResetDescription;
+                existing.ResetsAt = bar.ResetsAt;
+                existing.RefreshLocalTimestamp();
                 existing.IsHighUsage = bar.UsedPercent >= UsageSeverityThresholds.High;
                 ApplyProjection(existing, bar);
             }
@@ -367,8 +375,10 @@ internal sealed class ItemCardReconciler
                     Label = bar.Label,
                     UsedPercent = bar.UsedPercent,
                     ResetDescription = bar.ResetDescription,
+                    ResetsAt = bar.ResetsAt,
                     IsHighUsage = bar.UsedPercent >= UsageSeverityThresholds.High,
                 };
+                viewModel.RefreshLocalTimestamp();
                 ApplyProjection(viewModel, bar);
                 card.Bars.Add(viewModel);
             }

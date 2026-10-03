@@ -3,6 +3,7 @@
 namespace CodexBar.App.Tests;
 
 using CodexBar.App.ViewModels;
+using CodexBar.Core.Models;
 
 public sealed class SessionSpendingCalculatorTests
 {
@@ -107,10 +108,9 @@ public sealed class SessionSpendingCalculatorTests
     public void FormatResetTime_ValidTime_ReturnsFormattedString()
     {
         var time = new DateTimeOffset(2026, 5, 15, 14, 30, 0, TimeSpan.Zero);
-        var result = SessionSpendingCalculator.FormatResetTime(time);
-
-        var expected = time.ToLocalTime().ToString("yyyy-MM-dd hh:mm tt");
-        Assert.Equal(expected, result);
+        var zone = TimeZoneInfo.CreateCustomTimeZone("Test", TimeSpan.FromHours(9), "Test", "Test");
+        var result = SessionSpendingCalculator.FormatResetTime(time, zone, System.Globalization.CultureInfo.GetCultureInfo("de-DE"));
+        Assert.Equal("15.05.2026 23:30 UTC+09:00", result);
     }
 
     // --- Mutation resilience: verify direction of comparisons ---

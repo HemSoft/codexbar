@@ -333,23 +333,19 @@ public sealed class CodexProviderTests : IDisposable
     [Fact]
     public void FormatReset_FormatsShortAndExpiredWindows()
     {
-        Assert.Matches(
-            @"^Resets now \(\d{1,2}:\d{2} [AP]M E[DS]T\)$",
-            CodexProvider.FormatReset(DateTimeOffset.UtcNow.AddMinutes(-1)));
-        Assert.Matches(
-            @"^Resets 2h 29m \(\d{1,2}:\d{2} [AP]M E[DS]T\)$",
-            CodexProvider.FormatReset(DateTimeOffset.UtcNow.AddHours(2.5)));
-        Assert.Matches(
-            @"^Resets 4m \(\d{1,2}:\d{2} [AP]M E[DS]T\)$",
-            CodexProvider.FormatReset(DateTimeOffset.UtcNow.AddMinutes(4).AddSeconds(30)));
+        var expired = DateTimeOffset.UtcNow.AddMinutes(-1);
+        var hours = DateTimeOffset.UtcNow.AddHours(2.5);
+        var minutes = DateTimeOffset.UtcNow.AddMinutes(4).AddSeconds(30);
+        Assert.Equal($"Resets now ({LocalTimestampFormatter.Format(expired, false)})", CodexProvider.FormatReset(expired));
+        Assert.Equal($"Resets 2h 29m ({LocalTimestampFormatter.Format(hours, false)})", CodexProvider.FormatReset(hours));
+        Assert.Equal($"Resets 4m ({LocalTimestampFormatter.Format(minutes, false)})", CodexProvider.FormatReset(minutes));
     }
 
     [Fact]
     public void FormatReset_DayWindow_IncludesRemainingHours()
     {
-        Assert.Matches(
-            @"^Resets 2d 5h \([A-Z][a-z]{2} \d{1,2}:\d{2} [AP]M E[DS]T\)$",
-            CodexProvider.FormatReset(DateTimeOffset.UtcNow.AddDays(2).AddHours(5.5)));
+        var resetAt = DateTimeOffset.UtcNow.AddDays(2).AddHours(5.5);
+        Assert.Equal($"Resets 2d 5h ({LocalTimestampFormatter.Format(resetAt)})", CodexProvider.FormatReset(resetAt));
     }
 
     public void Dispose()

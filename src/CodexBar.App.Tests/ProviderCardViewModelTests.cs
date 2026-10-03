@@ -123,7 +123,7 @@ public sealed class ProviderCardViewModelTests
     }
 
     [Fact]
-    public void UpdateProjection_WhenProjectedUsageExceedsLimit_ShowsEasternLimitHitTime()
+    public void UpdateProjection_WhenProjectedUsageExceedsLimit_ShowsLocalLimitHitTime()
     {
         var bar = new UsageBarViewModel
         {
@@ -137,7 +137,7 @@ public sealed class ProviderCardViewModelTests
 
         Assert.Equal("Month end est. · 150 / 100", bar.Label);
         Assert.Equal(1.0, bar.UsedPercent);
-        Assert.Equal("Limit hit Sat 8:00 PM EDT - 10d early", bar.ResetDescription);
+        Assert.Equal($"Limit hit {LocalTimestampFormatter.Format(new DateTimeOffset(2026, 6, 21, 0, 0, 0, TimeSpan.Zero))} - 10d early", bar.ResetDescription);
     }
 
     [Fact]
