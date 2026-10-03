@@ -18,6 +18,74 @@ using NSubstitute;
 [Collection("WPF UI")]
 public sealed class ProviderConfigurationWindowAccessibilityTests(WpfApplicationFixture fixture)
 {
+    [Theory]
+    [InlineData(1280, 680, 1.5)]
+    [InlineData(1920, 1040, 2.0)]
+    [InlineData(3840, 2080, 1.5)]
+    public void FitToWorkArea_ScaledMonitor_KeepsWindowAndFooterReachable(double pixelWidth, double pixelHeight, double scale)
+    {
+        fixture.Run(() =>
+        {
+            var window = new ProviderConfigurationWindow();
+            try
+            {
+                window.Show();
+                var area = new Rect(-pixelWidth / scale, 0, pixelWidth / scale, pixelHeight / scale);
+                window.FitToWorkArea(area);
+                window.UpdateLayout();
+                Assert.True(window.Width <= area.Width);
+                Assert.True(window.Height <= area.Height);
+                Assert.True(window.MinWidth <= window.Width);
+                Assert.True(window.MinHeight <= window.Height);
+                Assert.True(window.Left >= area.Left);
+                Assert.True(window.Top >= area.Top);
+                Assert.True(window.Left + window.Width <= area.Right);
+                Assert.True(window.Top + window.Height <= area.Bottom);
+                foreach (var action in FindButtons(window).Where(button => Equals(button.Content, "Save") || Equals(button.Content, "Cancel")))
+                {
+                    var bounds = action.TransformToAncestor(window).TransformBounds(new Rect(action.RenderSize));
+                    Assert.True(bounds.Top >= 0);
+                    Assert.True(bounds.Bottom <= window.ActualHeight);
+                    Assert.True(bounds.Right <= window.ActualWidth);
+                    Assert.True(action.IsVisible);
+                }
+            }
+            finally
+            {
+                window.Close();
+            }
+        });
+    }
+
+    [Fact]
+    public void FitToWorkArea_EmptyBounds_PreservesWindowSize()
+    {
+        fixture.Run(() =>
+        {
+            var window = new ProviderConfigurationWindow();
+            window.FitToWorkArea(Rect.Empty);
+            Assert.Equal(760, window.Width);
+            Assert.Equal(740, window.Height);
+        });
+    }
+
+    private static IEnumerable<Button> FindButtons(DependencyObject root)
+    {
+        for (var index = 0; index < VisualTreeHelper.GetChildrenCount(root); index++)
+        {
+            var child = VisualTreeHelper.GetChild(root, index);
+            if (child is Button button)
+            {
+                yield return button;
+            }
+
+            foreach (var descendant in FindButtons(child))
+            {
+                yield return descendant;
+            }
+        }
+    }
+
     [Fact]
     public void ErrorMessage_ShownWindow_IsPoliteLiveRegion()
     {

@@ -7,7 +7,7 @@
         mc:Ignorable="d"
         d:DataContext="{d:DesignInstance Type=vm:ProviderConfigurationViewModel, IsDesignTimeCreatable=False}"
         Title="Configure CodexBar"
-        Width="760" Height="740" MinWidth="700" MinHeight="540"
+        Width="760" Height="740" MinWidth="520" MinHeight="340"
         WindowStartupLocation="CenterOwner"
         Background="{StaticResource BackgroundBrush}">
     <Window.Resources>
