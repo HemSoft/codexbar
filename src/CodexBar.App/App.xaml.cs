@@ -9,6 +9,7 @@ using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Threading;
+using CodexBar.App.Services;
 using CodexBar.App.ViewModels;
 using CodexBar.Core.Configuration;
 using CodexBar.Core.Providers;
@@ -75,7 +76,8 @@ public partial class App : Application
             b.ConfigureHttpClient(c => c.Timeout = TimeSpan.FromSeconds(15)));
 
         services.AddSingleton<SettingsService>();
-        services.AddSingleton<ISettingsService>(sp => sp.GetRequiredService<SettingsService>());
+        services.AddSingleton<ISettingsService>(sp => new SettingsRecoveryService(
+            sp.GetRequiredService<SettingsService>(), sp.GetRequiredService<ILogger<SettingsRecoveryService>>()));
 
         services.AddSingleton<IUsageProvider, OpenRouterProvider>();
         services.AddSingleton<IUsageProvider, CopilotProvider>();
@@ -240,7 +242,7 @@ public partial class App : Application
             }
 
             var services = this._services!;
-            var settingsService = services.GetRequiredService<SettingsService>();
+            var settingsService = services.GetRequiredService<ISettingsService>();
             if (this._mainWindow is null)
             {
                 CodexBar.App.MainWindow.LogPosition("SHOWPOPUP: _mainWindow is null → creating new MainWindow");

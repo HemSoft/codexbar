@@ -176,7 +176,7 @@ public sealed class AccountConfigurationViewModelTests
             Assert.Empty(viewModel.Accounts);
             var editor = new SettingsService(NullLogger<SettingsService>.Instance, directory);
             var external = editor.Load();
-            AccountConfiguration.Upsert(external, AccountConfiguration.Create(ProviderId.Claude, "External disabled account"));
+            AccountConfiguration.Upsert(external, AccountConfiguration.Create(ProviderId.Claude, "External disabled account") with { Enabled = false });
             external.Providers["Claude"] = new ProviderSettings { Enabled = false };
             editor.Save(external);
             if (advanceCache)

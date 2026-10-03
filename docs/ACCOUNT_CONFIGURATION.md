@@ -47,7 +47,12 @@ account records, ambiguous case-variant provider keys and account-edit conflicts
 explain that the file was not overwritten, preserve the draft, and announce the
 error through WPF UI Automation's polite live region. A single provider key is
 case-insensitive; colliding spellings are refused on load or write instead of
-silently discarding credentials or visibility. Syntax-invalid JSON retains the existing
+silently discarding credentials or visibility. The WPF app uses a read-only
+recovery adapter when strict settings reads fail, so its tray and Configure
+remain available without enabling providers or exposing credentials. Recovery
+drafts cannot be saved, including after the file is repaired. Close and reopen
+Configure to load repaired settings. Core reads and all disk writes remain
+strict. Syntax-invalid JSON retains the existing
 legacy defaults/fallback behavior; it is not a recognized account-schema error.
 
 ## Scope

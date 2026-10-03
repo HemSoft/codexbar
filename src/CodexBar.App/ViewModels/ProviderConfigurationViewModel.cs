@@ -8,6 +8,7 @@ using System.IO;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Windows.Input;
+using CodexBar.App.Services;
 using CodexBar.Core.Configuration;
 using CodexBar.Core.Models;
 using CodexBar.Core.Providers;
@@ -16,6 +17,7 @@ using CodexBar.Core.Providers;
 public sealed class ProviderConfigurationViewModel : INotifyPropertyChanged
 {
     private readonly ISettingsService _settingsService;
+    private readonly bool _startedInRecoveryMode;
     private readonly Action _close;
     private AppSettings _settings;
     private readonly AccountConfigurationSnapshot? _accountSnapshot;
@@ -34,6 +36,11 @@ public sealed class ProviderConfigurationViewModel : INotifyPropertyChanged
         this._settingsService = settingsService;
         this._close = close;
         this._settings = Copy(settingsService.Load());
+        this._startedInRecoveryMode = settingsService is SettingsRecoveryService { IsRecovering: true };
+        if (this._startedInRecoveryMode)
+        {
+            this.ErrorMessage = SettingsRecoveryService.RecoveryMessage;
+        }
         this._accountSnapshot = this._settings.AccountSnapshot;
         this._settings.Providers ??= [];
         var providerList = providers.ToList();
@@ -109,6 +116,12 @@ public sealed class ProviderConfigurationViewModel : INotifyPropertyChanged
     private void Save()
     {
         this.ErrorMessage = string.Empty;
+        if (this._startedInRecoveryMode)
+        {
+            this.ErrorMessage = SettingsRecoveryService.RecoveryMessage;
+            return;
+        }
+
         try
         {
             var accounts = AccountConfiguration.Normalize(this.Accounts.Select(account => account.ToSettings()));

@@ -53,7 +53,7 @@ public partial class MainWindow : Window
     /// <summary>Delay before hiding the window on deactivation, allowing reactivation to cancel.</summary>
     private static readonly TimeSpan HideDelay = TimeSpan.FromMilliseconds(150);
 
-    private readonly SettingsService settings;
+    private readonly ISettingsService settings;
     private readonly IReadOnlyList<IUsageProvider> providers;
     private readonly UsageRefreshService? refreshService;
     private readonly DispatcherTimer hideTimer;
@@ -76,7 +76,7 @@ public partial class MainWindow : Window
     private DateTime dragEndedAtUtc = DateTime.MinValue;
     private HwndSource? hwndSource;
 
-    public MainWindow(SettingsService settings, IEnumerable<IUsageProvider>? providers = null, UsageRefreshService? refreshService = null)
+    public MainWindow(ISettingsService settings, IEnumerable<IUsageProvider>? providers = null, UsageRefreshService? refreshService = null)
     {
         this.settings = settings;
         this.providers = providers?.ToList() ?? [];
