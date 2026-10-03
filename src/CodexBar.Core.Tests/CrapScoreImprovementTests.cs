@@ -209,6 +209,63 @@ public class CrapScoreImprovementTests
     }
 
     [Fact]
+    public async Task CreateExitProcess_ShellMetacharacters_PreservesLiteralOutputAndExitCode()
+    {
+        const string stdout = "fixture: %PATH% !value! ^&|<> (keyring) \"quoted\"";
+        const string stderr = "error: %OTHER% !value! ^&|<> (detail) \"quoted\"";
+        using var process = CreateExitProcess(7, stderr, stdout);
+        Assert.True(process.Start());
+        var output = process.StandardOutput.ReadToEndAsync();
+        var error = process.StandardError.ReadToEndAsync();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        await process.WaitForExitAsync(timeout.Token);
+        Assert.Equal(stdout, await output);
+        Assert.Equal(stderr, await error);
+        Assert.Equal(7, process.ExitCode);
+    }
+
+    [Theory]
+    [InlineData("", "", 0)]
+    [InlineData("", "", 7)]
+    [InlineData("fixture output", "", 0)]
+    [InlineData("fixture output", "", 7)]
+    [InlineData("", "fixture error", 0)]
+    [InlineData("", "fixture error", 7)]
+    [InlineData("fixture output", "fixture error", 7)]
+    [InlineData(" \tfixture output\r\ntrailing  ", " \tfixture error\r\ntrailing  ", 7)]
+    [InlineData("=fixture output", "\"fixture error\"", 0)]
+    [InlineData("Français 日本語", "Grüße 🌍", 7)]
+    public async Task CreateExitProcess_OutputStreams_PreservesExactContentAndExitCode(string stdout, string stderr, int exitCode)
+    {
+        using var process = CreateExitProcess(exitCode, stderr, stdout);
+        Assert.True(process.Start());
+        var output = process.StandardOutput.ReadToEndAsync();
+        var error = process.StandardError.ReadToEndAsync();
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        await process.WaitForExitAsync(timeout.Token);
+        Assert.Equal(stdout, await output);
+        Assert.Equal(stderr, await error);
+        Assert.Equal(exitCode, process.ExitCode);
+    }
+
+    [Fact]
+    public void CreateExitProcess_Disposed_DeletesTemporaryOutputFiles()
+    {
+        using var process = CreateExitProcess(0, stdout: "fixture output");
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        var outputFile = process.StartInfo.Environment["CODEXBAR_FIXTURE_STDOUT_FILE"]!;
+        var errorFile = process.StartInfo.Environment["CODEXBAR_FIXTURE_STDERR_FILE"]!;
+        Assert.True(File.Exists(outputFile));
+        Assert.True(File.Exists(errorFile));
+        process.Dispose();
+        Assert.False(Directory.Exists(Path.GetDirectoryName(outputFile)));
+    }
+
+    [Fact]
     public async Task FetchUsageAsync_GhProcessTimesOut_ReturnsDiscoveryError()
     {
         var settings = CreateCopilotSettings();
@@ -737,26 +794,76 @@ public class CrapScoreImprovementTests
 
     private static System.Diagnostics.Process CreateExitProcess(int exitCode, string stderr = "", string stdout = "")
     {
-        // Use base64-encoded PowerShell script to avoid quoting issues
-        var script =
-            $"[Console]::Out.Write('{stdout.Replace("'", "''")}'); " +
-            $"[Console]::Error.Write('{stderr.Replace("'", "''")}'); " +
-            $"exit {exitCode}";
-        var bytes = System.Text.Encoding.Unicode.GetBytes(script);
-        var encoded = Convert.ToBase64String(bytes);
-
-        return new System.Diagnostics.Process
+        // This fixture tests process output/exit handling, not PowerShell startup.
+        // The separate slow-process fixture still tests the production timeout path.
+        var startInfo = new System.Diagnostics.ProcessStartInfo
         {
-            StartInfo = new System.Diagnostics.ProcessStartInfo
-            {
-                FileName = "powershell",
-                Arguments = $"-NoProfile -EncodedCommand {encoded}",
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-            },
+            FileName = OperatingSystem.IsWindows() ? "cmd.exe" : "/bin/sh",
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            StandardOutputEncoding = Encoding.UTF8,
+            StandardErrorEncoding = Encoding.UTF8,
         };
+        System.Diagnostics.Process process = OperatingSystem.IsWindows()
+            ? new FileOutputProcess()
+            : new System.Diagnostics.Process();
+        process.StartInfo = startInfo;
+        if (process is FileOutputProcess fileOutputProcess)
+        {
+            // type copies bytes without echo's newline or set /p's whitespace trimming.
+            var directory = fileOutputProcess.OutputDirectory;
+            try
+            {
+                var outputFile = Path.Combine(directory, "stdout.txt");
+                var errorFile = Path.Combine(directory, "stderr.txt");
+                File.WriteAllText(outputFile, stdout);
+                File.WriteAllText(errorFile, stderr);
+                startInfo.Environment["CODEXBAR_FIXTURE_STDOUT_FILE"] = outputFile;
+                startInfo.Environment["CODEXBAR_FIXTURE_STDERR_FILE"] = errorFile;
+
+                // cmd uses literal quotes, not CRT backslash-escaping. Only paths travel
+                // through delayed expansion; fixture content is never shell syntax.
+                startInfo.Arguments = $"/d /v:on /c type \"!CODEXBAR_FIXTURE_STDOUT_FILE!\"&1>&2 type \"!CODEXBAR_FIXTURE_STDERR_FILE!\"&exit /b {exitCode}";
+            }
+            catch
+            {
+                process.Dispose();
+                throw;
+            }
+        }
+        else
+        {
+            startInfo.ArgumentList.Add("-c");
+            startInfo.ArgumentList.Add("printf '%s' \"$1\"; printf '%s' \"$2\" >&2; exit \"$3\"");
+            startInfo.ArgumentList.Add("fixture");
+            startInfo.ArgumentList.Add(stdout);
+            startInfo.ArgumentList.Add(stderr);
+            startInfo.ArgumentList.Add(exitCode.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
+
+        return process;
+    }
+
+    private sealed class FileOutputProcess : System.Diagnostics.Process
+    {
+        internal string OutputDirectory { get; } = Directory.CreateTempSubdirectory("codexbar-process-fixture-").FullName;
+
+        protected override void Dispose(bool disposing)
+        {
+            try
+            {
+                base.Dispose(disposing);
+            }
+            finally
+            {
+                if (disposing && Directory.Exists(this.OutputDirectory))
+                {
+                    Directory.Delete(this.OutputDirectory, recursive: true);
+                }
+            }
+        }
     }
 
     private sealed class CloneableResponseHandler : HttpMessageHandler
