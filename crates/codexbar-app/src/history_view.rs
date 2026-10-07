@@ -1,0 +1,734 @@
+//! The History view (#86): one account's stored history for a chosen metric and range, with a summary, a chart that
+//! can be read with the keyboard, and a per-account switch that hides history without deleting it.
+
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+
+use chrono::{DateTime, Duration, Local, Utc};
+use codexbar_core::{AccountId, AccountSnapshot, Metric};
+use codexbar_store::HistoryStore;
+use codexbar_store::prefs::DashboardPrefs;
+use codexbar_store::summary::{HistorySummary, Point, chart_points, summarize};
+use gpui_kit::TestSupportExt as _;
+use gpui_kit::component::button::{Button, ButtonGroup, ButtonVariants as _};
+use gpui_kit::component::chart::AreaChart;
+use gpui_kit::component::switch::Switch;
+use gpui_kit::component::{
+    ActiveTheme as _, Icon, IconName, Selectable as _, Sizable as _, StyledExt as _, h_flex, v_flex,
+};
+use gpui_kit::{
+    App, BorrowAppContext as _, Context, FocusHandle, Global, InteractiveElement as _, IntoElement, KeyDownEvent,
+    ParentElement as _, Render, Role, SharedString, StatefulInteractiveElement as _, Styled as _, Window, div,
+    linear_color_stop, linear_gradient, prelude::FluentBuilder as _, rems,
+};
+
+use crate::status::severity_dot_color;
+
+/// The most points a history chart draws; longer ranges are reduced, keeping spikes.
+const MAX_CHART_POINTS: usize = 120;
+
+/// How a metric's stored values read: limits are fractions used, balances are dollars.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ValueKind {
+    Percent,
+    Dollars,
+}
+
+impl ValueKind {
+    pub fn of(metric: &Metric) -> Self {
+        match metric {
+            Metric::Balance { .. } => Self::Dollars,
+            _ => Self::Percent,
+        }
+    }
+
+    pub fn value(self, value: f64) -> String {
+        match self {
+            Self::Percent => format!("{:.0}%", value * 100.0),
+            Self::Dollars => format!("${value:.2}"),
+        }
+    }
+
+    /// A signed change: "+18 pts", "−$9.30", "no change".
+    pub fn change(self, delta: f64) -> String {
+        let sign = if delta > 0.0 { "+" } else { "\u{2212}" };
+        match self {
+            Self::Percent if (delta * 100.0).abs() < 0.5 => "no change".into(),
+            Self::Percent => format!("{sign}{:.0} pts", (delta * 100.0).abs()),
+            Self::Dollars if delta.abs() < 0.005 => "no change".into(),
+            Self::Dollars => format!("{sign}${:.2}", delta.abs()),
+        }
+    }
+
+    /// The change in words, for screen readers: "up 18 points", "down $9.30", "unchanged".
+    fn change_words(self, delta: f64) -> String {
+        let direction = if delta > 0.0 { "up" } else { "down" };
+        match self {
+            Self::Percent if (delta * 100.0).abs() < 0.5 => "unchanged".into(),
+            Self::Percent => format!("{direction} {:.0} points", (delta * 100.0).abs()),
+            Self::Dollars if delta.abs() < 0.005 => "unchanged".into(),
+            Self::Dollars => format!("{direction} ${:.2}", delta.abs()),
+        }
+    }
+}
+
+/// The ranges the History view offers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HistoryRange {
+    Day,
+    Week,
+    Month,
+}
+
+impl HistoryRange {
+    pub const ALL: [Self; 3] = [Self::Day, Self::Week, Self::Month];
+
+    pub fn duration(self) -> Duration {
+        match self {
+            Self::Day => Duration::days(1),
+            Self::Week => Duration::days(7),
+            Self::Month => Duration::days(30),
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Day => "24 hours",
+            Self::Week => "7 days",
+            Self::Month => "30 days",
+        }
+    }
+}
+
+/// "6d 23h", "5h 10m", "12m": how long a summary's samples span.
+pub fn span_label(span: Duration) -> String {
+    let minutes = span.num_minutes().max(0);
+    let (days, hours, mins) = (minutes / (24 * 60), minutes / 60 % 24, minutes % 60);
+    match (days, hours) {
+        (0, 0) => format!("{mins}m"),
+        (0, _) => format!("{hours}h {mins}m"),
+        _ => format!("{days}d {hours}h"),
+    }
+}
+
+/// One sentence covering latest value, change, range and sample window, for screen readers and tooltips.
+pub fn describe(summary: &HistorySummary, kind: ValueKind) -> String {
+    let samples = match summary.samples {
+        1 => "1 sample".to_owned(),
+        n => format!("{n} samples"),
+    };
+    let mut text = if summary.samples == 1 {
+        format!("Latest {}. Only one sample so far.", kind.value(summary.latest))
+    } else {
+        format!(
+            "Latest {}, {} over {}. Low {}, high {}. {samples}.",
+            kind.value(summary.latest),
+            kind.change_words(summary.change),
+            span_label(summary.span()),
+            kind.value(summary.low),
+            kind.value(summary.high),
+        )
+    };
+    if let Some(gap) = summary.longest_gap {
+        text.push_str(&format!(" Longest gap without data: {}.", span_label(gap)));
+    }
+    text
+}
+
+/// Which accounts show history, saved in `dashboard.json` next to the settings file.
+pub struct HistoryPrefs {
+    prefs: DashboardPrefs,
+    dir: PathBuf,
+    error: Option<SharedString>,
+}
+
+impl Global for HistoryPrefs {}
+
+impl HistoryPrefs {
+    pub fn init(cx: &mut App, dir: &Path) {
+        cx.set_global(Self {
+            prefs: DashboardPrefs::load(dir),
+            dir: dir.to_owned(),
+            error: None,
+        });
+    }
+
+    pub fn shows(cx: &App, account: &str) -> bool {
+        cx.try_global::<Self>()
+            .is_none_or(|prefs| prefs.prefs.shows_history(account))
+    }
+
+    /// Shows or hides an account's history and saves at once. Hiding never deletes stored samples.
+    pub fn set(cx: &mut App, account: &str, show: bool) {
+        cx.update_global(|hub: &mut Self, _| {
+            let mut draft = hub.prefs.clone();
+            draft.set_shows_history(account, show);
+            match draft.save(&hub.dir) {
+                Ok(()) => {
+                    hub.prefs = draft;
+                    hub.error = None;
+                }
+                Err(err) => hub.error = Some(format!("History setting not saved: {err}").into()),
+            }
+        });
+        cx.refresh_windows();
+    }
+
+    fn error(cx: &App) -> Option<SharedString> {
+        cx.try_global::<Self>().and_then(|prefs| prefs.error.clone())
+    }
+}
+
+/// The selected account and metric, with their history over the selected range.
+struct Selection<'a> {
+    account: &'a AccountSnapshot,
+    metric: &'a Metric,
+    kind: ValueKind,
+    points: Vec<Point>,
+    summary: Option<HistorySummary>,
+}
+
+pub struct HistoryView {
+    history: Arc<Mutex<HistoryStore>>,
+    accounts: Vec<AccountSnapshot>,
+    now: DateTime<Utc>,
+    account: Option<AccountId>,
+    metric: Option<String>,
+    range: HistoryRange,
+    /// The chart point the keyboard is on; `None` reads the latest.
+    cursor: Option<usize>,
+    chart_focus: FocusHandle,
+}
+
+impl HistoryView {
+    pub fn new(history: Arc<Mutex<HistoryStore>>, cx: &mut Context<Self>) -> Self {
+        Self {
+            history,
+            accounts: Vec::new(),
+            now: Utc::now(),
+            account: None,
+            metric: None,
+            range: HistoryRange::Week,
+            cursor: None,
+            chart_focus: cx.focus_handle().tab_index(0).tab_stop(true),
+        }
+    }
+
+    /// New accounts after a refresh. `preferred` (the account selected on the Usage view) is used until one is
+    /// picked here.
+    pub fn set_accounts(
+        &mut self,
+        accounts: Vec<AccountSnapshot>,
+        now: DateTime<Utc>,
+        preferred: Option<&AccountId>,
+        cx: &mut Context<Self>,
+    ) {
+        self.accounts = accounts;
+        self.now = now;
+        let known = |id: &AccountId| self.accounts.iter().any(|account| account.id() == id);
+        if !self.account.as_ref().is_some_and(known) {
+            self.account = preferred
+                .filter(|id| known(id))
+                .or_else(|| self.accounts.first().map(AccountSnapshot::id))
+                .cloned();
+            self.metric = None;
+            self.cursor = None;
+        }
+        cx.notify();
+    }
+
+    /// The account and metric key shown, for the headless UI tests.
+    #[cfg(test)]
+    pub fn shown(&self) -> Option<(String, String)> {
+        let selection = self.selection()?;
+        Some((selection.account.id().as_str().to_owned(), selection.metric.key()))
+    }
+
+    fn select_account(&mut self, id: AccountId, cx: &mut Context<Self>) {
+        if self.account.as_ref() != Some(&id) {
+            self.account = Some(id);
+            self.metric = None;
+            self.cursor = None;
+        }
+        cx.notify();
+    }
+
+    fn selection(&self) -> Option<Selection<'_>> {
+        let account = self
+            .account
+            .as_ref()
+            .and_then(|id| self.accounts.iter().find(|account| account.id() == id))?;
+        let metrics: Vec<&Metric> = charted_metrics(account).collect();
+        let metric = self
+            .metric
+            .as_ref()
+            .and_then(|key| metrics.iter().find(|metric| &metric.key() == key))
+            .or_else(|| metrics.first())
+            .copied()?;
+        let since = self.now - self.range.duration();
+        let points = {
+            let history = self.history.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            history.points(account.id().as_str(), &metric.key(), since)
+        };
+        let summary = summarize(&points);
+        Some(Selection {
+            account,
+            metric,
+            kind: ValueKind::of(metric),
+            points: chart_points(&points, MAX_CHART_POINTS),
+            summary,
+        })
+    }
+
+    /// Left/Right move the chart cursor one point, Home/End jump to the ends. Unmodified keys only.
+    fn on_chart_key(&mut self, event: &KeyDownEvent, len: usize, cx: &mut Context<Self>) {
+        if len == 0 || event.keystroke.modifiers.modified() {
+            return;
+        }
+        let current = self.cursor.unwrap_or(len - 1).min(len - 1);
+        let next = match event.keystroke.key.as_str() {
+            "left" => current.saturating_sub(1),
+            "right" => (current + 1).min(len - 1),
+            "home" => 0,
+            "end" => len - 1,
+            _ => return,
+        };
+        cx.stop_propagation();
+        self.cursor = Some(next);
+        cx.notify();
+    }
+}
+
+/// Metrics that have numeric history, in the account's order.
+fn charted_metrics(account: &AccountSnapshot) -> impl Iterator<Item = &Metric> {
+    account
+        .metrics()
+        .iter()
+        .filter(|metric| metric.history_value().is_some())
+}
+
+fn point_label(point: &Point, range: HistoryRange) -> String {
+    let local = point.at.with_timezone(&Local);
+    match range {
+        HistoryRange::Day => local.format("%H:%M").to_string(),
+        _ => local.format("%b %-d %H:%M").to_string(),
+    }
+}
+
+impl Render for HistoryView {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        if self.accounts.is_empty() {
+            return empty_state(IconName::Calendar, "No accounts connected yet", None, cx).into_any_element();
+        }
+        let selection = self.selection();
+        h_flex()
+            .size_full()
+            .items_start()
+            .gap_4()
+            .child(self.render_account_list(cx))
+            .child(match selection {
+                Some(selection) => self.render_detail(selection, cx).into_any_element(),
+                None => empty_state(IconName::Inbox, "This account has no metrics with history", None, cx)
+                    .into_any_element(),
+            })
+            .into_any_element()
+    }
+}
+
+impl HistoryView {
+    fn render_account_list(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        v_flex()
+            .id("history-accounts")
+            .role(Role::List)
+            .aria_label("Accounts")
+            .w(rems(16.))
+            .flex_shrink_0()
+            .gap_0p5()
+            .child(
+                div()
+                    .px_2()
+                    .pb_1()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child("Accounts"),
+            )
+            .children(self.accounts.iter().enumerate().map(|(ix, account)| {
+                let id = account.id().clone();
+                let selected = self.account.as_ref() == Some(account.id());
+                let shown = HistoryPrefs::shows(cx, account.id().as_str());
+                let severity = account.assess(self.now).severity();
+                Button::new(("history-account", ix))
+                    .ghost()
+                    .w_full()
+                    .justify_start()
+                    .selected(selected)
+                    .child(
+                        h_flex()
+                            .w_full()
+                            .gap_2()
+                            .items_center()
+                            .child(div().size_2().rounded_full().bg(severity_dot_color(severity, cx)))
+                            .child(div().flex_1().min_w_0().truncate().child(account.display_name()))
+                            .when(!shown, |this| {
+                                this.child(
+                                    Icon::new(IconName::EyeOff)
+                                        .small()
+                                        .text_color(cx.theme().muted_foreground),
+                                )
+                            }),
+                    )
+                    .accessibility_label(if shown {
+                        account.display_name()
+                    } else {
+                        format!("{}, history hidden", account.display_name())
+                    })
+                    .on_click(cx.listener(move |this, _, _, cx| this.select_account(id.clone(), cx)))
+            }))
+    }
+
+    fn render_detail(&self, selection: Selection<'_>, cx: &mut Context<Self>) -> impl IntoElement {
+        let account_id = selection.account.id().as_str().to_owned();
+        let shown = HistoryPrefs::shows(cx, &account_id);
+        let metrics: Vec<&Metric> = charted_metrics(selection.account).collect();
+        let metric_ix = metrics
+            .iter()
+            .position(|metric| metric.key() == selection.metric.key())
+            .unwrap_or(0);
+        let metric_keys: Vec<String> = metrics.iter().map(|metric| metric.key()).collect();
+        let range_ix = HistoryRange::ALL
+            .iter()
+            .position(|range| *range == self.range)
+            .unwrap_or(0);
+
+        let header = h_flex()
+            .w_full()
+            .items_center()
+            .justify_between()
+            .gap_3()
+            .child(div().text_xl().font_semibold().child(selection.account.display_name()))
+            .child(
+                Switch::new("history-show")
+                    .label("Show history")
+                    .checked(shown)
+                    .on_click({
+                        let account_id = account_id.clone();
+                        move |show, _, cx| HistoryPrefs::set(cx, &account_id, *show)
+                    }),
+            );
+
+        let controls = h_flex()
+            .gap_3()
+            .flex_wrap()
+            .when(metrics.len() > 1, |this| {
+                this.child(
+                    ButtonGroup::new("history-metric")
+                        .outline()
+                        .small()
+                        .children(metrics.iter().enumerate().map(|(ix, metric)| {
+                            Button::new(("history-metric", ix))
+                                .label(metric.label().to_owned())
+                                .selected(ix == metric_ix)
+                        }))
+                        .on_click(cx.listener(move |this, clicks: &Vec<usize>, _, cx| {
+                            if let Some(key) = clicks.first().and_then(|ix| metric_keys.get(*ix)) {
+                                this.metric = Some(key.clone());
+                                this.cursor = None;
+                                cx.notify();
+                            }
+                        })),
+                )
+            })
+            .child(
+                ButtonGroup::new("history-range")
+                    .outline()
+                    .small()
+                    .children(HistoryRange::ALL.iter().enumerate().map(|(ix, range)| {
+                        Button::new(("history-range", ix))
+                            .label(range.label())
+                            .selected(ix == range_ix)
+                    }))
+                    .on_click(cx.listener(|this, clicks: &Vec<usize>, _, cx| {
+                        if let Some(range) = clicks.first().and_then(|ix| HistoryRange::ALL.get(*ix)) {
+                            this.range = *range;
+                            this.cursor = None;
+                            cx.notify();
+                        }
+                    })),
+            );
+
+        let body = if !shown {
+            empty_state(
+                IconName::EyeOff,
+                "History is hidden for this account",
+                Some("Stored history is kept. Turn on Show history to see it here and in the table."),
+                cx,
+            )
+            .into_any_element()
+        } else {
+            match &selection.summary {
+                None => empty_state(
+                    IconName::Inbox,
+                    format!(
+                        "No {} history in the last {}",
+                        selection.metric.label(),
+                        self.range.label()
+                    ),
+                    Some("CodexBar records usage on every refresh."),
+                    cx,
+                )
+                .into_any_element(),
+                Some(summary) => self.render_chart(&selection, summary, cx).into_any_element(),
+            }
+        };
+
+        v_flex()
+            .flex_1()
+            .min_w_0()
+            .gap_4()
+            .child(header)
+            .child(controls)
+            .children(HistoryPrefs::error(cx).map(|error| {
+                h_flex()
+                    .gap_2()
+                    .items_center()
+                    .text_sm()
+                    .text_color(cx.theme().warning)
+                    .child(Icon::new(IconName::TriangleAlert).small())
+                    .child(error)
+            }))
+            .child(body)
+    }
+
+    fn render_chart(
+        &self,
+        selection: &Selection<'_>,
+        summary: &HistorySummary,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        let kind = selection.kind;
+        let range = self.range;
+        let muted = cx.theme().muted_foreground;
+        let stat = |label: &'static str, value: String| {
+            v_flex()
+                .gap_0p5()
+                .child(div().text_sm().text_color(muted).child(label))
+                .child(div().text_lg().font_semibold().child(value))
+        };
+        let stats = h_flex()
+            .id("history-stats")
+            .gap_8()
+            .flex_wrap()
+            .child(stat("Latest", kind.value(summary.latest)))
+            .child(stat("Change", kind.change(summary.change)))
+            .child(stat(
+                "Range",
+                if summary.is_flat() {
+                    kind.value(summary.low)
+                } else {
+                    format!("{} – {}", kind.value(summary.low), kind.value(summary.high))
+                },
+            ))
+            .child(stat(
+                "Based on",
+                match summary.samples {
+                    1 => "1 sample".to_owned(),
+                    n => format!("{n} samples over {}", span_label(summary.span())),
+                },
+            ));
+
+        let points = selection.points.clone();
+        let len = points.len();
+        let cursor = self.cursor.unwrap_or(len.saturating_sub(1)).min(len.saturating_sub(1));
+        let readout = points.get(cursor).map(|point| {
+            format!(
+                "{} · {}",
+                point.at.with_timezone(&Local).format("%a %b %-d, %H:%M"),
+                kind.value(point.value)
+            )
+        });
+        let description = describe(summary, kind);
+
+        let color = cx.theme().chart_1;
+        let chart: gpui_kit::AnyElement = if len < 2 {
+            // One sample can't draw a line; show it as a value instead of a lone dot.
+            v_flex()
+                .size_full()
+                .items_center()
+                .justify_center()
+                .gap_1()
+                .child(div().text_3xl().font_semibold().child(kind.value(summary.latest)))
+                .child(div().text_sm().text_color(muted).child("Only one sample so far"))
+                .into_any_element()
+        } else {
+            let data: Vec<(SharedString, f64)> = points
+                .iter()
+                .map(|point| (SharedString::from(point_label(point, range)), point.value))
+                .collect();
+            let (domain_low, domain_high) = match kind {
+                ValueKind::Percent => (0.0, 1.0),
+                // Balances start at zero so a drop reads as a drop; a flat series still gets visible headroom.
+                ValueKind::Dollars => (0.0, (summary.high * 1.15).max(1.0)),
+            };
+            AreaChart::new(data)
+                .id("history-chart")
+                .x(|(label, _)| label.clone())
+                .y(|(_, value)| *value)
+                .stroke(color)
+                .fill(linear_gradient(
+                    0.,
+                    linear_color_stop(color.opacity(0.35), 1.),
+                    linear_color_stop(color.opacity(0.), 0.),
+                ))
+                .name(selection.metric.label().to_owned())
+                .linear()
+                .y_domain(domain_low, domain_high)
+                .y_padding(0., 0.)
+                .y_axis(true)
+                .y_tick_count(5)
+                .point_count(len)
+                .tick_margin((len / 6).max(1))
+                .y_tick_format(move |value| kind.value(value))
+                .into_any_element()
+        };
+
+        let ring = cx.theme().ring;
+        v_flex()
+            .gap_4()
+            .child(stats)
+            .when_some(summary.longest_gap, |this, gap| {
+                this.child(
+                    h_flex()
+                        .gap_2()
+                        .items_center()
+                        .text_sm()
+                        .text_color(muted)
+                        .child(Icon::new(IconName::Info).small())
+                        .child(format!(
+                            "No data for {} at most once in this range; the line joins the readings on either side.",
+                            span_label(gap)
+                        )),
+                )
+            })
+            .child(
+                v_flex()
+                    .id("history-chart-region")
+                    .role(Role::Figure)
+                    .test_support()
+                    .aria_label(format!(
+                        "{} history, last {}. {description}",
+                        selection.metric.label(),
+                        range.label()
+                    ))
+                    .track_focus(&self.chart_focus)
+                    .on_key_down(
+                        cx.listener(move |this, event: &KeyDownEvent, _, cx| this.on_chart_key(event, len, cx)),
+                    )
+                    .h(rems(20.))
+                    .p_4()
+                    .gap_2()
+                    .bg(cx.theme().group_box)
+                    .border_1()
+                    .border_color(cx.theme().border)
+                    .rounded(cx.theme().radius_lg)
+                    .focus_visible(move |style| style.border_color(ring))
+                    .child(div().flex_1().min_h_0().child(chart))
+                    .child(
+                        h_flex()
+                            .justify_between()
+                            .gap_3()
+                            .text_sm()
+                            .text_color(muted)
+                            .child(
+                                div()
+                                    .id("history-readout")
+                                    .role(Role::Status)
+                                    .test_support()
+                                    .aria_label(readout.clone().unwrap_or_default())
+                                    .text_color(cx.theme().foreground)
+                                    .child(readout.unwrap_or_default()),
+                            )
+                            .child("Focus the chart and use ← → Home End to read each point"),
+                    ),
+            )
+    }
+}
+
+fn empty_state(
+    icon: IconName,
+    title: impl Into<SharedString>,
+    detail: Option<&'static str>,
+    cx: &App,
+) -> impl IntoElement {
+    v_flex()
+        .id("history-empty")
+        .role(Role::Status)
+        .test_support()
+        .flex_1()
+        .min_h(rems(20.))
+        .items_center()
+        .justify_center()
+        .gap_2()
+        .text_color(cx.theme().muted_foreground)
+        .child(Icon::new(icon).large())
+        .child(
+            div()
+                .font_semibold()
+                .text_color(cx.theme().foreground)
+                .child(title.into()),
+        )
+        .children(detail.map(|detail| div().text_sm().child(detail)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::TimeZone;
+
+    fn summary(values: &[(i64, f64)]) -> HistorySummary {
+        let start = Utc.with_ymd_and_hms(2026, 10, 1, 0, 0, 0).unwrap();
+        let points: Vec<Point> = values
+            .iter()
+            .map(|&(minutes, value)| Point::new(start + Duration::minutes(minutes), value))
+            .collect();
+        summarize(&points).unwrap()
+    }
+
+    #[test]
+    fn value_kind_formats_values_and_changes() {
+        assert_eq!(ValueKind::Percent.value(0.623), "62%");
+        assert_eq!(ValueKind::Percent.change(0.18), "+18 pts");
+        assert_eq!(ValueKind::Percent.change(-0.04), "\u{2212}4 pts");
+        assert_eq!(ValueKind::Percent.change(0.001), "no change");
+        assert_eq!(ValueKind::Dollars.value(18.42), "$18.42");
+        assert_eq!(ValueKind::Dollars.change(-9.3), "\u{2212}$9.30");
+        assert_eq!(ValueKind::Dollars.change(0.0), "no change");
+    }
+
+    #[test]
+    fn span_label_picks_two_units() {
+        assert_eq!(span_label(Duration::minutes(12)), "12m");
+        assert_eq!(span_label(Duration::minutes(310)), "5h 10m");
+        assert_eq!(span_label(Duration::minutes(7 * 24 * 60 - 60)), "6d 23h");
+    }
+
+    #[test]
+    fn describe_covers_latest_change_range_and_window() {
+        let text = describe(&summary(&[(0, 0.44), (60, 0.71), (120, 0.62)]), ValueKind::Percent);
+        assert_eq!(
+            text,
+            "Latest 62%, up 18 points over 2h 0m. Low 44%, high 71%. 3 samples."
+        );
+    }
+
+    #[test]
+    fn describe_handles_single_samples_and_gaps() {
+        assert_eq!(
+            describe(&summary(&[(0, 12.6)]), ValueKind::Dollars),
+            "Latest $12.60. Only one sample so far."
+        );
+        let gappy = describe(&summary(&[(0, 0.1), (300, 0.1)]), ValueKind::Percent);
+        assert!(
+            gappy.ends_with("unchanged over 5h 0m. Low 10%, high 10%. 2 samples. Longest gap without data: 5h 0m.")
+        );
+    }
+}

@@ -4,6 +4,7 @@ mod account_table;
 mod catalog;
 mod dashboard;
 mod focus_cards;
+mod history_view;
 mod providers;
 mod settings_hub;
 mod settings_view;
@@ -43,6 +44,8 @@ fn main() {
         gpui_kit::init(cx);
         theme::init(cx);
         settings_hub::SettingsHub::init(cx);
+        let dir = settings_hub::SettingsHub::global(cx).dir().to_owned();
+        history_view::HistoryPrefs::init(cx, &dir);
         zoom::init(cx);
 
         let bounds = Bounds::centered(None, size(px(1440.), px(960.)), cx);

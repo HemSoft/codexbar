@@ -7,6 +7,8 @@ use chrono::{DateTime, Duration, TimeZone, Utc};
 use codexbar_core::AccountSnapshot;
 use serde::{Deserialize, Serialize};
 
+use crate::summary::Point;
+
 /// Bumped when the line format changes. A file with another version is set aside, never misread.
 const SCHEMA_VERSION: u32 = 1;
 /// A value this close to the previous sample is not a change.
@@ -61,6 +63,8 @@ pub fn default_history_path() -> PathBuf {
 /// Usage history, loaded in memory and appended to disk as refreshes succeed.
 pub struct HistoryStore {
     path: PathBuf,
+    /// False for demo history, which lives in memory and never touches the history file.
+    persist: bool,
     retention: Duration,
     samples: Vec<Sample>,
     last: HashMap<(String, String), usize>,
@@ -73,6 +77,7 @@ impl HistoryStore {
         let path = path.into();
         let mut store = Self {
             path,
+            persist: true,
             retention,
             samples: Vec::new(),
             last: HashMap::new(),
@@ -90,6 +95,40 @@ impl HistoryStore {
         }
         store.reindex();
         store
+    }
+
+    /// History that lives only in memory (the demo dashboard). Recording and pruning work as usual; nothing is written.
+    pub fn in_memory(retention: Duration) -> Self {
+        Self {
+            path: PathBuf::new(),
+            persist: false,
+            retention,
+            samples: Vec::new(),
+            last: HashMap::new(),
+        }
+    }
+
+    /// Adds readings directly, for seeding in-memory demo history. Keeps samples sorted; skips deduplication so a
+    /// generated series is stored exactly as given.
+    pub fn insert_points(&mut self, account: &str, metric: &str, points: &[Point]) {
+        self.samples.extend(points.iter().map(|point| Sample {
+            t: point.at.timestamp(),
+            a: account.to_owned(),
+            m: metric.to_owned(),
+            v: point.value,
+            r: None,
+        }));
+        self.samples.sort_by_key(|sample| sample.t);
+        self.reindex();
+    }
+
+    /// Readings for one metric at or after `since`, oldest first.
+    pub fn points(&self, account: &str, metric: &str, since: DateTime<Utc>) -> Vec<Point> {
+        let since = since.timestamp();
+        self.series(account, metric)
+            .filter(|sample| sample.t >= since)
+            .map(|sample| Point::new(sample.at(), sample.v))
+            .collect()
     }
 
     /// Reads the file. Ok(true) means lines were skipped or expired and the file should be rewritten.
@@ -227,7 +266,7 @@ impl HistoryStore {
     }
 
     fn append(&self, samples: &[Sample]) -> io::Result<()> {
-        if samples.is_empty() {
+        if samples.is_empty() || !self.persist {
             return Ok(());
         }
         let is_new = !self.path.exists();
@@ -248,6 +287,9 @@ impl HistoryStore {
 
     /// Writes the whole file to a temp file and swaps it in, so a crash mid-write never leaves a torn history.
     fn rewrite(&self) -> io::Result<()> {
+        if !self.persist {
+            return Ok(());
+        }
         if let Some(dir) = self.path.parent() {
             fs::create_dir_all(dir)?;
         }

@@ -1,0 +1,170 @@
+//! Synthetic history for the demo dashboard (`--demo`), kept in memory only.
+//!
+//! Each series ends at the account's current value, so the History view agrees with the table. Between them the
+//! demo covers the shapes the charts must handle: sawtooth windows, a steady monthly climb, a spending balance with
+//! a top-up, a flat balance, a spike, and a two-day gap in the data.
+
+use chrono::{DateTime, Duration, Utc};
+use codexbar_core::{AccountSnapshot, Metric};
+
+use crate::HistoryStore;
+use crate::summary::Point;
+
+/// How far back demo history goes; matches the live retention.
+const DEMO_DAYS: i64 = 30;
+const STEP_MINUTES: i64 = 30;
+
+pub fn demo_history(accounts: &[AccountSnapshot], now: DateTime<Utc>) -> HistoryStore {
+    let mut store = HistoryStore::in_memory(Duration::days(DEMO_DAYS));
+    for account in accounts {
+        let id = account.id().as_str();
+        for (ix, metric) in account.metrics().iter().enumerate() {
+            let Some(current) = metric.history_value() else {
+                continue;
+            };
+            let seed = hash(id) ^ (ix as u64).wrapping_mul(0x9E37_79B9);
+            let mut points = series(metric, current, seed, now);
+            // One account has a two-day hole, as if the PC was off, so gaps are visible in the demo.
+            if id == "cursor" {
+                let (from, to) = (now - Duration::days(12), now - Duration::days(10));
+                points.retain(|point| point.at < from || point.at >= to);
+            }
+            store.insert_points(id, &metric.key(), &points);
+        }
+    }
+    store
+}
+
+fn series(metric: &Metric, current: f64, seed: u64, now: DateTime<Utc>) -> Vec<Point> {
+    let steps = DEMO_DAYS * 24 * 60 / STEP_MINUTES;
+    let start = now - Duration::minutes(steps * STEP_MINUTES);
+    let at = |step: i64| start + Duration::minutes(step * STEP_MINUTES);
+    let mut noise = Noise(seed | 1);
+    match metric {
+        Metric::Window { label, .. } => {
+            let period = if label.to_lowercase().contains("5-hour") {
+                Duration::hours(5)
+            } else if label.to_lowercase().contains("week") {
+                Duration::days(7)
+            } else {
+                Duration::days(30)
+            };
+            let period_steps = (period.num_minutes() / STEP_MINUTES).max(1);
+            (0..=steps)
+                .map(|step| {
+                    // Sawtooth: usage climbs through each window and resets, landing on `current` now.
+                    let into = (steps - step) % period_steps;
+                    let progress = 1.0 - into as f64 / period_steps as f64;
+                    let value = current * progress.powf(0.8) + noise.next() * 0.02;
+                    Point::new(at(step), value.clamp(0.0, 1.0))
+                })
+                .collect()
+        }
+        Metric::Quota { .. } => {
+            let spike = steps - 3 * 24 * 60 / STEP_MINUTES;
+            (0..=steps)
+                .map(|step| {
+                    let progress = step as f64 / steps as f64;
+                    let mut value = current * progress + noise.next() * 0.01;
+                    // A short burst three days ago, so the chart shows a spike that downsampling must keep.
+                    if (spike..spike + 2).contains(&step) {
+                        value += 0.25;
+                    }
+                    Point::new(at(step), value.clamp(0.0, 1.0))
+                })
+                .collect()
+        }
+        Metric::Balance { burn_per_day, .. } => {
+            let burn = burn_per_day.map_or(0.0, |burn| burn.cents() as f64 / 100.0);
+            let top_up_at = steps / 3;
+            let top_up = burn * 12.0;
+            (0..=steps)
+                .map(|step| {
+                    let days_left = (steps - step) as f64 * STEP_MINUTES as f64 / (24.0 * 60.0);
+                    // Spending runs the balance down toward `current`; an earlier top-up raised it once.
+                    let mut value = current + burn * days_left;
+                    if burn > 0.0 && step < top_up_at {
+                        value -= top_up;
+                    }
+                    Point::new(at(step), value.max(0.0))
+                })
+                .collect()
+        }
+    }
+}
+
+fn hash(text: &str) -> u64 {
+    text.bytes().fold(0xCBF2_9CE4_8422_2325, |hash, byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x100_0000_01B3)
+    })
+}
+
+/// A tiny deterministic generator, so demo screenshots are stable between runs.
+struct Noise(u64);
+
+impl Noise {
+    /// A value in -0.5..0.5.
+    fn next(&mut self) -> f64 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        (self.0 % 10_000) as f64 / 10_000.0 - 0.5
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::summary::summarize;
+    use chrono::{Local, TimeZone};
+    use codexbar_core::demo::demo_accounts;
+
+    fn now() -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(2026, 10, 7, 14, 0, 0).unwrap()
+    }
+
+    #[test]
+    fn every_series_ends_at_the_accounts_current_value() {
+        let accounts = demo_accounts(now(), &Local);
+        let store = demo_history(&accounts, now());
+        for account in &accounts {
+            for metric in account.metrics() {
+                let Some(current) = metric.history_value() else {
+                    continue;
+                };
+                let points = store.points(account.id().as_str(), &metric.key(), now() - Duration::days(30));
+                let last = points.last().expect("every demo metric has history");
+                assert_eq!(last.at, now());
+                assert!(
+                    (last.value - current).abs() < 0.02,
+                    "{} {}",
+                    account.id().as_str(),
+                    metric.key()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn demo_covers_a_gap_and_a_flat_series() {
+        let accounts = demo_accounts(now(), &Local);
+        let store = demo_history(&accounts, now());
+        let since = now() - Duration::days(30);
+        let cursor = summarize(&store.points("cursor", "included-usage", since)).unwrap();
+        assert!(cursor.longest_gap.is_some_and(|gap| gap >= Duration::days(2)));
+        let flat = accounts
+            .iter()
+            .flat_map(|account| account.metrics().iter().map(move |metric| (account, metric)))
+            .filter_map(|(account, metric)| summarize(&store.points(account.id().as_str(), &metric.key(), since)))
+            .any(|summary| summary.is_flat());
+        assert!(flat, "a balance with no burn stays flat");
+    }
+
+    #[test]
+    fn demo_history_is_never_written_to_disk() {
+        let accounts = demo_accounts(now(), &Local);
+        let mut store = demo_history(&accounts, now());
+        store.record(&accounts, now() + Duration::hours(1)).unwrap();
+        assert!(store.path().as_os_str().is_empty());
+    }
+}
