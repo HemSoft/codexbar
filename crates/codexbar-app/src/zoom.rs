@@ -20,9 +20,11 @@ const BASE_FONT_SIZE: f32 = 16.0;
 const PIXELS_PER_STEP: f32 = 50.0;
 /// Saving waits for the wheel to settle so a fast scroll writes the settings file once.
 const SAVE_DELAY: Duration = Duration::from_millis(600);
-/// Another writer (the WPF app, another window) may hold the shared settings lock briefly; retry this often.
-const SAVE_RETRIES: u32 = 5;
+/// Another writer (the WPF app, another window) may hold the shared settings lock; retry until it's free.
 const SAVE_RETRY_DELAY: Duration = Duration::from_millis(500);
+/// Quit blocks while it saves, so it retries the lock only briefly (gpui allows quit handlers 200 ms).
+const QUIT_RETRIES: u32 = 4;
+const QUIT_RETRY_DELAY: Duration = Duration::from_millis(15);
 
 struct ZoomState {
     level: f64,
@@ -40,30 +42,55 @@ pub fn stepped(level: f64, steps: i32) -> f64 {
     clamp_zoom(level + f64::from(steps) * ZOOM_STEP)
 }
 
-/// Whole zoom steps for a wheel event, carrying any precise-scroll remainder. Positive zooms in.
-fn wheel_steps(delta: &ScrollDelta, carry: &mut f32) -> i32 {
+/// Whole zoom steps for a wheel event, carrying any partial remainder. Positive zooms in.
+///
+/// gpui reports a wheel as `notches × lines_per_notch` lines, where a high-resolution or free-spinning wheel sends
+/// fractions of a notch, or several at once. One notch is one step, so partial notches accumulate like precise
+/// (pixel) scrolling does. Without a usable `lines_per_notch`, each event counts as one notch.
+fn wheel_steps(delta: &ScrollDelta, carry: &mut f32, lines_per_notch: Option<f32>) -> i32 {
     match delta {
         ScrollDelta::Lines(lines) => {
-            *carry = 0.0;
-            // `signum` of 0.0 is 1.0, so a horizontal-only event must not count as a step.
-            if lines.y == 0.0 { 0 } else { lines.y.signum() as i32 }
+            let notches = match lines_per_notch {
+                Some(per_notch) => lines.y / per_notch,
+                // `signum` of 0.0 is 1.0, so a horizontal-only event must not count as a step.
+                None if lines.y == 0.0 => 0.0,
+                None => lines.y.signum(),
+            };
+            *carry += notches * PIXELS_PER_STEP;
         }
-        ScrollDelta::Pixels(pixels) => {
-            *carry += f32::from(pixels.y);
-            let steps = (*carry / PIXELS_PER_STEP).trunc();
-            *carry -= steps * PIXELS_PER_STEP;
-            steps as i32
-        }
+        ScrollDelta::Pixels(pixels) => *carry += f32::from(pixels.y),
     }
+    let steps = (*carry / PIXELS_PER_STEP).trunc();
+    *carry -= steps * PIXELS_PER_STEP;
+    steps as i32
+}
+
+/// The system's "lines to scroll per notch" setting, which gpui multiplies wheel notches by. `None` when it is 0
+/// or "one screen at a time", where a notch can't be recovered from the line count.
+fn wheel_lines_per_notch() -> Option<f32> {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SPI_GETWHEELSCROLLLINES, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SystemParametersInfoW,
+    };
+    const WHEEL_PAGESCROLL: u32 = u32::MAX;
+    let mut lines = 0u32;
+    let ok = unsafe {
+        SystemParametersInfoW(
+            SPI_GETWHEELSCROLLLINES,
+            0,
+            Some((&raw mut lines).cast()),
+            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+        )
+    };
+    (ok.is_ok() && lines != 0 && lines != WHEEL_PAGESCROLL).then_some(lines as f32)
 }
 
 /// Steps for one event of a gesture: a new or finished touchpad gesture starts from zero, so separate partial
 /// gestures never add up to an unexpected step.
-fn gesture_steps(delta: &ScrollDelta, phase: TouchPhase, carry: &mut f32) -> i32 {
+fn gesture_steps(delta: &ScrollDelta, phase: TouchPhase, carry: &mut f32, lines_per_notch: Option<f32>) -> i32 {
     if phase == TouchPhase::Started {
         *carry = 0.0;
     }
-    let steps = wheel_steps(delta, carry);
+    let steps = wheel_steps(delta, carry, lines_per_notch);
     if phase == TouchPhase::Ended {
         *carry = 0.0;
     }
@@ -128,7 +155,7 @@ pub fn set_level(new_level: f64, cx: &mut App) {
 
     cx.spawn(async move |cx| {
         cx.background_executor().timer(SAVE_DELAY).await;
-        for _ in 0..SAVE_RETRIES {
+        loop {
             let outcome = cx.update(|cx| {
                 if cx.global::<ZoomState>().generation != generation {
                     return SaveOutcome::Superseded;
@@ -175,10 +202,18 @@ fn save(cx: &mut App) -> SaveOutcome {
     }
 }
 
-/// Saves a pending change immediately (on quit).
+/// Saves a pending change immediately (on quit), retrying briefly while another writer holds the lock.
 fn flush(cx: &mut App) {
-    if cx.try_global::<ZoomState>().is_some() {
-        save(cx);
+    if cx.try_global::<ZoomState>().is_none() {
+        return;
+    }
+    for attempt in 0..QUIT_RETRIES {
+        if save(cx) != SaveOutcome::Busy {
+            return;
+        }
+        if attempt + 1 < QUIT_RETRIES {
+            std::thread::sleep(QUIT_RETRY_DELAY);
+        }
     }
 }
 
@@ -201,7 +236,12 @@ pub fn capture_wheel(window: &mut Window) {
         cx.stop_propagation();
         let steps = {
             let state = cx.global_mut::<ZoomState>();
-            gesture_steps(&event.delta, event.touch_phase, &mut state.pixel_carry)
+            gesture_steps(
+                &event.delta,
+                event.touch_phase,
+                &mut state.pixel_carry,
+                wheel_lines_per_notch(),
+            )
         };
         if steps != 0 {
             step(steps, cx);
@@ -236,35 +276,58 @@ mod tests {
     fn gesture_steps_reset_carry_between_gestures() {
         let mut carry = 0.0;
         let delta = |y: f32| ScrollDelta::Pixels(point(px(0.0), px(y)));
-        assert_eq!(gesture_steps(&delta(30.0), TouchPhase::Moved, &mut carry), 0);
-        assert_eq!(gesture_steps(&delta(10.0), TouchPhase::Ended, &mut carry), 0);
+        assert_eq!(gesture_steps(&delta(30.0), TouchPhase::Moved, &mut carry, None), 0);
+        assert_eq!(gesture_steps(&delta(10.0), TouchPhase::Ended, &mut carry, None), 0);
         assert_eq!(carry, 0.0, "a finished gesture leaves nothing behind");
-        assert_eq!(gesture_steps(&delta(30.0), TouchPhase::Started, &mut carry), 0);
-        assert_eq!(gesture_steps(&delta(25.0), TouchPhase::Moved, &mut carry), 1);
+        assert_eq!(gesture_steps(&delta(30.0), TouchPhase::Started, &mut carry, None), 0);
+        assert_eq!(gesture_steps(&delta(25.0), TouchPhase::Moved, &mut carry, None), 1);
     }
 
     #[test]
     fn wheel_steps_lines_give_one_step_per_notch() {
+        let lines = |y: f32| ScrollDelta::Lines(point(0.0, y));
         let mut carry = 0.0;
-        assert_eq!(wheel_steps(&ScrollDelta::Lines(point(0.0, 3.0)), &mut carry), 1);
-        assert_eq!(wheel_steps(&ScrollDelta::Lines(point(0.0, -1.0)), &mut carry), -1);
-        assert_eq!(wheel_steps(&ScrollDelta::Lines(point(2.0, 0.0)), &mut carry), 0);
+        assert_eq!(wheel_steps(&lines(3.0), &mut carry, Some(3.0)), 1);
+        assert_eq!(wheel_steps(&lines(-3.0), &mut carry, Some(3.0)), -1);
+        // Two notches in one event zoom twice.
+        assert_eq!(wheel_steps(&lines(6.0), &mut carry, Some(3.0)), 2);
+        assert_eq!(
+            wheel_steps(&ScrollDelta::Lines(point(2.0, 0.0)), &mut carry, Some(3.0)),
+            0
+        );
+    }
+
+    #[test]
+    fn wheel_steps_half_notches_accumulate() {
+        let lines = |y: f32| ScrollDelta::Lines(point(0.0, y));
+        let mut carry = 0.0;
+        assert_eq!(wheel_steps(&lines(1.5), &mut carry, Some(3.0)), 0);
+        assert_eq!(wheel_steps(&lines(1.5), &mut carry, Some(3.0)), 1);
+        assert_eq!(carry, 0.0);
+    }
+
+    #[test]
+    fn wheel_steps_without_lines_per_notch_count_events() {
+        let mut carry = 0.0;
+        assert_eq!(wheel_steps(&ScrollDelta::Lines(point(0.0, 40.0)), &mut carry, None), 1);
+        assert_eq!(wheel_steps(&ScrollDelta::Lines(point(0.0, -0.5)), &mut carry, None), -1);
+        assert_eq!(wheel_steps(&ScrollDelta::Lines(point(2.0, 0.0)), &mut carry, None), 0);
     }
 
     #[test]
     fn wheel_steps_pixels_accumulate_until_a_step() {
         let mut carry = 0.0;
         assert_eq!(
-            wheel_steps(&ScrollDelta::Pixels(point(px(0.0), px(30.0))), &mut carry),
+            wheel_steps(&ScrollDelta::Pixels(point(px(0.0), px(30.0))), &mut carry, None),
             0
         );
         assert_eq!(
-            wheel_steps(&ScrollDelta::Pixels(point(px(0.0), px(30.0))), &mut carry),
+            wheel_steps(&ScrollDelta::Pixels(point(px(0.0), px(30.0))), &mut carry, None),
             1
         );
         assert!((carry - 10.0).abs() < 1e-4);
         assert_eq!(
-            wheel_steps(&ScrollDelta::Pixels(point(px(0.0), px(-130.0))), &mut carry),
+            wheel_steps(&ScrollDelta::Pixels(point(px(0.0), px(-130.0))), &mut carry, None),
             -2
         );
     }

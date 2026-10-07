@@ -16,8 +16,9 @@ use gpui_kit::component::{
     button::ButtonVariants as _, h_flex, v_flex,
 };
 use gpui_kit::{
-    AppContext as _, Context, Entity, InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, Render,
-    SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window, canvas, div, px, rems,
+    AppContext as _, Context, Entity, FocusHandle, InteractiveElement as _, IntoElement, MouseButton,
+    ParentElement as _, Render, Role, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Task,
+    Window, canvas, div, px, rems,
 };
 
 use crate::account_table::AccountTable;
@@ -89,6 +90,8 @@ pub struct Dashboard {
     deactivated_at: Option<Instant>,
     /// The zoom the table's column widths were last laid out for.
     table_zoom: f64,
+    /// One focus handle per view tab, so the tabs are Tab-key stops activated by Enter or Space.
+    view_tab_focus: Vec<FocusHandle>,
     _clock: Task<()>,
     _subscriptions: Vec<Subscription>,
 }
@@ -152,6 +155,7 @@ impl Dashboard {
             now,
             deactivated_at: None,
             table_zoom: crate::zoom::level(cx),
+            view_tab_focus: DashboardView::ALL.iter().map(|_| cx.focus_handle()).collect(),
             _clock: clock,
             _subscriptions: vec![selection, activation],
         };
@@ -314,32 +318,45 @@ impl Dashboard {
                                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                                 // gpui-kit's TabBar heights stop at 44px, which clips labels past ~250% zoom, so these
                                 // underline tabs are sized in rems and follow the zoom continuously (#116).
-                                .child(h_flex().gap(rems(1.25)).text_sm().children(
-                                    DashboardView::ALL.into_iter().enumerate().map(|(ix, view)| {
-                                        let active = ix == selected;
-                                        div()
-                                            .id(("view-tab", ix))
-                                            .py(rems(0.125))
-                                            .border_b_2()
-                                            .border_color(if active {
-                                                cx.theme().primary
-                                            } else {
-                                                cx.theme().transparent
-                                            })
-                                            .text_color(if active {
-                                                cx.theme().tab_active_foreground
-                                            } else {
-                                                cx.theme().tab_foreground
-                                            })
-                                            .cursor_pointer()
-                                            .hover(|style| style.text_color(cx.theme().tab_active_foreground))
-                                            .on_click(cx.listener(move |this, _, _, cx| {
-                                                this.view = view;
-                                                cx.notify();
-                                            }))
-                                            .child(view.title())
-                                    }),
-                                )),
+                                .child(
+                                    h_flex()
+                                        .id("view-tabs")
+                                        .role(Role::TabList)
+                                        .gap(rems(1.25))
+                                        .text_sm()
+                                        .children(DashboardView::ALL.into_iter().enumerate().map(|(ix, view)| {
+                                            let active = ix == selected;
+                                            let ring = cx.theme().ring;
+                                            div()
+                                                .id(("view-tab", ix))
+                                                // Same semantics as gpui-kit's Tab: announced as a selected or unselected
+                                                // tab, reachable with Tab, and a focused div turns Enter/Space into a click.
+                                                .role(Role::Tab)
+                                                .aria_selected(active)
+                                                .track_focus(&self.view_tab_focus[ix])
+                                                .tab_index(0)
+                                                .focus_visible(move |style| style.text_color(ring).border_color(ring))
+                                                .py(rems(0.125))
+                                                .border_b_2()
+                                                .border_color(if active {
+                                                    cx.theme().primary
+                                                } else {
+                                                    cx.theme().transparent
+                                                })
+                                                .text_color(if active {
+                                                    cx.theme().tab_active_foreground
+                                                } else {
+                                                    cx.theme().tab_foreground
+                                                })
+                                                .cursor_pointer()
+                                                .hover(|style| style.text_color(cx.theme().tab_active_foreground))
+                                                .on_click(cx.listener(move |this, _, _, cx| {
+                                                    this.view = view;
+                                                    cx.notify();
+                                                }))
+                                                .child(view.title())
+                                        })),
+                                ),
                         )
                     }),
             )
