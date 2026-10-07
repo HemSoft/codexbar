@@ -25,6 +25,10 @@ pub const ACCOUNT_CONFIGURATION_VERSION: i64 = 1;
 const PRIMARY_FILE: &str = "settings.json";
 const FALLBACK_FILE: &str = "codexbar-settings.json";
 const LOCK_FILE: &str = "settings.write.lock";
+/// Zoom range and step shared with the WPF app (`ZoomHelper`).
+pub const MIN_ZOOM: f64 = 0.5;
+pub const MAX_ZOOM: f64 = 3.0;
+pub const ZOOM_STEP: f64 = 0.1;
 
 /// Provider names as the WPF app stores them (`ProviderId` enum names).
 pub mod names {
@@ -232,6 +236,9 @@ pub struct Settings {
     doc: Value,
     accounts: Vec<AccountRecord>,
     loaded_accounts: Vec<AccountRecord>,
+    /// Top-level scalar settings this copy changed. Only these are written back, so a value another process
+    /// saved since load (the WPF app's zoom, say) is never overwritten with this copy's stale one.
+    edited: Vec<&'static str>,
 }
 
 impl Settings {
@@ -257,6 +264,7 @@ impl Settings {
             doc,
             loaded_accounts: accounts.clone(),
             accounts,
+            edited: Vec::new(),
         })
     }
 
@@ -268,6 +276,7 @@ impl Settings {
             doc: Value::Null,
             accounts: Vec::new(),
             loaded_accounts: Vec::new(),
+            edited: Vec::new(),
         })
     }
 
@@ -281,6 +290,7 @@ impl Settings {
             doc,
             loaded_accounts: accounts.clone(),
             accounts,
+            edited: Vec::new(),
         }
     }
 
@@ -352,7 +362,27 @@ impl Settings {
 
     pub fn set_refresh_interval_secs(&mut self, secs: Option<u64>) {
         let value = secs.map_or(0, |secs| secs as i64);
-        object_mut(&mut self.doc).insert("refreshIntervalSeconds".into(), json!(value));
+        self.set_scalar("refreshIntervalSeconds", json!(value));
+    }
+
+    /// Interface zoom as a factor (1.0 is 100%), clamped to the shared range. Missing or invalid means 100%.
+    pub fn zoom_level(&self) -> f64 {
+        self.doc
+            .get("zoomLevel")
+            .and_then(Value::as_f64)
+            .filter(|zoom| zoom.is_finite() && *zoom > 0.0)
+            .map_or(1.0, clamp_zoom)
+    }
+
+    pub fn set_zoom_level(&mut self, zoom: f64) {
+        self.set_scalar("zoomLevel", json!(clamp_zoom(zoom)));
+    }
+
+    fn set_scalar(&mut self, key: &'static str, value: Value) {
+        object_mut(&mut self.doc).insert(key.into(), value);
+        if !self.edited.contains(&key) {
+            self.edited.push(key);
+        }
     }
 
     /// Adds or replaces an account by id. An account can't move to another provider.
@@ -401,8 +431,10 @@ impl Settings {
         // Start from the latest disk document so fields another process wrote since load survive; then apply this
         // window's own scalar edits (refresh interval) and the account list.
         let mut doc = if disk.is_object() { disk } else { json!({}) };
-        if let Some(interval) = self.doc.get("refreshIntervalSeconds") {
-            object_mut(&mut doc).insert("refreshIntervalSeconds".into(), interval.clone());
+        for key in &self.edited {
+            if let Some(value) = self.doc.get(*key) {
+                object_mut(&mut doc).insert((*key).into(), value.clone());
+            }
         }
         apply_accounts(&mut doc, &accounts)?;
 
@@ -412,12 +444,18 @@ impl Settings {
         self.doc = doc;
         self.accounts = accounts.clone();
         self.loaded_accounts = accounts;
+        self.edited.clear();
         Ok(())
     }
 
     pub fn path(&self) -> &Path {
         &self.path
     }
+}
+
+/// Clamps to the shared range and rounds to the step, so repeated 0.1 steps don't accumulate float error.
+pub fn clamp_zoom(zoom: f64) -> f64 {
+    ((zoom.clamp(MIN_ZOOM, MAX_ZOOM)) * 10.0).round() / 10.0
 }
 
 fn read_document(dir: &Path) -> (PathBuf, Value) {
@@ -931,6 +969,38 @@ mod tests {
         settings.save().unwrap();
         assert_eq!(dir.read(PRIMARY_FILE)["providers"]["Copilot"]["enabled"], false);
         assert!(!Settings::load(&dir.0).unwrap().is_enabled("Copilot"));
+    }
+
+    #[test]
+    fn zoom_level_defaults_clamps_and_rounds() {
+        assert_eq!(Settings::from_json("{}").zoom_level(), 1.0);
+        assert_eq!(Settings::from_json(r#"{"zoomLevel":1.25}"#).zoom_level(), 1.3);
+        assert_eq!(Settings::from_json(r#"{"zoomLevel":9}"#).zoom_level(), 3.0);
+        assert_eq!(Settings::from_json(r#"{"zoomLevel":0.1}"#).zoom_level(), 0.5);
+        assert_eq!(Settings::from_json(r#"{"zoomLevel":"big"}"#).zoom_level(), 1.0);
+        let mut settings = Settings::from_json("{}");
+        settings.set_zoom_level(0.1 + 0.2 + 1.0);
+        assert_eq!(settings.zoom_level(), 1.3);
+    }
+
+    #[test]
+    fn save_zoom_round_trips_and_keeps_other_writers_values() {
+        let dir = TempDir::with(PRIMARY_FILE, LEGACY);
+        let mut mine = Settings::load(&dir.0).unwrap();
+        // Another process (the WPF app) changes the refresh interval after this copy loaded.
+        let mut wpf = dir.read(PRIMARY_FILE);
+        wpf["refreshIntervalSeconds"] = json!(900);
+        fs::write(dir.0.join(PRIMARY_FILE), serde_json::to_string(&wpf).unwrap()).unwrap();
+
+        mine.set_zoom_level(1.5);
+        mine.save().unwrap();
+        let saved = dir.read(PRIMARY_FILE);
+        assert_eq!(saved["zoomLevel"], 1.5);
+        assert_eq!(
+            saved["refreshIntervalSeconds"], 900,
+            "an untouched setting keeps the other writer's value"
+        );
+        assert_eq!(Settings::load(&dir.0).unwrap().zoom_level(), 1.5);
     }
 
     #[test]

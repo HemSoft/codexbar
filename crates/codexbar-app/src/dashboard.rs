@@ -13,12 +13,12 @@ use gpui_kit::component::sidebar::{Sidebar, SidebarMenu, SidebarMenuItem};
 use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::table::{DataTable, TableEvent, TableState};
 use gpui_kit::component::{
-    ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _, TitleBar, button::Button,
+    ActiveTheme as _, Icon, IconName, Sizable as _, Size, StyledExt as _, TitleBar, button::Button,
     button::ButtonVariants as _, h_flex, v_flex,
 };
 use gpui_kit::{
     AppContext as _, Context, Entity, InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, Render,
-    SharedString, Styled as _, Subscription, Task, Window, div, px,
+    SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window, canvas, div, px, rems,
 };
 
 use crate::account_table::AccountTable;
@@ -57,7 +57,8 @@ impl DashboardView {
 }
 
 /// Row height of a large `DataTable` (header and body rows).
-const TABLE_ROW_HEIGHT: gpui_kit::Pixels = px(40.);
+/// Row height of the account table at 100% zoom; DataTable rows are pixels, so they're scaled explicitly.
+const TABLE_ROW_HEIGHT: f32 = 40.;
 /// A tray click this soon after the window lost focus means "hide it": the click itself took the focus away.
 const TOGGLE_GRACE: std::time::Duration = std::time::Duration::from_millis(400);
 
@@ -87,6 +88,8 @@ pub struct Dashboard {
     view: DashboardView,
     now: DateTime<Utc>,
     deactivated_at: Option<Instant>,
+    /// The zoom the table's column widths were last laid out for.
+    table_zoom: f64,
     _clock: Task<()>,
     _subscriptions: Vec<Subscription>,
 }
@@ -149,6 +152,7 @@ impl Dashboard {
             view: DashboardView::Usage,
             now,
             deactivated_at: None,
+            table_zoom: crate::zoom::level(cx),
             _clock: clock,
             _subscriptions: vec![selection, activation],
         };
@@ -295,6 +299,8 @@ impl Dashboard {
         let selected = DashboardView::ALL.iter().position(|v| *v == self.view).unwrap_or(0);
 
         TitleBar::new()
+            // The title bar is a fixed 34px; let it grow with zoom so the tabs aren't clipped (#116).
+            .h(crate::zoom::scaled(34., cx).max(px(34.)))
             .child(
                 h_flex()
                     .gap_2()
@@ -310,7 +316,8 @@ impl Dashboard {
                                 .child(
                                     TabBar::new("views")
                                         .underline()
-                                        .small()
+                                        // Tabs have fixed pixel heights per size; step up with zoom so labels fit.
+                                        .with_size(crate::zoom::control_size(cx))
                                         .selected_index(selected)
                                         .on_click(cx.listener(|this, ix: &usize, _, cx| {
                                             this.view = DashboardView::ALL[*ix];
@@ -351,7 +358,7 @@ impl Dashboard {
                 }))
         });
         Sidebar::new("rail")
-            .w(px(216.))
+            .w(rems(13.5))
             .header(
                 h_flex()
                     .w_full()
@@ -440,13 +447,12 @@ impl Dashboard {
         }
 
         v_flex()
-            .flex_1()
-            .min_h_0()
+            .min_h_full()
             .gap_4()
             .children(failures)
             .child(
                 div()
-                    .h(TABLE_ROW_HEIGHT * (self.accounts.len() + 1) as f32 + px(2.))
+                    .h(crate::zoom::scaled(TABLE_ROW_HEIGHT * (self.accounts.len() + 1) as f32, cx) + px(2.))
                     .flex_shrink_0()
                     .rounded(cx.theme().radius_lg)
                     .border_1()
@@ -454,16 +460,17 @@ impl Dashboard {
                     .overflow_hidden()
                     .child(
                         DataTable::new(&self.table)
-                            .large()
+                            .with_size(Size::Size(crate::zoom::scaled(TABLE_ROW_HEIGHT, cx)))
                             .bordered(false)
                             .stripe(false)
-                            .scrollbar_visible(false, false),
+                            // Zoomed in, the columns can outgrow the window; keep them reachable.
+                            .scrollbar_visible(false, true),
                     ),
             )
             .child(
                 v_flex()
                     .flex_1()
-                    .min_h(px(320.))
+                    .min_h(rems(24.))
                     .gap_3()
                     .p_4()
                     .rounded(cx.theme().radius_lg)
@@ -532,15 +539,28 @@ use gpui_kit::prelude::FluentBuilder as _;
 
 impl Render for Dashboard {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // DataTable caches column widths; refresh them when the zoom changes.
+        let zoom = crate::zoom::level(cx);
+        if (zoom - self.table_zoom).abs() > f64::EPSILON {
+            self.table_zoom = zoom;
+            self.table.update(cx, |table, cx| table.refresh(cx));
+        }
         let body = match self.view {
             DashboardView::Usage => self.render_usage(cx),
             DashboardView::Settings => crate::settings_view::render(window, cx).into_any_element(),
             _ => self.render_placeholder(cx).into_any_element(),
         };
         v_flex()
+            .relative()
             .size_full()
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
+            // Ctrl+wheel zoom is caught in the capture phase, before the table or settings list can scroll (#116).
+            .child(
+                canvas(|_, _, _| {}, |_, _, window, _| crate::zoom::capture_wheel(window))
+                    .absolute()
+                    .size_full(),
+            )
             .child(self.render_title_bar(cx))
             .child(
                 h_flex()
@@ -554,7 +574,15 @@ impl Render for Dashboard {
                             .min_w_0()
                             .p_4()
                             .gap_4()
-                            .child(body)
+                            // Zoomed in, the dashboard scrolls instead of squeezing its cards (#116).
+                            .child(
+                                div()
+                                    .id("main-scroll")
+                                    .flex_1()
+                                    .min_h_0()
+                                    .overflow_y_scroll()
+                                    .child(body),
+                            )
                             .child(self.render_status_line(cx)),
                     ),
             )
