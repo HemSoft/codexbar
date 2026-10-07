@@ -44,6 +44,10 @@ impl AccountTable {
     pub fn new(rows: Vec<AccountSnapshot>, now: DateTime<Utc>) -> Self {
         Self { rows, now }
     }
+
+    pub fn row(&self, ix: usize) -> Option<&AccountSnapshot> {
+        self.rows.get(ix)
+    }
 }
 
 impl TableDelegate for AccountTable {
@@ -142,7 +146,7 @@ impl TableDelegate for AccountTable {
                         .unwrap_or_else(|| "—".into()),
                 )
                 .into_any_element(),
-            Col::Trend => sparkline(row, cx).into_any_element(),
+            Col::Trend => sparkline(row, cx),
         }
     }
 }
@@ -158,7 +162,14 @@ fn limit_label(metric: &Metric) -> String {
 
 /// A 14-day pressure trend. A sparkline shows shape, not level (the progress column shows level),
 /// so each row fits its own range.
-fn sparkline(row: &AccountSnapshot, cx: &Context<TableState<AccountTable>>) -> impl IntoElement {
+fn sparkline(row: &AccountSnapshot, cx: &Context<TableState<AccountTable>>) -> gpui_kit::AnyElement {
+    if row.trend().len() < 2 {
+        // Real providers have no history until #85 stores it.
+        return div()
+            .text_color(cx.theme().muted_foreground)
+            .child("—")
+            .into_any_element();
+    }
     let color = cx.theme().chart_1;
     let points: Vec<(SharedString, f64)> = row
         .trend()
@@ -170,23 +181,27 @@ fn sparkline(row: &AccountSnapshot, cx: &Context<TableState<AccountTable>>) -> i
         (low.min(*value), high.max(*value))
     });
     let pad = ((high - low) * 0.15).max(0.01);
-    div().w_full().h(px(26.)).child(
-        AreaChart::new(points)
-            .id(ElementId::Name(format!("trend-{}", row.id().as_str()).into()))
-            .x(|(label, _)| label.clone())
-            .y(|(_, value)| *value)
-            .y_domain((low - pad).max(0.0), high + pad)
-            .linear()
-            .stroke(color)
-            .fill(linear_gradient(
-                0.,
-                linear_color_stop(color.opacity(0.35), 1.),
-                linear_color_stop(color.opacity(0.), 0.),
-            ))
-            .x_axis(false)
-            .grid(false)
-            .y_axis(false)
-            .interactive(false)
-            .appear(false),
-    )
+    div()
+        .w_full()
+        .h(px(26.))
+        .child(
+            AreaChart::new(points)
+                .id(ElementId::Name(format!("trend-{}", row.id().as_str()).into()))
+                .x(|(label, _)| label.clone())
+                .y(|(_, value)| *value)
+                .y_domain((low - pad).max(0.0), high + pad)
+                .linear()
+                .stroke(color)
+                .fill(linear_gradient(
+                    0.,
+                    linear_color_stop(color.opacity(0.35), 1.),
+                    linear_color_stop(color.opacity(0.), 0.),
+                ))
+                .x_axis(false)
+                .grid(false)
+                .y_axis(false)
+                .interactive(false)
+                .appear(false),
+        )
+        .into_any_element()
 }

@@ -1,0 +1,16 @@
+[package]
+name = "codexbar-providers"
+description = "CodexBar provider adapters: credentials, HTTP fetch and response parsing"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+codexbar-core.workspace = true
+chrono.workspace = true
+serde_json.workspace = true
+ureq.workspace = true
+
+[lints]
+workspace = true

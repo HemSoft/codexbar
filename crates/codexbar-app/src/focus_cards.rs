@@ -171,6 +171,8 @@ fn usage_card(account: &AccountSnapshot, now: DateTime<Utc>, cx: &App) -> Card {
         Card::new(title, format!("Today, {start} – now"), chart)
             .legend(current_color, "This window")
             .legend(previous_color, "Previous window")
+    } else if account.trend().len() < 2 {
+        Card::new("Usage over time", "History", no_history(cx))
     } else {
         let points: Vec<(SharedString, f64)> = account
             .trend()
@@ -259,12 +261,7 @@ fn share_card(account: &AccountSnapshot, now: DateTime<Utc>, cx: &App) -> Card {
                 .child(div().text_2xl().font_semibold().child(format!("{:.0}%", used * 100.0)))
                 .child(div().text_xs().text_color(cx.theme().muted_foreground).child("used")),
         );
-    let remaining = 1.0 - used;
-    let takeaway = if remaining >= 0.45 {
-        "About half the pool left".to_owned()
-    } else {
-        format!("{:.0}% of the pool left", remaining * 100.0)
-    };
+    let takeaway = pool_takeaway(1.0 - used);
     let title = if metric.label().to_lowercase().contains("window") {
         metric.label().to_owned()
     } else {
@@ -317,6 +314,11 @@ fn activity_card(account: &AccountSnapshot, cx: &App) -> Card {
     }
 
     let trend = account.trend();
+    if trend.len() < 2 {
+        return Card::new("Usage by day", "Last 7 days", no_history(cx))
+            .takeaway("No history yet")
+            .caption("Daily usage appears once history is stored");
+    }
     let bars: Vec<(SharedString, f64)> = trend
         .iter()
         .enumerate()
@@ -346,6 +348,29 @@ fn activity_card(account: &AccountSnapshot, cx: &App) -> Card {
     Card::new("Usage by day", "Last 7 days", chart)
         .takeaway(takeaway)
         .caption("Share of the tightest limit")
+}
+
+/// How much of a window's pool is left, in words.
+fn pool_takeaway(remaining: f64) -> String {
+    match remaining {
+        r if r >= 0.9 => "Nearly all of the pool left".to_owned(),
+        r if (0.45..=0.55).contains(&r) => "About half the pool left".to_owned(),
+        r if r <= 0.0 => "Pool used up".to_owned(),
+        r => format!("{:.0}% of the pool left", r * 100.0),
+    }
+}
+
+/// The empty state for charts that need stored history.
+fn no_history(cx: &App) -> impl IntoElement {
+    v_flex()
+        .size_full()
+        .items_center()
+        .justify_center()
+        .gap_1()
+        .text_sm()
+        .text_color(cx.theme().muted_foreground)
+        .child(Icon::new(IconName::Calendar))
+        .child("History builds up as CodexBar refreshes")
 }
 
 fn pace_takeaway(metric: &Metric, now: DateTime<Utc>) -> String {

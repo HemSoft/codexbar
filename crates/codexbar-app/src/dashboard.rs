@@ -1,7 +1,11 @@
 //! The borderless dashboard window: title bar, view rail, urgency table, focus cards and status line.
 
+use std::sync::Arc;
+use std::time::Instant;
+
 use chrono::{DateTime, Duration, Local, Utc};
-use codexbar_core::{AccountSnapshot, demo::demo_accounts, format, sort_by_urgency};
+use codexbar_core::{AccountId, AccountSnapshot, Metric, demo::demo_accounts, format, sort_by_urgency};
+use codexbar_providers::{ProviderError, UsageProvider};
 use gpui_kit::component::sidebar::{Sidebar, SidebarMenu, SidebarMenuItem};
 use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::table::{DataTable, TableEvent, TableState};
@@ -11,7 +15,7 @@ use gpui_kit::component::{
 };
 use gpui_kit::{
     AppContext as _, Context, Entity, InteractiveElement as _, IntoElement, MouseButton, ParentElement as _, Render,
-    SharedString, Styled as _, Subscription, Window, div, px,
+    SharedString, Styled as _, Subscription, Task, Window, div, px,
 };
 
 use crate::account_table::AccountTable;
@@ -49,61 +53,217 @@ impl DashboardView {
 const REFRESH_INTERVAL_SECS: i64 = 120;
 /// Row height of a large `DataTable` (header and body rows).
 const TABLE_ROW_HEIGHT: gpui_kit::Pixels = px(40.);
+/// A tray click this soon after the window lost focus means "hide it": the click itself took the focus away.
+const TOGGLE_GRACE: std::time::Duration = std::time::Duration::from_millis(400);
+
+/// Where accounts come from.
+pub enum DataSource {
+    /// Real provider adapters, fetched off the UI thread.
+    Live(Vec<Arc<dyn UsageProvider>>),
+    /// Synthetic accounts for design work (`CODEXBAR_DEMO=1`).
+    Demo,
+}
+
+/// A provider whose last fetch failed. Its last good accounts stay on screen.
+struct Failure {
+    provider: &'static str,
+    message: String,
+}
 
 pub struct Dashboard {
+    source: DataSource,
     accounts: Vec<AccountSnapshot>,
+    failures: Vec<Failure>,
+    loading: bool,
+    last_refresh: Option<DateTime<Utc>>,
     table: Entity<TableState<AccountTable>>,
-    selected: usize,
+    selected: Option<AccountId>,
     view: DashboardView,
     now: DateTime<Utc>,
+    deactivated_at: Option<Instant>,
+    _clock: Task<()>,
     _subscriptions: Vec<Subscription>,
 }
 
 impl Dashboard {
-    pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(source: DataSource, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let now = Utc::now();
-        let mut accounts = demo_accounts(now, &Local);
-        sort_by_urgency(&mut accounts, now);
-
         let table = cx.new(|cx| {
-            TableState::new(AccountTable::new(accounts.clone(), now), window, cx)
+            TableState::new(AccountTable::new(Vec::new(), now), window, cx)
                 .row_selectable(true)
                 .col_selectable(false)
                 .col_movable(false)
                 .col_resizable(false)
                 .sortable(false)
         });
-        table.update(cx, |table, cx| table.set_selected_row(0, cx));
 
-        let subscription = cx.subscribe(&table, |this, _, event: &TableEvent, cx| {
+        let selection = cx.subscribe(&table, |this, table, event: &TableEvent, cx| {
             if let TableEvent::SelectRow(row) = event {
-                this.selected = *row;
+                this.selected = table.read(cx).delegate().row(*row).map(|account| account.id().clone());
                 cx.notify();
             }
         });
+        let activation = cx.observe_window_activation(window, |this, window, _| {
+            if !window.is_window_active() {
+                this.deactivated_at = Some(Instant::now());
+            }
+        });
 
-        Self {
-            accounts,
+        // Once a second: advance the clock that ages and countdowns read, and refresh when due.
+        let clock = cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor().timer(std::time::Duration::from_secs(1)).await;
+                let alive = this.update(cx, |this, cx| {
+                    this.now = Utc::now();
+                    let due = this
+                        .last_refresh
+                        .is_none_or(|at| this.now - at >= Duration::seconds(REFRESH_INTERVAL_SECS));
+                    if due && !this.loading {
+                        this.refresh(cx);
+                    }
+                    cx.notify();
+                });
+                if alive.is_err() {
+                    break;
+                }
+            }
+        });
+
+        let mut dashboard = Self {
+            source,
+            accounts: Vec::new(),
+            failures: Vec::new(),
+            loading: false,
+            last_refresh: None,
             table,
-            selected: 0,
+            selected: None,
             view: DashboardView::Usage,
             now,
-            _subscriptions: vec![subscription],
+            deactivated_at: None,
+            _clock: clock,
+            _subscriptions: vec![selection, activation],
+        };
+        dashboard.refresh(cx);
+        dashboard
+    }
+
+    /// True when a tray click should hide rather than raise: the window is up and was focused until the click.
+    pub fn should_hide_on_toggle(&self, window: &Window) -> bool {
+        crate::tray::is_shown(window)
+            && (window.is_window_active() || self.deactivated_at.is_some_and(|at| at.elapsed() < TOGGLE_GRACE))
+    }
+
+    /// Fetches every provider off the UI thread. A failed provider keeps its last good accounts.
+    pub fn refresh(&mut self, cx: &mut Context<Self>) {
+        let providers = match &self.source {
+            DataSource::Demo => {
+                let now = Utc::now();
+                self.last_refresh = Some(now);
+                self.set_accounts(demo_accounts(now, &Local), cx);
+                return;
+            }
+            DataSource::Live(providers) => providers.clone(),
+        };
+        self.loading = true;
+        cx.notify();
+        cx.spawn(async move |this, cx| {
+            let results = cx
+                .background_spawn(async move {
+                    let now = Utc::now();
+                    providers
+                        .iter()
+                        .map(|provider| (provider.name(), provider.fetch(now)))
+                        .collect::<Vec<_>>()
+                })
+                .await;
+            this.update(cx, |this, cx| this.apply_results(results, cx)).ok();
+        })
+        .detach();
+    }
+
+    fn apply_results(
+        &mut self,
+        results: Vec<(&'static str, Result<Vec<AccountSnapshot>, ProviderError>)>,
+        cx: &mut Context<Self>,
+    ) {
+        let mut accounts = Vec::new();
+        self.failures.clear();
+        for (provider, result) in results {
+            match result {
+                Ok(fresh) => accounts.extend(fresh),
+                Err(error) => {
+                    // Keep last good snapshots from this provider; their age shows they are stale.
+                    accounts.extend(
+                        self.accounts
+                            .iter()
+                            .filter(|a| a.provider().display_name() == provider)
+                            .cloned(),
+                    );
+                    self.failures.push(Failure {
+                        provider,
+                        message: error.to_string(),
+                    });
+                }
+            }
         }
+        self.loading = false;
+        self.last_refresh = Some(Utc::now());
+        self.set_accounts(accounts, cx);
+    }
+
+    fn set_accounts(&mut self, mut accounts: Vec<AccountSnapshot>, cx: &mut Context<Self>) {
+        self.now = Utc::now();
+        sort_by_urgency(&mut accounts, self.now);
+        let selected_ix = self
+            .selected
+            .as_ref()
+            .and_then(|id| accounts.iter().position(|a| a.id() == id))
+            .unwrap_or(0);
+        self.selected = accounts.get(selected_ix).map(|a| a.id().clone());
+        self.accounts = accounts.clone();
+        let now = self.now;
+        self.table.update(cx, |table, cx| {
+            *table.delegate_mut() = AccountTable::new(accounts, now);
+            table.refresh(cx);
+            if table.delegate().row(selected_ix).is_some() {
+                table.set_selected_row(selected_ix, cx);
+            }
+        });
+        crate::tray::set_tooltip(cx, &self.tooltip());
+        cx.notify();
+    }
+
+    /// The tray hover text: the most urgent account, or the reason there is none.
+    fn tooltip(&self) -> String {
+        let Some(top) = self.accounts.first() else {
+            return match self.failures.first() {
+                Some(failure) => format!("CodexBar: {} - {}", failure.provider, failure.message),
+                None => "CodexBar".to_owned(),
+            };
+        };
+        let metric = top.primary();
+        let used = metric
+            .and_then(Metric::used_fraction)
+            .map(|u| format!(" {:.0}%", u * 100.0))
+            .unwrap_or_default();
+        let reset = metric
+            .and_then(Metric::resets_at)
+            .map(|at| format!(", resets {}", format::reset_label(at, self.now, &Local)))
+            .unwrap_or_default();
+        format!("CodexBar - {}{used}{reset}", top.display_name())
     }
 
     fn focused(&self) -> Option<&AccountSnapshot> {
-        self.accounts.get(self.selected)
+        let id = self.selected.as_ref()?;
+        self.accounts.iter().find(|a| a.id() == id)
     }
 
     fn render_title_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let updated = self
-            .accounts
-            .iter()
-            .map(AccountSnapshot::fetched_at)
-            .max()
-            .map(|at| format!("Updated {}", format::age_label(at, self.now)))
-            .unwrap_or_default();
+        let updated = match (self.loading, self.last_refresh) {
+            (true, None) => "Loading…".to_owned(),
+            (_, Some(at)) => format!("Updated {}", format::age_label(at, self.now)),
+            (false, None) => String::new(),
+        };
         let selected = DashboardView::ALL.iter().position(|v| *v == self.view).unwrap_or(0);
 
         TitleBar::new()
@@ -143,10 +303,8 @@ impl Dashboard {
                             .small()
                             .icon(IconName::RefreshCw)
                             .tooltip("Refresh now (F5)")
-                            .on_click(cx.listener(|this, _, _, cx| {
-                                this.now = Utc::now();
-                                cx.notify();
-                            })),
+                            .loading(self.loading)
+                            .on_click(cx.listener(|this, _, _, cx| this.refresh(cx))),
                     ),
             )
     }
@@ -186,7 +344,7 @@ impl Dashboard {
             )
     }
 
-    fn render_usage(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_usage(&self, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
         let focused = self.focused();
         let cards = focused
             .map(|account| focus_cards(account, self.now, cx))
@@ -201,10 +359,55 @@ impl Dashboard {
                 .children(severity_tag(severity))
         });
 
+        let failures = self.failures.iter().map(|failure| {
+            h_flex()
+                .gap_2()
+                .items_center()
+                .px_3()
+                .py_2()
+                .rounded(cx.theme().radius)
+                .border_1()
+                .border_color(cx.theme().border)
+                .text_sm()
+                .child(
+                    Icon::new(IconName::TriangleAlert)
+                        .small()
+                        .text_color(cx.theme().warning),
+                )
+                .child(div().font_semibold().child(failure.provider))
+                .child(
+                    div()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(failure.message.clone()),
+                )
+        });
+        if self.accounts.is_empty() {
+            return v_flex()
+                .flex_1()
+                .gap_3()
+                .children(failures)
+                .child(
+                    v_flex()
+                        .flex_1()
+                        .items_center()
+                        .justify_center()
+                        .gap_2()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(Icon::new(IconName::Inbox).large())
+                        .child(if self.loading {
+                            "Fetching usage…"
+                        } else {
+                            "No accounts connected yet"
+                        }),
+                )
+                .into_any_element();
+        }
+
         v_flex()
             .flex_1()
             .min_h_0()
             .gap_4()
+            .children(failures)
             .child(
                 div()
                     .h(TABLE_ROW_HEIGHT * (self.accounts.len() + 1) as f32 + px(2.))
@@ -233,6 +436,7 @@ impl Dashboard {
                     .children(heading)
                     .child(h_flex().flex_1().min_h_0().items_stretch().gap_4().children(cards)),
             )
+            .into_any_element()
     }
 
     fn render_placeholder(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -259,17 +463,17 @@ impl Dashboard {
             .filter(|a| a.assess(self.now).severity().needs_attention())
             .count();
         let next_refresh = self
-            .accounts
-            .iter()
-            .map(AccountSnapshot::fetched_at)
-            .max()
+            .last_refresh
             .map(|at| at + Duration::seconds(REFRESH_INTERVAL_SECS) - self.now)
             .unwrap_or_default();
         h_flex()
             .gap_2()
             .text_sm()
             .text_color(cx.theme().muted_foreground)
-            .child(format!("{} accounts", self.accounts.len()))
+            .child(match self.accounts.len() {
+                1 => "1 account".to_owned(),
+                n => format!("{n} accounts"),
+            })
             .child("·")
             .child(
                 div()
@@ -286,7 +490,7 @@ use gpui_kit::prelude::FluentBuilder as _;
 impl Render for Dashboard {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let body = match self.view {
-            DashboardView::Usage => self.render_usage(cx).into_any_element(),
+            DashboardView::Usage => self.render_usage(cx),
             _ => self.render_placeholder(cx).into_any_element(),
         };
         v_flex()
