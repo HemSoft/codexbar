@@ -1,4 +1,4 @@
-//! The CodexBar brand theme: navy ground, cyan data, lime/amber/red status.
+//! The HemSoft brand theme: gold on black (from the HemSoft site tokens), with orange/red reserved for status.
 
 use gpui_kit::App;
 use gpui_kit::component::{Theme, ThemeRegistry};
