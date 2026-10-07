@@ -255,7 +255,7 @@ fn history_view_shows_summary_and_chart_for_the_selected_account(cx: &mut TestAp
     open_history(cx, handle);
 
     let (view, _) = cx.update(|cx| dashboard.read(cx).history_parts());
-    let shown = cx.update(|cx| view.read(cx).shown()).unwrap();
+    let shown = cx.update(|cx| view.read(cx).shown(cx)).unwrap();
     // The Usage view's selection (the most urgent account) carries over.
     assert_eq!(shown, ("codex-personal".to_owned(), "5-hour-window".to_owned()));
 
@@ -309,7 +309,7 @@ fn history_metric_and_range_can_be_changed(cx: &mut TestAppContext) {
     let (view, _) = cx.update(|cx| dashboard.read(cx).history_parts());
 
     click(cx, handle, ("history-metric", 1usize));
-    let shown = cx.update(|cx| view.read(cx).shown()).unwrap();
+    let shown = cx.update(|cx| view.read(cx).shown(cx)).unwrap();
     assert_eq!(shown.1, "weekly");
     let week = label(cx, handle, "history-chart-region").unwrap();
     assert!(week.starts_with("Weekly history, last 7 days."), "{week}");
@@ -410,7 +410,7 @@ fn history_follows_the_usage_selection_until_an_account_is_picked(cx: &mut TestA
     let settings = TempSettings::new("history-follow", "{}");
     let (handle, dashboard) = open_dashboard(cx, &settings);
     let (view, _) = cx.update(|cx| dashboard.read(cx).history_parts());
-    let shown = |cx: &mut TestAppContext| cx.update(|cx| view.read(cx).shown()).unwrap().0;
+    let shown = |cx: &mut TestAppContext| cx.update(|cx| view.read(cx).shown(cx)).unwrap().0;
     let row_id = |cx: &mut TestAppContext, ix: usize| cx.update(|cx| dashboard.read(cx).account_id(ix)).unwrap();
 
     // Selecting another Usage row after the first load still carries over.
@@ -427,4 +427,34 @@ fn history_follows_the_usage_selection_until_an_account_is_picked(cx: &mut TestA
     cx.update(|cx| dashboard.update(cx, |dashboard, cx| dashboard.select_row(1, cx)));
     cx.run_until_parked();
     assert_eq!(shown(cx), picked);
+}
+
+#[gpui_kit::test]
+fn single_balance_account_preferences_move_to_its_configured_id(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("legacy-ids", "{}");
+    std::fs::write(
+        settings.0.join("dashboard.json"),
+        r#"{ "version": 1, "hiddenHistory": ["openrouter"] }"#,
+    )
+    .unwrap();
+    cx.update(|cx| {
+        SettingsHub::init_with(cx, &settings.0, Arc::new(MemoryCredentialStore::default()));
+        crate::history_view::HistoryPrefs::init(cx, &settings.0);
+    });
+
+    // OpenRouter is on by default with one implicit account; Moonshot is off.
+    let renames = cx.update(|cx| crate::providers::legacy_ids(SettingsHub::global(cx)));
+    assert_eq!(renames.len(), 1, "{renames:?}");
+    let (legacy, configured) = renames[0].clone();
+    assert_eq!(legacy, "openrouter");
+    assert_ne!(configured, "openrouter");
+
+    cx.update(|cx| crate::history_view::HistoryPrefs::rename_accounts(cx, &renames));
+    let shows = |cx: &mut TestAppContext, id: &str| cx.update(|cx| crate::history_view::HistoryPrefs::shows(cx, id));
+    assert!(
+        !shows(cx, &configured),
+        "the hidden preference follows the account to its configured id"
+    );
+    assert!(shows(cx, "openrouter"));
+    assert_eq!(hidden_on_disk(&settings), serde_json::json!([configured]));
 }

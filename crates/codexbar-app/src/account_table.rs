@@ -57,6 +57,10 @@ impl AccountTable {
         Self { rows, now, compact }
     }
 
+    pub fn set_compact(&mut self, compact: Compact) {
+        self.compact = compact;
+    }
+
     pub fn row(&self, ix: usize) -> Option<&AccountSnapshot> {
         self.rows.get(ix)
     }

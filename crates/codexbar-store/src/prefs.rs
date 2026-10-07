@@ -50,6 +50,16 @@ impl DashboardPrefs {
         }
     }
 
+    /// Carries a preference from an account's old id to its new one. Returns true when something changed.
+    pub fn rename_account(&mut self, from: &str, to: &str) -> bool {
+        if self.hidden_history.remove(from) {
+            self.hidden_history.insert(to.to_owned());
+            true
+        } else {
+            false
+        }
+    }
+
     pub fn is_read_only(&self) -> bool {
         self.read_only
     }
@@ -144,6 +154,16 @@ mod tests {
         assert!(!loaded.shows_history("cursor"));
         assert!(loaded.shows_history("moonshot"));
         assert_eq!(dir.read()["hiddenHistory"], json!(["cursor"]));
+    }
+
+    #[test]
+    fn rename_account_moves_a_hidden_preference() {
+        let mut prefs = DashboardPrefs::default();
+        prefs.set_shows_history("openrouter", false);
+        assert!(prefs.rename_account("openrouter", "a1b2"));
+        assert!(prefs.shows_history("openrouter"));
+        assert!(!prefs.shows_history("a1b2"));
+        assert!(!prefs.rename_account("openrouter", "a1b2"), "nothing left to move");
     }
 
     #[test]

@@ -8,6 +8,8 @@ use chrono::{DateTime, Duration, Utc};
 use codexbar_core::{AccountSnapshot, Metric};
 
 use crate::HistoryStore;
+#[cfg(test)]
+use crate::summary::GAP_THRESHOLD;
 use crate::summary::Point;
 
 /// How far back demo history goes; matches the live retention.
@@ -154,13 +156,17 @@ mod tests {
         let accounts = demo_accounts(now(), &Local);
         let store = demo_history(&accounts, now());
         let since = now() - Duration::days(30);
-        let cursor = summarize(&store.points("cursor", "included-usage", since), now()).unwrap();
+        let cursor = summarize(&store.points("cursor", "included-usage", since), now(), GAP_THRESHOLD).unwrap();
         assert!(cursor.longest_gap.is_some_and(|gap| gap >= Duration::days(2)));
         let flat = accounts
             .iter()
             .flat_map(|account| account.metrics().iter().map(move |metric| (account, metric)))
             .filter_map(|(account, metric)| {
-                summarize(&store.points(account.id().as_str(), &metric.key(), since), now())
+                summarize(
+                    &store.points(account.id().as_str(), &metric.key(), since),
+                    now(),
+                    GAP_THRESHOLD,
+                )
             })
             .any(|summary| summary.is_flat());
         assert!(flat, "a balance with no burn stays flat");

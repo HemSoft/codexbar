@@ -8,7 +8,7 @@ use chrono::{DateTime, Duration, Local, Utc};
 use codexbar_core::{AccountId, AccountSnapshot, Metric};
 use codexbar_store::HistoryStore;
 use codexbar_store::prefs::DashboardPrefs;
-use codexbar_store::summary::{ChartPoint, HistorySummary, chart_series, summarize};
+use codexbar_store::summary::{ChartPoint, HistorySummary, chart_series, gap_threshold, summarize};
 use gpui_kit::TestSupportExt as _;
 use gpui_kit::component::button::{Button, ButtonGroup, ButtonVariants as _};
 use gpui_kit::component::chart::AreaChart;
@@ -178,6 +178,20 @@ impl HistoryPrefs {
         cx.refresh_windows();
     }
 
+    /// Moves preferences saved under old account ids to the new ones, saving once if anything moved.
+    pub fn rename_accounts(cx: &mut App, renames: &[(&str, String)]) {
+        cx.update_global(|hub: &mut Self, _| {
+            let mut draft = hub.prefs.clone();
+            let mut changed = false;
+            for (from, to) in renames {
+                changed |= draft.rename_account(from, to);
+            }
+            if changed && draft.save(&hub.dir).is_ok() {
+                hub.prefs = draft;
+            }
+        });
+    }
+
     fn error(cx: &App) -> Option<SharedString> {
         cx.try_global::<Self>().and_then(|prefs| prefs.error.clone())
     }
@@ -258,8 +272,8 @@ impl HistoryView {
 
     /// The account and metric key shown, for the headless UI tests.
     #[cfg(test)]
-    pub fn shown(&self) -> Option<(String, String)> {
-        let selection = self.selection()?;
+    pub fn shown(&self, cx: &App) -> Option<(String, String)> {
+        let selection = self.selection(cx)?;
         Some((selection.account.id().as_str().to_owned(), selection.metric.key()))
     }
 
@@ -273,7 +287,7 @@ impl HistoryView {
         cx.notify();
     }
 
-    fn selection(&self) -> Option<Selection<'_>> {
+    fn selection(&self, cx: &App) -> Option<Selection<'_>> {
         let account = self
             .account
             .as_ref()
@@ -292,12 +306,13 @@ impl HistoryView {
             let history = self.history.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             history.points(account.id().as_str(), &metric.key(), since)
         };
-        let summary = summarize(&points, now);
+        let gap = history_gap(cx);
+        let summary = summarize(&points, now, gap);
         Some(Selection {
             account,
             metric,
             kind: ValueKind::of(metric),
-            series: chart_series(&points, MAX_CHART_POINTS),
+            series: chart_series(&points, MAX_CHART_POINTS, gap),
             summary,
         })
     }
@@ -321,6 +336,15 @@ impl HistoryView {
     }
 }
 
+/// How long without samples counts as missing data, given the refresh interval in settings.
+pub fn history_gap(cx: &App) -> Duration {
+    let interval = cx
+        .try_global::<crate::settings_hub::SettingsHub>()
+        .and_then(|hub| hub.settings().refresh_interval_secs())
+        .map(|secs| Duration::seconds(secs as i64));
+    gap_threshold(interval)
+}
+
 /// Metrics that have numeric history, in the account's order.
 fn charted_metrics(account: &AccountSnapshot) -> impl Iterator<Item = &Metric> {
     account
@@ -342,7 +366,7 @@ impl Render for HistoryView {
         if self.accounts.is_empty() {
             return empty_state(IconName::Calendar, "No accounts connected yet", None, cx).into_any_element();
         }
-        let selection = self.selection();
+        let selection = self.selection(cx);
         h_flex()
             .size_full()
             .items_start()
@@ -737,7 +761,12 @@ mod tests {
             .iter()
             .map(|&(minutes, value)| Point::new(start + Duration::minutes(minutes), value))
             .collect();
-        summarize(&points, points.last().unwrap().at).unwrap()
+        summarize(
+            &points,
+            points.last().unwrap().at,
+            codexbar_store::summary::GAP_THRESHOLD,
+        )
+        .unwrap()
     }
 
     #[test]

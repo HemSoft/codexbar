@@ -45,14 +45,24 @@ impl HistorySummary {
     }
 }
 
-/// Unchanged values are re-sampled every 15 minutes, so a quiet hour means the app wasn't running or fetching.
+/// The shortest stretch without samples that counts as missing data. Unchanged values are re-sampled every 15
+/// minutes, so with frequent refreshes a quiet hour means the app wasn't running or fetching; callers with a longer
+/// refresh interval pass a longer threshold (see [`gap_threshold`]).
 pub const GAP_THRESHOLD: Duration = Duration::hours(1);
+
+/// The missing-data threshold for a refresh interval: twice the interval plus slack for fetch time, never under
+/// [`GAP_THRESHOLD`]. Without automatic refresh, samples only arrive on demand, so the default applies.
+pub fn gap_threshold(refresh_interval: Option<Duration>) -> Duration {
+    refresh_interval.map_or(GAP_THRESHOLD, |interval| {
+        (interval * 2 + Duration::minutes(5)).max(GAP_THRESHOLD)
+    })
+}
 /// Differences smaller than this are not changes; matches the history store's deduplication.
 pub const FLAT_EPSILON: f64 = 0.0005;
 
-/// Summarizes points sorted oldest first, as of `end` (normally now). `None` when there are none, so callers show an
-/// empty state instead of zeros. Non-finite values are ignored.
-pub fn summarize(points: &[Point], end: DateTime<Utc>) -> Option<HistorySummary> {
+/// Summarizes points sorted oldest first, as of `end` (normally now). Stretches longer than `gap` count as missing
+/// data. `None` when there are none, so callers show an empty state instead of zeros. Non-finite values are ignored.
+pub fn summarize(points: &[Point], end: DateTime<Utc>, gap: Duration) -> Option<HistorySummary> {
     let mut finite = points.iter().filter(|point| point.value.is_finite());
     let first = *finite.next()?;
     let mut summary = HistorySummary {
@@ -76,9 +86,9 @@ pub fn summarize(points: &[Point], end: DateTime<Utc>) -> Option<HistorySummary>
         summary.samples += 1;
     }
     summary.change = summary.latest - first.value;
-    summary.longest_gap = (longest > GAP_THRESHOLD).then_some(longest);
+    summary.longest_gap = (longest > gap).then_some(longest);
     let since_latest = end - summary.latest_at;
-    summary.stale_for = (since_latest > GAP_THRESHOLD).then_some(since_latest);
+    summary.stale_for = (since_latest > gap).then_some(since_latest);
     Some(summary)
 }
 
@@ -95,14 +105,14 @@ pub struct ChartPoint {
 /// into `max_points / 2` equal time buckets of two points each: a bucket with readings keeps its lowest and highest
 /// in time order, so both spikes and resets survive; an empty bucket gets two unmeasured points on the line between
 /// its neighbors. The first and last readings are always kept.
-pub fn chart_series(points: &[Point], max_points: usize) -> Vec<ChartPoint> {
+pub fn chart_series(points: &[Point], max_points: usize, gap: Duration) -> Vec<ChartPoint> {
     let finite: Vec<Point> = points.iter().copied().filter(|point| point.value.is_finite()).collect();
     let measured = |point: &Point| ChartPoint {
         at: point.at,
         value: point.value,
         measured: true,
     };
-    let has_gap = finite.windows(2).any(|pair| pair[1].at - pair[0].at > GAP_THRESHOLD);
+    let has_gap = finite.windows(2).any(|pair| pair[1].at - pair[0].at > gap);
     let buckets = (max_points / 2).max(2);
     if finite.len() <= max_points && !has_gap {
         return finite.iter().map(measured).collect();
@@ -151,8 +161,10 @@ pub fn chart_series(points: &[Point], max_points: usize) -> Vec<ChartPoint> {
             Some((low, high)) => {
                 let (a, b) = if low.at <= high.at { (low, high) } else { (high, low) };
                 out.push(measured(&a));
+                // A bucket with one reading repeats it to keep two points per bucket; only that repeat is synthetic.
+                // Two distinct readings in the same second are both real.
                 out.push(ChartPoint {
-                    measured: b.at != a.at,
+                    measured: a != b,
                     ..measured(&b)
                 });
             }
@@ -197,14 +209,18 @@ mod tests {
             .collect()
     }
 
+    fn summary_with(values: &[(i64, f64)], end_minutes: i64, gap: Duration) -> HistorySummary {
+        summarize(&points(values), at(end_minutes), gap).unwrap()
+    }
+
     fn summary_at(values: &[(i64, f64)], end_minutes: i64) -> HistorySummary {
-        summarize(&points(values), at(end_minutes)).unwrap()
+        summarize(&points(values), at(end_minutes), GAP_THRESHOLD).unwrap()
     }
 
     #[test]
     fn summarize_empty_is_none() {
-        assert_eq!(summarize(&[], at(0)), None);
-        assert_eq!(summarize(&points(&[(0, f64::NAN)]), at(0)), None);
+        assert_eq!(summarize(&[], at(0), GAP_THRESHOLD), None);
+        assert_eq!(summarize(&points(&[(0, f64::NAN)]), at(0), GAP_THRESHOLD), None);
     }
 
     #[test]
@@ -264,10 +280,10 @@ mod tests {
 
     #[test]
     fn chart_series_draws_short_regular_series_as_is() {
-        let series = chart_series(&points(&[(0, 0.1), (15, f64::NAN), (30, 0.3)]), 120);
+        let series = chart_series(&points(&[(0, 0.1), (15, f64::NAN), (30, 0.3)]), 120, GAP_THRESHOLD);
         assert_eq!(values(&series), vec![0.1, 0.3]);
         assert!(series.iter().all(|point| point.measured));
-        assert!(chart_series(&[], 120).is_empty());
+        assert!(chart_series(&[], 120, GAP_THRESHOLD).is_empty());
     }
 
     #[test]
@@ -276,7 +292,7 @@ mod tests {
         let samples: Vec<(i64, f64)> = (0..30 * 24 * 4)
             .map(|ix| (ix * 15, (ix % 20) as f64 / 19.0 * 0.9))
             .collect();
-        let series = chart_series(&points(&samples), 120);
+        let series = chart_series(&points(&samples), 120, GAP_THRESHOLD);
         assert_eq!(series.len(), 120, "two points per bucket");
         let (low, high) = series.iter().fold((f64::MAX, f64::MIN), |(low, high), point| {
             (low.min(point.value), high.max(point.value))
@@ -291,7 +307,7 @@ mod tests {
     fn chart_series_keeps_a_short_spike() {
         let mut samples: Vec<(i64, f64)> = (0..1000).map(|ix| (ix, 0.1)).collect();
         samples[503].1 = 0.95;
-        let series = chart_series(&points(&samples), 50);
+        let series = chart_series(&points(&samples), 50, GAP_THRESHOLD);
         assert!(series.iter().any(|point| point.value == 0.95));
         assert_eq!(series.first().unwrap().at, at(0));
         assert_eq!(series.last().unwrap().at, at(999));
@@ -303,7 +319,7 @@ mod tests {
         // Readings for 100 minutes, nothing for 800, readings again for 100.
         let mut samples: Vec<(i64, f64)> = (0..100).map(|ix| (ix, 0.2)).collect();
         samples.extend((900..1000).map(|ix| (ix, 0.4)));
-        let series = chart_series(&points(&samples), 40);
+        let series = chart_series(&points(&samples), 40, GAP_THRESHOLD);
         assert_eq!(series.len(), 40);
         // Evenly spaced: the 800 empty minutes take 16 of the 20 buckets, as they take 80% of the time.
         let in_gap: Vec<&ChartPoint> = series
@@ -321,8 +337,44 @@ mod tests {
     }
 
     #[test]
+    fn chart_series_marks_only_repeats_unmeasured() {
+        // Two distinct readings in the same second, then a gap so the series is bucketed.
+        let start = at(0);
+        let series = chart_series(
+            &[Point::new(start, 0.1), Point::new(start, 0.5), Point::new(at(600), 0.3)],
+            20,
+            GAP_THRESHOLD,
+        );
+        let real: Vec<f64> = series
+            .iter()
+            .filter(|point| point.measured)
+            .map(|point| point.value)
+            .collect();
+        assert_eq!(
+            real,
+            vec![0.1, 0.5, 0.3],
+            "both same-second readings stay readable; the repeat does not"
+        );
+    }
+
+    #[test]
+    fn gap_threshold_follows_the_refresh_interval() {
+        assert_eq!(gap_threshold(None), GAP_THRESHOLD);
+        assert_eq!(gap_threshold(Some(Duration::minutes(2))), GAP_THRESHOLD);
+        assert_eq!(gap_threshold(Some(Duration::minutes(60))), Duration::minutes(125));
+        // Hourly refreshes land a little over an hour apart; that is the rhythm, not a gap.
+        let hourly = summary_with(
+            &[(0, 0.1), (62, 0.2), (124, 0.3)],
+            124,
+            gap_threshold(Some(Duration::hours(1))),
+        );
+        assert_eq!(hourly.longest_gap, None);
+        assert_eq!(hourly.stale_for, None);
+    }
+
+    #[test]
     fn chart_series_spaces_a_small_gappy_series_by_time() {
-        let series = chart_series(&points(&[(0, 0.1), (15, 0.2), (600, 0.3)]), 20);
+        let series = chart_series(&points(&[(0, 0.1), (15, 0.2), (600, 0.3)]), 20, GAP_THRESHOLD);
         assert_eq!(series.len(), 20);
         assert_eq!(series.iter().filter(|point| point.measured).count(), 3);
     }

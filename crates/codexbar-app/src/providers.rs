@@ -65,10 +65,11 @@ pub fn enabled(hub: &SettingsHub) -> Vec<Arc<dyn UsageProvider>> {
     for account in openrouter {
         let key = hub.secret_for(&account).0;
         let provider = OpenRouterProvider::new(UreqClient::new(), key);
+        // Always the configured id, so history and preferences survive adding or removing a second account.
         let provider = if multiple {
             provider.with_account(account.id.clone(), account.label.clone())
         } else {
-            provider
+            provider.with_id(account.id.clone())
         };
         providers.push(Arc::new(provider));
     }
@@ -82,14 +83,28 @@ pub fn enabled(hub: &SettingsHub) -> Vec<Arc<dyn UsageProvider>> {
     for account in moonshot {
         let key = hub.secret_for(&account).0;
         let provider = MoonshotProvider::new(UreqClient::new(), key);
+        // Always the configured id, so history and preferences survive adding or removing a second account.
         let provider = if multiple {
             provider.with_account(account.id.clone(), account.label.clone())
         } else {
-            provider
+            provider.with_id(account.id.clone())
         };
         providers.push(Arc::new(provider));
     }
     providers
+}
+
+/// Accounts that used to report under their provider's legacy id: a provider's only OpenRouter or Moonshot account
+/// reported as `openrouter`/`moonshot` before it reported under its configured id. Each pair is (legacy, configured)
+/// for moving stored history and preferences. With several accounts the legacy history's owner is unknown, so none.
+pub fn legacy_ids(hub: &SettingsHub) -> Vec<(&'static str, String)> {
+    [("openrouter", names::OPENROUTER), ("moonshot", names::MOONSHOT)]
+        .into_iter()
+        .filter_map(|(legacy, provider)| match enabled_accounts(hub, provider).as_slice() {
+            [only] => Some((legacy, only.id.clone())),
+            _ => None,
+        })
+        .collect()
 }
 
 /// Go and Zen share one dashboard account; either half can be switched off. Zen falls back to Go's cookie.

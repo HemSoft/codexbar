@@ -233,6 +233,21 @@ impl HistoryStore {
         Ok(())
     }
 
+    /// Moves every sample of account `from` to `to`, keeping any `to` already has. For accounts that change id,
+    /// such as a provider's single legacy account gaining its configured id. Returns how many samples moved.
+    pub fn rename_account(&mut self, from: &str, to: &str) -> io::Result<usize> {
+        let mut moved = 0;
+        for sample in self.samples.iter_mut().filter(|sample| sample.a == from) {
+            sample.a = to.to_owned();
+            moved += 1;
+        }
+        if moved > 0 {
+            self.reindex();
+            self.rewrite()?;
+        }
+        Ok(moved)
+    }
+
     /// Samples for one metric, oldest first.
     pub fn series<'a>(&'a self, account: &'a str, metric: &'a str) -> impl Iterator<Item = &'a Sample> + 'a {
         self.samples
@@ -464,6 +479,27 @@ mod tests {
         let reopened = HistoryStore::open(dir.file(), retention(), now());
         assert_eq!(reopened.series("a", "5-hour-window").count(), 0);
         assert_eq!(reopened.series("b", "5-hour-window").count(), 1);
+    }
+
+    #[test]
+    fn rename_account_moves_samples_and_persists() {
+        let dir = TempDir::new();
+        let mut store = HistoryStore::open(dir.file(), retention(), now());
+        store
+            .record(&[account("openrouter", 0.1, 3)], now() - Duration::hours(1))
+            .unwrap();
+        store.record(&[account("a1b2", 0.2, 3)], now()).unwrap();
+        assert_eq!(store.rename_account("openrouter", "a1b2").unwrap(), 2);
+        assert_eq!(
+            store.rename_account("openrouter", "a1b2").unwrap(),
+            0,
+            "nothing left to move"
+        );
+
+        let reopened = HistoryStore::open(dir.file(), retention(), now());
+        assert_eq!(reopened.series("openrouter", "5-hour-window").count(), 0);
+        let merged: Vec<f64> = reopened.series("a1b2", "5-hour-window").map(Sample::value).collect();
+        assert_eq!(merged, vec![0.1, 0.2], "old and new samples merge in time order");
     }
 
     #[test]

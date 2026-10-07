@@ -96,6 +96,10 @@ pub struct Dashboard {
     deactivated_at: Option<Instant>,
     /// The zoom the table's column widths were last laid out for.
     table_zoom: f64,
+    /// A refresh was requested while one was running; it runs when that one finishes.
+    refresh_queued: bool,
+    /// The minute the table's compact history was computed for; it is recomputed as the 14-day window moves.
+    compact_minute: i64,
     /// One focus handle per view tab. Only the selected tab is a Tab-key stop (a roving tab stop); the arrow keys
     /// move focus between tabs, and Enter or Space activates the focused one.
     view_tab_focus: Vec<FocusHandle>,
@@ -144,6 +148,8 @@ impl Dashboard {
                     };
                     if due && !this.loading {
                         this.refresh(cx);
+                    } else if this.now.timestamp() / 60 != this.compact_minute {
+                        this.update_compact_history(cx);
                     }
                     cx.notify();
                 });
@@ -154,7 +160,18 @@ impl Dashboard {
         });
 
         let history = match &source {
-            DataSource::Live { history } => history.clone(),
+            DataSource::Live { history } => {
+                let renames = crate::providers::legacy_ids(SettingsHub::global(cx));
+                {
+                    let mut store = history.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                    for (from, to) in &renames {
+                        // A failed rewrite keeps the samples in memory under the new id; the next prune retries it.
+                        let _ = store.rename_account(from, to);
+                    }
+                }
+                crate::history_view::HistoryPrefs::rename_accounts(cx, &renames);
+                history.clone()
+            }
             DataSource::Demo => Arc::new(Mutex::new(demo_history(&demo_accounts(now, &Local), now))),
         };
         let history_view = cx.new(|cx| HistoryView::new(history.clone(), cx));
@@ -173,6 +190,8 @@ impl Dashboard {
             now,
             deactivated_at: None,
             table_zoom: crate::zoom::level(cx),
+            refresh_queued: false,
+            compact_minute: 0,
             view_tab_focus: DashboardView::ALL.iter().map(|_| cx.focus_handle()).collect(),
             _clock: clock,
             _subscriptions: vec![selection, activation],
@@ -220,8 +239,10 @@ impl Dashboard {
     /// Fetches every provider off the UI thread. A failed provider keeps its last good accounts.
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
         // One refresh at a time: a tray Refresh during a fetch would otherwise race it, and the older result could
-        // land last, replacing newer accounts and recording history out of order.
+        // land last, replacing newer accounts and recording history out of order. A request made meanwhile runs
+        // right after, with the settings as they are then.
         if self.loading {
+            self.refresh_queued = true;
             return;
         }
         let providers = match &self.source {
@@ -299,6 +320,9 @@ impl Dashboard {
         self.loading = false;
         self.last_refresh = Some(Utc::now());
         self.set_accounts(accounts, cx);
+        if std::mem::take(&mut self.refresh_queued) {
+            self.refresh(cx);
+        }
     }
 
     fn set_accounts(&mut self, mut accounts: Vec<AccountSnapshot>, cx: &mut Context<Self>) {
@@ -312,7 +336,8 @@ impl Dashboard {
         self.selected = accounts.get(selected_ix).map(|a| a.id().clone());
         self.accounts = accounts.clone();
         let now = self.now;
-        let compact = self.compact_history(&accounts);
+        self.compact_minute = now.timestamp() / 60;
+        let compact = self.compact_history(&accounts, cx);
         let preferred = self.selected.clone();
         self.history_view.update(cx, |view, cx| {
             view.set_accounts(accounts.clone(), now, preferred.as_ref(), cx);
@@ -328,8 +353,19 @@ impl Dashboard {
         cx.notify();
     }
 
+    /// Recomputes the table's compact history for the current minute, keeping its rows and selection.
+    fn update_compact_history(&mut self, cx: &mut Context<Self>) {
+        self.compact_minute = self.now.timestamp() / 60;
+        let compact = self.compact_history(&self.accounts, cx);
+        self.table.update(cx, |table, cx| {
+            table.delegate_mut().set_compact(compact);
+            cx.notify();
+        });
+    }
+
     /// The compact history for each account's primary metric over the trend's 14 days (#86).
-    fn compact_history(&self, accounts: &[AccountSnapshot]) -> Compact {
+    fn compact_history(&self, accounts: &[AccountSnapshot], cx: &gpui_kit::App) -> Compact {
+        let gap = crate::history_view::history_gap(cx);
         let since = self.now - Duration::days(TREND_DAYS as i64);
         let history = self.history.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         accounts
@@ -337,7 +373,7 @@ impl Dashboard {
             .filter_map(|account| {
                 let metric = account.primary()?;
                 let points = history.points(account.id().as_str(), &metric.key(), since);
-                let summary = summarize(&points, self.now)?;
+                let summary = summarize(&points, self.now, gap)?;
                 Some((account.id().as_str().to_owned(), (summary, ValueKind::of(metric))))
             })
             .collect()
