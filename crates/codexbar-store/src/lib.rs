@@ -6,6 +6,7 @@ pub mod credentials;
 mod demo;
 mod enrich;
 mod history;
+mod lock;
 pub mod prefs;
 pub mod settings;
 pub mod summary;

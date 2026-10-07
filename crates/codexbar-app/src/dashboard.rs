@@ -272,6 +272,8 @@ impl Dashboard {
             }
             DataSource::Live { history } => history.clone(),
         };
+        // Account settings may have changed since the last refresh (a first configured account added).
+        migrate_legacy_ids(&providers, cx);
         let history = providers;
         let providers = crate::providers::enabled(SettingsHub::global(cx));
         self.loading = true;
@@ -382,7 +384,7 @@ impl Dashboard {
             .iter()
             .filter_map(|account| {
                 let metric = account.primary()?;
-                let points = history.points(account.id().as_str(), &metric.key(), since);
+                let points = history.points(account.id().as_str(), &metric.key(), since, self.now);
                 let summary = summarize(&points, self.now, GAP_THRESHOLD)?;
                 Some((account.id().as_str().to_owned(), (summary, ValueKind::of(metric))))
             })

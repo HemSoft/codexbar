@@ -4,18 +4,22 @@
 //! them back, so a key it doesn't know would be dropped on its next save. Keys this version doesn't know are kept, and
 //! a file from a newer version is never overwritten.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::path::Path;
 
 use serde_json::{Map, Value, json};
 
 pub const PREFS_FILE: &str = "dashboard.json";
+const LOCK_FILE: &str = "dashboard.write.lock";
 const VERSION: u64 = 1;
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct DashboardPrefs {
     hidden_history: BTreeSet<String>,
+    /// Changes not yet saved, by account: true shows history, false hides it. A save applies only these to the
+    /// file's current contents, so another process's changes made meanwhile are kept.
+    pending: BTreeMap<String, bool>,
     /// The file came from a newer version: read what we understand, never write it.
     read_only: bool,
 }
@@ -34,6 +38,7 @@ impl DashboardPrefs {
             .unwrap_or_default();
         Self {
             hidden_history,
+            pending: BTreeMap::new(),
             read_only: version > VERSION,
         }
     }
@@ -43,17 +48,15 @@ impl DashboardPrefs {
     }
 
     pub fn set_shows_history(&mut self, account: &str, show: bool) {
-        if show {
-            self.hidden_history.remove(account);
-        } else {
-            self.hidden_history.insert(account.to_owned());
-        }
+        apply(&mut self.hidden_history, account, show);
+        self.pending.insert(account.to_owned(), show);
     }
 
     /// Carries a preference from an account's old id to its new one. Returns true when something changed.
     pub fn rename_account(&mut self, from: &str, to: &str) -> bool {
-        if self.hidden_history.remove(from) {
-            self.hidden_history.insert(to.to_owned());
+        if self.hidden_history.contains(from) {
+            self.set_shows_history(from, true);
+            self.set_shows_history(to, false);
             true
         } else {
             false
@@ -64,15 +67,18 @@ impl DashboardPrefs {
         self.read_only
     }
 
-    /// Writes the preferences, keeping keys this version doesn't know. Written to a temp file and swapped in, so a
-    /// crash never leaves a torn file.
-    pub fn save(&self, dir: &Path) -> io::Result<()> {
+    /// Saves the unsaved changes. Under the shared `dashboard.write.lock` it rereads the file, applies only this
+    /// instance's changes, keeps keys this version doesn't know, and swaps in a temp file, so concurrent writers
+    /// never lose each other's changes and a crash never leaves a torn file. Afterwards this instance holds the
+    /// merged result. On failure the changes stay pending for the next save.
+    pub fn save(&mut self, dir: &Path) -> io::Result<()> {
         if self.read_only {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "dashboard.json is from a newer CodexBar and was not changed",
             ));
         }
+        let _lock = crate::lock::FileLock::acquire(&dir.join(LOCK_FILE))?;
         let mut doc = read(dir).unwrap_or_default();
         // Another (newer) CodexBar may have upgraded the file since it was loaded; never downgrade it.
         if doc
@@ -85,14 +91,33 @@ impl DashboardPrefs {
                 "dashboard.json was upgraded by a newer CodexBar and was not changed",
             ));
         }
+        let mut hidden: BTreeSet<String> = doc
+            .get("hiddenHistory")
+            .and_then(Value::as_array)
+            .map(|ids| ids.iter().filter_map(Value::as_str).map(str::to_owned).collect())
+            .unwrap_or_default();
+        for (account, show) in &self.pending {
+            apply(&mut hidden, account, *show);
+        }
         doc.insert("version".into(), json!(VERSION));
-        doc.insert("hiddenHistory".into(), json!(self.hidden_history));
+        doc.insert("hiddenHistory".into(), json!(hidden));
         let text = serde_json::to_string_pretty(&Value::Object(doc)).map_err(io::Error::other)?;
         std::fs::create_dir_all(dir)?;
         let path = dir.join(PREFS_FILE);
         let tmp = path.with_extension("json.tmp");
         std::fs::write(&tmp, text)?;
-        std::fs::rename(&tmp, &path)
+        std::fs::rename(&tmp, &path)?;
+        self.hidden_history = hidden;
+        self.pending.clear();
+        Ok(())
+    }
+}
+
+fn apply(hidden: &mut BTreeSet<String>, account: &str, show: bool) {
+    if show {
+        hidden.remove(account);
+    } else {
+        hidden.insert(account.to_owned());
     }
 }
 
@@ -164,6 +189,44 @@ mod tests {
         assert!(prefs.shows_history("openrouter"));
         assert!(!prefs.shows_history("a1b2"));
         assert!(!prefs.rename_account("openrouter", "a1b2"), "nothing left to move");
+    }
+
+    #[test]
+    fn save_merges_with_another_writers_changes() {
+        let dir = Dir::new("merge");
+        let mut first = DashboardPrefs::load(&dir.0);
+        let mut second = DashboardPrefs::load(&dir.0);
+        first.set_shows_history("cursor", false);
+        first.save(&dir.0).unwrap();
+        // The second instance loaded before the first saved; its save must not undo the first's change.
+        second.set_shows_history("moonshot", false);
+        second.save(&dir.0).unwrap();
+        assert_eq!(dir.read()["hiddenHistory"], json!(["cursor", "moonshot"]));
+        assert!(!second.shows_history("cursor"), "the saver now holds the merged result");
+    }
+
+    #[test]
+    fn save_while_another_writer_holds_the_lock_is_busy_and_keeps_the_change() {
+        use std::os::windows::fs::OpenOptionsExt as _;
+        let dir = Dir::new("busy");
+        let lock = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .share_mode(0)
+            .open(dir.0.join(LOCK_FILE))
+            .unwrap();
+        let mut prefs = DashboardPrefs::load(&dir.0);
+        prefs.set_shows_history("cursor", false);
+        assert_eq!(prefs.save(&dir.0).unwrap_err().kind(), io::ErrorKind::WouldBlock);
+        drop(lock);
+        prefs.save(&dir.0).unwrap();
+        assert_eq!(
+            dir.read()["hiddenHistory"],
+            json!(["cursor"]),
+            "the pending change was kept and saved"
+        );
     }
 
     #[test]

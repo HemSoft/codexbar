@@ -165,15 +165,13 @@ impl HistoryPrefs {
     /// Shows or hides an account's history and saves at once. Hiding never deletes stored samples.
     pub fn set(cx: &mut App, account: &str, show: bool) {
         cx.update_global(|hub: &mut Self, _| {
-            let mut draft = hub.prefs.clone();
-            draft.set_shows_history(account, show);
-            match draft.save(&hub.dir) {
-                Ok(()) => {
-                    hub.prefs = draft;
-                    hub.error = None;
-                }
-                Err(err) => hub.error = Some(format!("History setting not saved: {err}").into()),
-            }
+            // Applies now; a failed save keeps the change pending for the next save and says so.
+            hub.prefs.set_shows_history(account, show);
+            hub.error = hub
+                .prefs
+                .save(&hub.dir)
+                .err()
+                .map(|err| format!("History setting not saved: {err}").into());
         });
         cx.refresh_windows();
     }
@@ -181,19 +179,18 @@ impl HistoryPrefs {
     /// Moves preferences saved under old account ids to the new ones, saving once if anything moved.
     pub fn rename_accounts(cx: &mut App, renames: &[(&str, String)]) {
         cx.update_global(|hub: &mut Self, _| {
-            let mut draft = hub.prefs.clone();
             let mut changed = false;
             for (from, to) in renames {
-                changed |= draft.rename_account(from, to);
+                changed |= hub.prefs.rename_account(from, to);
             }
             if !changed {
                 return;
             }
-            hub.error = draft
+            hub.error = hub
+                .prefs
                 .save(&hub.dir)
                 .err()
                 .map(|err| format!("History setting not saved: {err}").into());
-            hub.prefs = draft;
         });
     }
 
@@ -305,7 +302,7 @@ impl HistoryView {
         let since = now - self.range.duration();
         let points = {
             let history = self.history.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            history.points(account.id().as_str(), &metric.key(), since)
+            history.points(account.id().as_str(), &metric.key(), since, now)
         };
         let summary = summarize(&points, now, GAP_THRESHOLD);
         Some(Selection {
@@ -581,8 +578,8 @@ impl HistoryView {
             .copied()
             .filter(|point| point.measured)
             .collect();
-        readings
-            .dedup_by(|next, kept| next.at.timestamp() / 60 == kept.at.timestamp() / 60 && next.value == kept.value);
+        let mut seen = std::collections::HashSet::new();
+        readings.retain(|point| seen.insert((point.at.timestamp() / 60, point.value.to_bits())));
         let len = readings.len();
         let cursor = self.cursor.unwrap_or(len.saturating_sub(1)).min(len.saturating_sub(1));
         let readout = readings.get(cursor).map(|point| {

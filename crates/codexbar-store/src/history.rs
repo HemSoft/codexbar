@@ -122,11 +122,12 @@ impl HistoryStore {
         self.reindex();
     }
 
-    /// Readings for one metric at or after `since`, oldest first.
-    pub fn points(&self, account: &str, metric: &str, since: DateTime<Utc>) -> Vec<Point> {
-        let since = since.timestamp();
+    /// Readings for one metric from `since` through `until`, oldest first. The upper bound keeps out samples dated
+    /// in the future, as after the system clock is set back.
+    pub fn points(&self, account: &str, metric: &str, since: DateTime<Utc>, until: DateTime<Utc>) -> Vec<Point> {
+        let (since, until) = (since.timestamp(), until.timestamp());
         self.series(account, metric)
-            .filter(|sample| sample.t >= since)
+            .filter(|sample| (since..=until).contains(&sample.t))
             .map(|sample| Point::new(sample.at(), sample.v))
             .collect()
     }
@@ -479,6 +480,21 @@ mod tests {
         let reopened = HistoryStore::open(dir.file(), retention(), now());
         assert_eq!(reopened.series("a", "5-hour-window").count(), 0);
         assert_eq!(reopened.series("b", "5-hour-window").count(), 1);
+    }
+
+    #[test]
+    fn points_exclude_samples_dated_after_the_range_end() {
+        let dir = TempDir::new();
+        let mut store = HistoryStore::open(dir.file(), retention(), now());
+        store
+            .record(&[account("a", 0.1, 3)], now() - Duration::hours(1))
+            .unwrap();
+        store
+            .record(&[account("a", 0.9, 3)], now() + Duration::hours(2))
+            .unwrap();
+        let points = store.points("a", "5-hour-window", now() - Duration::days(1), now());
+        let values: Vec<f64> = points.iter().map(|point| point.value).collect();
+        assert_eq!(values, vec![0.1]);
     }
 
     #[test]

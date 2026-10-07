@@ -143,7 +143,7 @@ mod tests {
                 let Some(current) = metric.history_value() else {
                     continue;
                 };
-                let points = store.points(account.id().as_str(), &metric.key(), now() - Duration::days(30));
+                let points = store.points(account.id().as_str(), &metric.key(), now() - Duration::days(30), now());
                 let last = points.last().expect("every demo metric has history");
                 assert_eq!(last.at, now());
                 assert_eq!(last.value, current, "{} {}", account.id().as_str(), metric.key());
@@ -156,14 +156,19 @@ mod tests {
         let accounts = demo_accounts(now(), &Local);
         let store = demo_history(&accounts, now());
         let since = now() - Duration::days(30);
-        let cursor = summarize(&store.points("cursor", "included-usage", since), now(), GAP_THRESHOLD).unwrap();
+        let cursor = summarize(
+            &store.points("cursor", "included-usage", since, now()),
+            now(),
+            GAP_THRESHOLD,
+        )
+        .unwrap();
         assert!(cursor.longest_gap.is_some_and(|gap| gap >= Duration::days(2)));
         let flat = accounts
             .iter()
             .flat_map(|account| account.metrics().iter().map(move |metric| (account, metric)))
             .filter_map(|(account, metric)| {
                 summarize(
-                    &store.points(account.id().as_str(), &metric.key(), since),
+                    &store.points(account.id().as_str(), &metric.key(), since, now()),
                     now(),
                     GAP_THRESHOLD,
                 )

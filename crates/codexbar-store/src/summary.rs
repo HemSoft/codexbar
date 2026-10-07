@@ -111,7 +111,7 @@ pub fn chart_series(points: &[Point], max_points: usize) -> Vec<ChartPoint> {
         [only] => return vec![measured(only)],
         [first, .., last] => (*first, *last),
     };
-    let buckets = (max_points.saturating_sub(2) / 2).max(2);
+    let buckets = (max_points.max(4) - 2) / 2;
     let start = first.at.timestamp();
     let span = (last.at.timestamp() - start).max(1);
     let bucket_of = |point: &Point| {
@@ -281,6 +281,15 @@ mod tests {
             (38..=42).contains(&later),
             "{later} of 62 points cover the last two thirds"
         );
+    }
+
+    #[test]
+    fn chart_series_never_exceeds_the_limit() {
+        let samples: Vec<(i64, f64)> = (0..100).map(|ix| (ix, ix as f64 / 100.0)).collect();
+        for limit in [4, 5, 6, 7, 120] {
+            let len = chart_series(&points(&samples), limit).len();
+            assert!(len <= limit, "{len} points for a limit of {limit}");
+        }
     }
 
     #[test]

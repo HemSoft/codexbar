@@ -431,7 +431,12 @@ fn history_follows_the_usage_selection_until_an_account_is_picked(cx: &mut TestA
 
 #[gpui_kit::test]
 fn single_balance_account_preferences_move_to_its_configured_id(cx: &mut TestAppContext) {
-    let settings = TempSettings::new("legacy-ids", "{}");
+    let settings = TempSettings::new(
+        "legacy-ids",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "or-1", "providerId": "OpenRouter", "displayLabel": "OpenRouter", "enabled": true,
+              "authenticationMethod": "ApiKey" } ] }"#,
+    );
     std::fs::write(
         settings.0.join("dashboard.json"),
         r#"{ "version": 1, "hiddenHistory": ["openrouter"] }"#,
@@ -442,13 +447,11 @@ fn single_balance_account_preferences_move_to_its_configured_id(cx: &mut TestApp
         crate::history_view::HistoryPrefs::init(cx, &settings.0);
     });
 
-    // No configured records: each provider's implicit account is its only account, enabled or not (Moonshot is
-    // off by default), so both legacy ids map to configured ids.
+    // One configured OpenRouter account owns the legacy history; Moonshot has no records, so its implicit
+    // account keeps reporting under the legacy id and nothing moves for it.
     let renames = cx.update(|cx| crate::providers::legacy_ids(SettingsHub::global(cx)));
-    let legacy: Vec<&str> = renames.iter().map(|(legacy, _)| *legacy).collect();
-    assert_eq!(legacy, vec!["openrouter", "moonshot"], "{renames:?}");
+    assert_eq!(renames, vec![("openrouter", "or-1".to_owned())]);
     let configured = renames[0].1.clone();
-    assert_ne!(configured, "openrouter");
 
     cx.update(|cx| crate::history_view::HistoryPrefs::rename_accounts(cx, &renames));
     let shows = |cx: &mut TestAppContext, id: &str| cx.update(|cx| crate::history_view::HistoryPrefs::shows(cx, id));
@@ -500,8 +503,18 @@ fn legacy_history_after_migration(cx: &mut TestAppContext, settings_json: &str, 
 
 #[gpui_kit::test]
 fn legacy_history_moves_only_when_settings_are_readable(cx: &mut TestAppContext) {
-    // Readable settings: the implicit OpenRouter account owns the legacy history.
-    assert_eq!(legacy_history_after_migration(cx, "{}", "migrate-readable"), (0, 1));
+    // Readable settings with one configured OpenRouter account: it owns the legacy history.
+    let one = r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "or-1", "providerId": "OpenRouter", "displayLabel": "OpenRouter", "enabled": true,
+              "authenticationMethod": "ApiKey" } ] }"#;
+    assert_eq!(legacy_history_after_migration(cx, one, "migrate-readable"), (0, 1));
+}
+
+#[gpui_kit::test]
+fn legacy_history_stays_put_while_no_account_is_configured(cx: &mut TestAppContext) {
+    // The implicit account still reports under the legacy id, so moving its history would orphan it once the first
+    // account is configured with a new id.
+    assert_eq!(legacy_history_after_migration(cx, "{}", "migrate-implicit"), (1, 0));
 }
 
 #[gpui_kit::test]
