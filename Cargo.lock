@@ -1040,6 +1040,7 @@ dependencies = [
  "chrono",
  "codexbar-core",
  "codexbar-providers",
+ "codexbar-store",
  "gpui-kit",
  "raw-window-handle",
  "tray-icon",
@@ -1061,6 +1062,16 @@ dependencies = [
  "codexbar-core",
  "serde_json",
  "ureq",
+]
+
+[[package]]
+name = "codexbar-store"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "codexbar-core",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

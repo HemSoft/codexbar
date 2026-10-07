@@ -1,11 +1,12 @@
 //! The borderless dashboard window: title bar, view rail, urgency table, focus cards and status line.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use chrono::{DateTime, Duration, Local, Utc};
 use codexbar_core::{AccountId, AccountSnapshot, Metric, demo::demo_accounts, format, sort_by_urgency};
 use codexbar_providers::{ProviderError, UsageProvider};
+use codexbar_store::HistoryStore;
 use gpui_kit::component::sidebar::{Sidebar, SidebarMenu, SidebarMenuItem};
 use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::table::{DataTable, TableEvent, TableState};
@@ -58,8 +59,11 @@ const TOGGLE_GRACE: std::time::Duration = std::time::Duration::from_millis(400);
 
 /// Where accounts come from.
 pub enum DataSource {
-    /// Real provider adapters, fetched off the UI thread.
-    Live(Vec<Arc<dyn UsageProvider>>),
+    /// Real provider adapters, fetched off the UI thread, with their history.
+    Live {
+        providers: Vec<Arc<dyn UsageProvider>>,
+        history: Arc<Mutex<HistoryStore>>,
+    },
     /// Synthetic accounts for design work (`CODEXBAR_DEMO=1`).
     Demo,
 }
@@ -162,17 +166,29 @@ impl Dashboard {
                 self.set_accounts(demo_accounts(now, &Local), cx);
                 return;
             }
-            DataSource::Live(providers) => providers.clone(),
+            DataSource::Live { providers, history } => (providers.clone(), history.clone()),
         };
+        let (providers, history) = providers;
         self.loading = true;
         cx.notify();
         cx.spawn(async move |this, cx| {
             let results = cx
                 .background_spawn(async move {
                     let now = Utc::now();
+                    let mut history = history.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
                     providers
                         .iter()
-                        .map(|provider| (provider.name(), provider.fetch(now)))
+                        .map(|provider| {
+                            let result = provider.fetch(now).map(|accounts| {
+                                // A history write failure must not hide fresh usage; the next refresh retries.
+                                let _ = history.record(&accounts, now);
+                                accounts
+                                    .into_iter()
+                                    .map(|account| codexbar_store::enrich(&history, account, &Local, now))
+                                    .collect()
+                            });
+                            (provider.name(), result)
+                        })
                         .collect::<Vec<_>>()
                 })
                 .await;

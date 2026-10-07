@@ -78,6 +78,27 @@ impl Metric {
         }
     }
 
+    /// Stable identity of this metric within its account ("5-hour-window", "weekly", "credits"), for history.
+    pub fn key(&self) -> String {
+        let mut key = String::new();
+        for ch in self.label().chars() {
+            if ch.is_alphanumeric() {
+                key.extend(ch.to_lowercase());
+            } else if !key.ends_with('-') && !key.is_empty() {
+                key.push('-');
+            }
+        }
+        key.trim_end_matches('-').to_owned()
+    }
+
+    /// The value history stores: fraction used for limits, dollars for balances.
+    pub fn history_value(&self) -> Option<f64> {
+        match self {
+            Self::Balance { remaining, .. } => Some(remaining.cents() as f64 / 100.0),
+            _ => self.used_fraction(),
+        }
+    }
+
     /// Fraction of the limit used, clamped to 0..=1. Balances have no fixed limit and return `None`.
     pub fn used_fraction(&self) -> Option<f64> {
         match self {
@@ -165,6 +186,29 @@ mod tests {
         assert_eq!(Money::from_cents(1842).display(), "$18.42");
         assert_eq!(Money::from_cents(-905).display(), "-$9.05");
         assert_eq!(Money::from_cents(7).display(), "$0.07");
+    }
+
+    #[test]
+    fn key_label_variants_slugify_stably() {
+        let window = |label: &str| Metric::Window {
+            label: label.into(),
+            used: 0.1,
+            resets_at: now(),
+            pace: None,
+        };
+        assert_eq!(window("5-hour window").key(), "5-hour-window");
+        assert_eq!(window("Weekly").key(), "weekly");
+        assert_eq!(window("  Go usage! ").key(), "go-usage");
+    }
+
+    #[test]
+    fn history_value_balance_uses_dollars() {
+        let balance = Metric::Balance {
+            label: "Credits".into(),
+            remaining: Money::from_cents(1842),
+            burn_per_day: None,
+        };
+        assert_eq!(balance.history_value(), Some(18.42));
     }
 
     #[test]

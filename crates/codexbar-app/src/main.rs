@@ -7,15 +7,19 @@ mod status;
 mod theme;
 mod tray;
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use codexbar_providers::UreqClient;
 use codexbar_providers::codex::{CodexProvider, default_auth_path};
+use codexbar_store::{HistoryStore, default_history_path};
 use gpui_kit::component::TitleBar;
 use gpui_kit::{AppContext as _, Bounds, WindowBounds, WindowOptions, px, size};
 
 use crate::dashboard::{Dashboard, DataSource};
 use crate::tray::TrayCommand;
+
+/// How long usage history is kept (#85).
+const HISTORY_RETENTION: chrono::Duration = chrono::Duration::days(30);
 
 fn data_source() -> DataSource {
     let demo = std::env::var_os("CODEXBAR_DEMO").is_some_and(|value| value == "1")
@@ -23,10 +27,11 @@ fn data_source() -> DataSource {
     if demo {
         return DataSource::Demo;
     }
-    DataSource::Live(vec![Arc::new(CodexProvider::new(
-        UreqClient::new(),
-        default_auth_path(),
-    ))])
+    let history = HistoryStore::open(default_history_path(), HISTORY_RETENTION, chrono::Utc::now());
+    DataSource::Live {
+        providers: vec![Arc::new(CodexProvider::new(UreqClient::new(), default_auth_path()))],
+        history: Arc::new(Mutex::new(history)),
+    }
 }
 
 fn main() {
