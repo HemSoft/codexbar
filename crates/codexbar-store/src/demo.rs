@@ -41,7 +41,7 @@ fn series(metric: &Metric, current: f64, seed: u64, now: DateTime<Utc>) -> Vec<P
     let at = |step: i64| start + Duration::minutes(step * STEP_MINUTES);
     let mut noise = Noise(seed | 1);
     match metric {
-        Metric::Window { label, .. } => {
+        Metric::Window { label, resets_at, .. } => {
             let period = if label.to_lowercase().contains("5-hour") {
                 Duration::hours(5)
             } else if label.to_lowercase().contains("week") {
@@ -49,12 +49,18 @@ fn series(metric: &Metric, current: f64, seed: u64, now: DateTime<Utc>) -> Vec<P
             } else {
                 Duration::days(30)
             };
-            let period_steps = (period.num_minutes() / STEP_MINUTES).max(1);
+            // Windows follow the account's real reset times: each one climbs from zero and resets, and the
+            // current one reaches `current` now.
+            let window_start = *resets_at - period;
+            let minutes = period.num_minutes() as f64;
+            let elapsed_now = ((now - window_start).num_minutes() as f64 / minutes).clamp(0.05, 1.0);
             (0..=steps)
                 .map(|step| {
-                    // Sawtooth: usage climbs through each window and resets, landing on `current` now.
-                    let into = (steps - step) % period_steps;
-                    let progress = 1.0 - into as f64 / period_steps as f64;
+                    if step == steps {
+                        return Point::new(now, current);
+                    }
+                    let into = (at(step) - window_start).num_minutes().rem_euclid(period.num_minutes());
+                    let progress = into as f64 / minutes / elapsed_now;
                     let value = current * progress.powf(0.8) + noise.next() * 0.02;
                     Point::new(at(step), value.clamp(0.0, 1.0))
                 })
@@ -69,6 +75,9 @@ fn series(metric: &Metric, current: f64, seed: u64, now: DateTime<Utc>) -> Vec<P
                     // A short burst three days ago, so the chart shows a spike that downsampling must keep.
                     if (spike..spike + 2).contains(&step) {
                         value += 0.25;
+                    }
+                    if step == steps {
+                        value = current;
                     }
                     Point::new(at(step), value.clamp(0.0, 1.0))
                 })
@@ -135,12 +144,7 @@ mod tests {
                 let points = store.points(account.id().as_str(), &metric.key(), now() - Duration::days(30));
                 let last = points.last().expect("every demo metric has history");
                 assert_eq!(last.at, now());
-                assert!(
-                    (last.value - current).abs() < 0.02,
-                    "{} {}",
-                    account.id().as_str(),
-                    metric.key()
-                );
+                assert_eq!(last.value, current, "{} {}", account.id().as_str(), metric.key());
             }
         }
     }
@@ -150,12 +154,14 @@ mod tests {
         let accounts = demo_accounts(now(), &Local);
         let store = demo_history(&accounts, now());
         let since = now() - Duration::days(30);
-        let cursor = summarize(&store.points("cursor", "included-usage", since)).unwrap();
+        let cursor = summarize(&store.points("cursor", "included-usage", since), now()).unwrap();
         assert!(cursor.longest_gap.is_some_and(|gap| gap >= Duration::days(2)));
         let flat = accounts
             .iter()
             .flat_map(|account| account.metrics().iter().map(move |metric| (account, metric)))
-            .filter_map(|(account, metric)| summarize(&store.points(account.id().as_str(), &metric.key(), since)))
+            .filter_map(|(account, metric)| {
+                summarize(&store.points(account.id().as_str(), &metric.key(), since), now())
+            })
             .any(|summary| summary.is_flat());
         assert!(flat, "a balance with no burn stays flat");
     }

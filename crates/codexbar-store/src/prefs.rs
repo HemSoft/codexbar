@@ -64,6 +64,17 @@ impl DashboardPrefs {
             ));
         }
         let mut doc = read(dir).unwrap_or_default();
+        // Another (newer) CodexBar may have upgraded the file since it was loaded; never downgrade it.
+        if doc
+            .get("version")
+            .and_then(Value::as_u64)
+            .is_some_and(|version| version > VERSION)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "dashboard.json was upgraded by a newer CodexBar and was not changed",
+            ));
+        }
         doc.insert("version".into(), json!(VERSION));
         doc.insert("hiddenHistory".into(), json!(self.hidden_history));
         let text = serde_json::to_string_pretty(&Value::Object(doc)).map_err(io::Error::other)?;
@@ -143,6 +154,17 @@ mod tests {
         prefs.set_shows_history("cursor", false);
         prefs.save(&dir.0).unwrap();
         assert_eq!(dir.read()["lastView"], json!("history"));
+    }
+
+    #[test]
+    fn save_refuses_a_file_upgraded_after_load() {
+        let dir = Dir::new("upgraded");
+        let mut prefs = DashboardPrefs::load(&dir.0);
+        let newer = r#"{ "version": 2, "hiddenHistory": [] }"#;
+        dir.write(newer);
+        prefs.set_shows_history("cursor", false);
+        assert!(prefs.save(&dir.0).is_err());
+        assert_eq!(std::fs::read_to_string(dir.0.join(PREFS_FILE)).unwrap(), newer);
     }
 
     #[test]

@@ -377,7 +377,7 @@ fn history_view_handles_empty_and_single_sample_series(cx: &mut TestAppContext) 
     history.lock().unwrap().insert_points(
         "codex-personal",
         "5-hour-window",
-        &[Point::new(now - chrono::Duration::hours(1), 0.4)],
+        &[Point::new(now - chrono::Duration::minutes(10), 0.4)],
     );
     cx.update(|cx| view.update(cx, |_, cx| cx.notify()));
     cx.update_window(handle, |_, window, cx| window.render_frame(cx))
@@ -403,4 +403,28 @@ fn table_trend_shows_compact_history_until_hidden(cx: &mut TestAppContext) {
     click(cx, handle, "history-show");
     click(cx, handle, ("view-tab", 0usize));
     assert!(label(cx, handle, cell).is_none(), "a hidden account shows no trend");
+}
+
+#[gpui_kit::test]
+fn history_follows_the_usage_selection_until_an_account_is_picked(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("history-follow", "{}");
+    let (handle, dashboard) = open_dashboard(cx, &settings);
+    let (view, _) = cx.update(|cx| dashboard.read(cx).history_parts());
+    let shown = |cx: &mut TestAppContext| cx.update(|cx| view.read(cx).shown()).unwrap().0;
+    let row_id = |cx: &mut TestAppContext, ix: usize| cx.update(|cx| dashboard.read(cx).account_id(ix)).unwrap();
+
+    // Selecting another Usage row after the first load still carries over.
+    cx.update(|cx| dashboard.update(cx, |dashboard, cx| dashboard.select_row(2, cx)));
+    cx.run_until_parked();
+    let third = row_id(cx, 2);
+    open_history(cx, handle);
+    assert_eq!(shown(cx), third);
+
+    // Picking an account in History pins it; later Usage selections don't move it.
+    click(cx, handle, ("history-account", 4usize));
+    let picked = row_id(cx, 4);
+    assert_eq!(shown(cx), picked);
+    cx.update(|cx| dashboard.update(cx, |dashboard, cx| dashboard.select_row(1, cx)));
+    cx.run_until_parked();
+    assert_eq!(shown(cx), picked);
 }

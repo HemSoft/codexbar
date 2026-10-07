@@ -118,6 +118,9 @@ impl Dashboard {
         let selection = cx.subscribe(&table, |this, table, event: &TableEvent, cx| {
             if let TableEvent::SelectRow(row) = event {
                 this.selected = table.read(cx).delegate().row(*row).map(|account| account.id().clone());
+                let selected = this.selected.clone();
+                this.history_view
+                    .update(cx, |view, cx| view.follow(selected.as_ref(), cx));
                 cx.notify();
             }
         });
@@ -196,6 +199,18 @@ impl Dashboard {
         (self.history_view.clone(), self.history.clone())
     }
 
+    /// The id of the account in table row `ix`, for the headless UI tests.
+    #[cfg(test)]
+    pub fn account_id(&self, ix: usize) -> Option<String> {
+        self.accounts.get(ix).map(|account| account.id().as_str().to_owned())
+    }
+
+    /// Selects a table row the way a click does (the table emits its selection event), for the headless UI tests.
+    #[cfg(test)]
+    pub fn select_row(&mut self, ix: usize, cx: &mut Context<Self>) {
+        self.table.update(cx, |table, cx| table.set_selected_row(ix, cx));
+    }
+
     /// Switches the visible view (the tray's Settings… item, the `--settings` flag).
     pub fn show_view(&mut self, view: DashboardView, cx: &mut Context<Self>) {
         self.view = view;
@@ -204,11 +219,23 @@ impl Dashboard {
 
     /// Fetches every provider off the UI thread. A failed provider keeps its last good accounts.
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
+        // One refresh at a time: a tray Refresh during a fetch would otherwise race it, and the older result could
+        // land last, replacing newer accounts and recording history out of order.
+        if self.loading {
+            return;
+        }
         let providers = match &self.source {
             DataSource::Demo => {
                 let now = Utc::now();
                 self.last_refresh = Some(now);
-                self.set_accounts(demo_accounts(now, &Local), cx);
+                let accounts = demo_accounts(now, &Local);
+                // Demo history keeps up with the demo accounts, as live history does.
+                let _ = self
+                    .history
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .record(&accounts, now);
+                self.set_accounts(accounts, cx);
                 return;
             }
             DataSource::Live { history } => history.clone(),
@@ -310,7 +337,7 @@ impl Dashboard {
             .filter_map(|account| {
                 let metric = account.primary()?;
                 let points = history.points(account.id().as_str(), &metric.key(), since);
-                let summary = summarize(&points)?;
+                let summary = summarize(&points, self.now)?;
                 Some((account.id().as_str().to_owned(), (summary, ValueKind::of(metric))))
             })
             .collect()

@@ -8,7 +8,7 @@ use chrono::{DateTime, Duration, Local, Utc};
 use codexbar_core::{AccountId, AccountSnapshot, Metric};
 use codexbar_store::HistoryStore;
 use codexbar_store::prefs::DashboardPrefs;
-use codexbar_store::summary::{HistorySummary, Point, chart_points, summarize};
+use codexbar_store::summary::{ChartPoint, HistorySummary, chart_series, summarize};
 use gpui_kit::TestSupportExt as _;
 use gpui_kit::component::button::{Button, ButtonGroup, ButtonVariants as _};
 use gpui_kit::component::chart::AreaChart;
@@ -45,6 +45,7 @@ impl ValueKind {
     pub fn value(self, value: f64) -> String {
         match self {
             Self::Percent => format!("{:.0}%", value * 100.0),
+            Self::Dollars if value < 0.0 => format!("\u{2212}${:.2}", value.abs()),
             Self::Dollars => format!("${value:.2}"),
         }
     }
@@ -132,6 +133,9 @@ pub fn describe(summary: &HistorySummary, kind: ValueKind) -> String {
     if let Some(gap) = summary.longest_gap {
         text.push_str(&format!(" Longest gap without data: {}.", span_label(gap)));
     }
+    if let Some(stale) = summary.stale_for {
+        text.push_str(&format!(" No new data for {}.", span_label(stale)));
+    }
     text
 }
 
@@ -184,7 +188,7 @@ struct Selection<'a> {
     account: &'a AccountSnapshot,
     metric: &'a Metric,
     kind: ValueKind,
-    points: Vec<Point>,
+    series: Vec<ChartPoint>,
     summary: Option<HistorySummary>,
 }
 
@@ -193,6 +197,8 @@ pub struct HistoryView {
     accounts: Vec<AccountSnapshot>,
     now: DateTime<Utc>,
     account: Option<AccountId>,
+    /// True once an account is picked here; until then the view follows the Usage view's selection.
+    pinned: bool,
     metric: Option<String>,
     range: HistoryRange,
     /// The chart point the keyboard is on; `None` reads the latest.
@@ -207,6 +213,7 @@ impl HistoryView {
             accounts: Vec::new(),
             now: Utc::now(),
             account: None,
+            pinned: false,
             metric: None,
             range: HistoryRange::Week,
             cursor: None,
@@ -227,12 +234,24 @@ impl HistoryView {
         self.now = now;
         let known = |id: &AccountId| self.accounts.iter().any(|account| account.id() == id);
         if !self.account.as_ref().is_some_and(known) {
-            self.account = preferred
+            self.pinned = false;
+        }
+        self.follow(preferred, cx);
+    }
+
+    /// Shows the Usage view's selected account, unless an account was picked here.
+    pub fn follow(&mut self, preferred: Option<&AccountId>, cx: &mut Context<Self>) {
+        let known = |id: &AccountId| self.accounts.iter().any(|account| account.id() == id);
+        if !self.pinned {
+            let next = preferred
                 .filter(|id| known(id))
                 .or_else(|| self.accounts.first().map(AccountSnapshot::id))
                 .cloned();
-            self.metric = None;
-            self.cursor = None;
+            if next != self.account {
+                self.account = next;
+                self.metric = None;
+                self.cursor = None;
+            }
         }
         cx.notify();
     }
@@ -245,6 +264,7 @@ impl HistoryView {
     }
 
     fn select_account(&mut self, id: AccountId, cx: &mut Context<Self>) {
+        self.pinned = true;
         if self.account.as_ref() != Some(&id) {
             self.account = Some(id);
             self.metric = None;
@@ -265,17 +285,19 @@ impl HistoryView {
             .and_then(|key| metrics.iter().find(|metric| &metric.key() == key))
             .or_else(|| metrics.first())
             .copied()?;
-        let since = self.now - self.range.duration();
+        // The range rolls with the clock, not the last refresh, so it stays right with automatic refresh off.
+        let now = Utc::now();
+        let since = now - self.range.duration();
         let points = {
             let history = self.history.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             history.points(account.id().as_str(), &metric.key(), since)
         };
-        let summary = summarize(&points);
+        let summary = summarize(&points, now);
         Some(Selection {
             account,
             metric,
             kind: ValueKind::of(metric),
-            points: chart_points(&points, MAX_CHART_POINTS),
+            series: chart_series(&points, MAX_CHART_POINTS),
             summary,
         })
     }
@@ -307,7 +329,7 @@ fn charted_metrics(account: &AccountSnapshot) -> impl Iterator<Item = &Metric> {
         .filter(|metric| metric.history_value().is_some())
 }
 
-fn point_label(point: &Point, range: HistoryRange) -> String {
+fn point_label(point: &ChartPoint, range: HistoryRange) -> String {
     let local = point.at.with_timezone(&Local);
     match range {
         HistoryRange::Day => local.format("%H:%M").to_string(),
@@ -536,10 +558,16 @@ impl HistoryView {
                 },
             ));
 
-        let points = selection.points.clone();
-        let len = points.len();
+        // The keyboard reads real readings only, never the line drawn across a gap.
+        let readings: Vec<ChartPoint> = selection
+            .series
+            .iter()
+            .copied()
+            .filter(|point| point.measured)
+            .collect();
+        let len = readings.len();
         let cursor = self.cursor.unwrap_or(len.saturating_sub(1)).min(len.saturating_sub(1));
-        let readout = points.get(cursor).map(|point| {
+        let readout = readings.get(cursor).map(|point| {
             format!(
                 "{} · {}",
                 point.at.with_timezone(&Local).format("%a %b %-d, %H:%M"),
@@ -549,7 +577,7 @@ impl HistoryView {
         let description = describe(summary, kind);
 
         let color = cx.theme().chart_1;
-        let chart: gpui_kit::AnyElement = if len < 2 {
+        let chart: gpui_kit::AnyElement = if summary.samples < 2 {
             // One sample can't draw a line; show it as a value instead of a lone dot.
             v_flex()
                 .size_full()
@@ -560,14 +588,17 @@ impl HistoryView {
                 .child(div().text_sm().text_color(muted).child("Only one sample so far"))
                 .into_any_element()
         } else {
-            let data: Vec<(SharedString, f64)> = points
+            let point_count = selection.series.len();
+            let data: Vec<(SharedString, f64)> = selection
+                .series
                 .iter()
                 .map(|point| (SharedString::from(point_label(point, range)), point.value))
                 .collect();
             let (domain_low, domain_high) = match kind {
                 ValueKind::Percent => (0.0, 1.0),
                 // Balances start at zero so a drop reads as a drop; a flat series still gets visible headroom.
-                ValueKind::Dollars => (0.0, (summary.high * 1.15).max(1.0)),
+                // A negative (overdrawn) balance extends the axis below zero instead of being clipped.
+                ValueKind::Dollars => (summary.low.min(0.0) * 1.15, (summary.high * 1.15).max(1.0)),
             };
             AreaChart::new(data)
                 .id("history-chart")
@@ -585,8 +616,8 @@ impl HistoryView {
                 .y_padding(0., 0.)
                 .y_axis(true)
                 .y_tick_count(5)
-                .point_count(len)
-                .tick_margin((len / 6).max(1))
+                .point_count(point_count)
+                .tick_margin((point_count / 6).max(1))
                 .y_tick_format(move |value| kind.value(value))
                 .into_any_element()
         };
@@ -604,8 +635,23 @@ impl HistoryView {
                         .text_color(muted)
                         .child(Icon::new(IconName::Info).small())
                         .child(format!(
-                            "No data for {} at most once in this range; the line joins the readings on either side.",
+                            "Longest gap without data: {}. The line crosses gaps straight from one reading to the next.",
                             span_label(gap)
+                        )),
+                )
+            })
+            .when_some(summary.stale_for, |this, stale| {
+                this.child(
+                    h_flex()
+                        .gap_2()
+                        .items_center()
+                        .text_sm()
+                        .text_color(cx.theme().warning)
+                        .child(Icon::new(IconName::TriangleAlert).small())
+                        .child(format!(
+                            "No new data for {}. Latest reads as of {}.",
+                            span_label(stale),
+                            summary.latest_at.with_timezone(&Local).format("%a %b %-d, %H:%M")
                         )),
                 )
             })
@@ -683,6 +729,7 @@ fn empty_state(
 mod tests {
     use super::*;
     use chrono::TimeZone;
+    use codexbar_store::summary::Point;
 
     fn summary(values: &[(i64, f64)]) -> HistorySummary {
         let start = Utc.with_ymd_and_hms(2026, 10, 1, 0, 0, 0).unwrap();
@@ -690,7 +737,7 @@ mod tests {
             .iter()
             .map(|&(minutes, value)| Point::new(start + Duration::minutes(minutes), value))
             .collect();
-        summarize(&points).unwrap()
+        summarize(&points, points.last().unwrap().at).unwrap()
     }
 
     #[test]
@@ -700,6 +747,7 @@ mod tests {
         assert_eq!(ValueKind::Percent.change(-0.04), "\u{2212}4 pts");
         assert_eq!(ValueKind::Percent.change(0.001), "no change");
         assert_eq!(ValueKind::Dollars.value(18.42), "$18.42");
+        assert_eq!(ValueKind::Dollars.value(-9.3), "\u{2212}$9.30");
         assert_eq!(ValueKind::Dollars.change(-9.3), "\u{2212}$9.30");
         assert_eq!(ValueKind::Dollars.change(0.0), "no change");
     }
