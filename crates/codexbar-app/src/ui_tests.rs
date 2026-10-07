@@ -187,3 +187,31 @@ fn view_tabs_switch_views_by_click_and_keyboard(cx: &mut TestAppContext) {
     press(cx, handle, "shift-tab");
     assert_eq!(focused(cx, 2), Some(true));
 }
+
+#[gpui_kit::test]
+fn failed_save_reloads_from_the_injected_folder(cx: &mut TestAppContext) {
+    use std::os::windows::fs::OpenOptionsExt as _;
+
+    let settings = TempSettings::new("reload", r#"{ "zoomLevel": 1.3 }"#);
+    open_dashboard(cx, &settings);
+    // Hold the shared write lock the way another writer would, so the save fails with Busy and the hub reloads.
+    let _lock = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .share_mode(0)
+        .open(settings.0.join("settings.write.lock"))
+        .unwrap();
+
+    let result = cx.update(|cx| {
+        SettingsHub::update(cx, |settings| {
+            settings.set_zoom_level(2.0);
+            Ok(())
+        })
+    });
+    assert_eq!(result, Err(codexbar_store::settings::SettingsError::Busy));
+    let reloaded = cx.update(|cx| SettingsHub::global(cx).settings().zoom_level());
+    assert_eq!(reloaded, 1.3, "the reload reads the test's folder, not ~/.codexbar");
+    assert_eq!(settings.zoom_on_disk(), Some(1.3));
+}
