@@ -1,0 +1,592 @@
+//! Settings (#91): General, Accounts, Alerts, Appearance, Widgets and About, built on gpui-kit's `Settings`.
+//! Changes apply and save immediately under the shared settings lock; account edits go through a dialog with
+//! Cancel, and destructive actions ask first.
+
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use codexbar_store::settings::{AccountRecord, AuthMethod, names};
+use gpui_kit::component::Disableable as _;
+use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants as _};
+use gpui_kit::component::dialog::{DialogAction, DialogButtonProps, DialogClose, DialogFooter};
+use gpui_kit::component::input::{Input, InputState};
+use gpui_kit::component::select::{Select, SelectState};
+use gpui_kit::component::setting::{SettingField, SettingGroup, SettingItem, SettingPage, Settings as SettingsPanel};
+use gpui_kit::component::tag::Tag;
+use gpui_kit::component::{
+    ActiveTheme as _, IconName, IndexPath, Sizable as _, StyledExt as _, WindowExt as _, h_flex, v_flex,
+};
+use gpui_kit::{
+    AnyElement, App, AppContext as _, Entity, IntoElement, ParentElement as _, SharedString, Styled as _, Window, div,
+    prelude::FluentBuilder as _, px,
+};
+
+use crate::catalog::{self, PROVIDERS};
+use crate::settings_hub::{SettingsHub, describe_source};
+
+/// Refresh choices required by #91, in minutes; 0 is Off.
+const REFRESH_CHOICES: [u64; 6] = [0, 1, 5, 15, 30, 60];
+
+pub fn render(_: &mut Window, cx: &mut App) -> impl IntoElement {
+    let notice = SettingsHub::global(cx).notice();
+    v_flex()
+        .size_full()
+        .gap_3()
+        .when_some(notice, |this, notice| {
+            this.child(
+                h_flex()
+                    .gap_2()
+                    .px_3()
+                    .py_2()
+                    .rounded(cx.theme().radius)
+                    .border_1()
+                    .border_color(cx.theme().warning)
+                    .text_sm()
+                    .child(
+                        gpui_kit::component::Icon::new(IconName::TriangleAlert)
+                            .small()
+                            .text_color(cx.theme().warning),
+                    )
+                    .child(notice),
+            )
+        })
+        .child(
+            SettingsPanel::new("codexbar-settings")
+                .sidebar_width(px(200.))
+                .pages(vec![
+                    general_page(cx),
+                    accounts_page(cx),
+                    alerts_page(),
+                    appearance_page(),
+                    widgets_page(),
+                    about_page(),
+                ]),
+        )
+}
+
+fn minutes_label(minutes: u64) -> SharedString {
+    match minutes {
+        0 => "Off".into(),
+        1 => "Every minute".into(),
+        m => format!("Every {m} minutes").into(),
+    }
+}
+
+/// The stored interval in minutes, 0 for off. A value the WPF app wrote that isn't a standard choice is kept
+/// and shown as its own option rather than misreported.
+fn current_minutes(cx: &App) -> u64 {
+    SettingsHub::global(cx)
+        .settings()
+        .refresh_interval_secs()
+        .map_or(0, |secs| secs.div_ceil(60).max(1))
+}
+
+fn general_page(cx: &App) -> SettingPage {
+    let current = current_minutes(cx);
+    let mut choices: Vec<u64> = REFRESH_CHOICES.to_vec();
+    if !choices.contains(&current) {
+        choices.push(current);
+        choices.sort_unstable();
+    }
+    let options = choices
+        .iter()
+        .map(|minutes| (SharedString::from(minutes.to_string()), minutes_label(*minutes)))
+        .collect();
+    SettingPage::new("General")
+        .icon(IconName::Settings)
+        .default_open(true)
+        .group(
+            SettingGroup::new().title("Refresh").item(
+                SettingItem::new(
+                    "Auto refresh",
+                    SettingField::dropdown(
+                        options,
+                        |cx: &App| SharedString::from(current_minutes(cx).to_string()),
+                        |value: SharedString, cx: &mut App| {
+                            let minutes: u64 = value.parse().unwrap_or(2);
+                            let secs = (minutes > 0).then_some(minutes * 60);
+                            let _ = SettingsHub::update(cx, |settings| {
+                                settings.set_refresh_interval_secs(secs);
+                                Ok(())
+                            });
+                        },
+                    ),
+                )
+                .description("How often usage is fetched in the background. Refresh now is always in the title bar."),
+            ),
+        )
+}
+
+fn accounts_page(cx: &App) -> SettingPage {
+    let hub = SettingsHub::global(cx);
+    let mut groups = Vec::new();
+    for info in &PROVIDERS {
+        let records: Vec<AccountRecord> = hub.settings().accounts_for(info.id).cloned().collect();
+        let mut group = SettingGroup::new().title(info.display).description(info.sign_in);
+        if records.is_empty() {
+            group = group.item(SettingItem::render(move |_, _, cx| {
+                let enabled = SettingsHub::global(cx).settings().is_enabled(info.id);
+                h_flex()
+                    .w_full()
+                    .justify_between()
+                    .gap_3()
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(if enabled {
+                                "Uses the default sign-in. Add an account to name or configure it."
+                            } else {
+                                "Off"
+                            }),
+                    )
+                    .child(add_button(info.id))
+            }));
+        } else {
+            for record in records {
+                group = group.item(account_item(record));
+            }
+            if info.multi_account {
+                group = group.item(SettingItem::render(move |_, _, _| {
+                    h_flex().w_full().justify_end().child(add_button(info.id))
+                }));
+            }
+        }
+        groups.push(group);
+    }
+    groups.push(
+        SettingGroup::new().title("Reset").item(
+            SettingItem::render(|_, _, _| {
+                h_flex().w_full().justify_end().child(
+                    Button::new("reset-accounts")
+                        .danger()
+                        .small()
+                        .label("Reset accounts…")
+                        .on_click(|_, window, cx| confirm_reset(window, cx)),
+                )
+            })
+            .description("Removes every account and its saved keys. Usage history and provider sign-ins are kept."),
+        ),
+    );
+    SettingPage::new("Accounts").icon(IconName::CircleUser).groups(groups)
+}
+
+fn add_button(provider: &'static str) -> impl IntoElement {
+    Button::new(SharedString::from(format!("add-{provider}")))
+        .small()
+        .label("Add account…")
+        .on_click(move |_, window, cx| open_account_dialog(provider, None, window, cx))
+}
+
+/// One account row: name, method and secret status, an on/off switch, Edit… and Remove….
+fn account_item(record: AccountRecord) -> SettingItem {
+    let keywords = [record.label.clone(), record.provider.clone()];
+    SettingItem::render(move |_, _, cx| {
+        let hub = SettingsHub::global(cx);
+        let current = hub
+            .settings()
+            .accounts()
+            .iter()
+            .find(|a| a.id == record.id)
+            .cloned()
+            .unwrap_or_else(|| record.clone());
+        let info = catalog::info(&current.provider);
+        let secret = info
+            .secret
+            .as_ref()
+            .map(|_| describe_source(&hub.secret_for(&current).1));
+        let detail = match (&current.external_id, &secret) {
+            (Some(user), _) => format!("{} · {user}", current.method.label()),
+            (None, Some(source)) => format!("{} · {source}", current.method.label()),
+            (None, None) => current.method.label().to_owned(),
+        };
+        let read_only = hub.is_read_only();
+        let toggle_id = current.id.clone();
+        let edit_id = current.id.clone();
+        let remove = current.clone();
+        h_flex()
+            .w_full()
+            .gap_3()
+            .items_center()
+            .child(
+                v_flex()
+                    .flex_1()
+                    .min_w_0()
+                    .child(
+                        h_flex()
+                            .gap_2()
+                            .child(div().font_semibold().child(current.label.clone()))
+                            .when(!current.enabled, |this| {
+                                this.child(Tag::secondary().small().child("Off"))
+                            }),
+                    )
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .truncate()
+                            .child(detail),
+                    ),
+            )
+            .child(
+                gpui_kit::component::switch::Switch::new(SharedString::from(format!("enabled-{}", current.id)))
+                    .checked(current.enabled)
+                    .disabled(read_only)
+                    .on_click(move |checked: &bool, _, cx| {
+                        let checked = *checked;
+                        let id = toggle_id.clone();
+                        let _ = SettingsHub::update(cx, |settings| {
+                            let Some(record) = settings.accounts().iter().find(|a| a.id == id).cloned() else {
+                                return Ok(());
+                            };
+                            settings.upsert(AccountRecord {
+                                enabled: checked,
+                                ..record
+                            })
+                        });
+                    }),
+            )
+            .child(
+                Button::new(SharedString::from(format!("edit-{}", current.id)))
+                    .small()
+                    .ghost()
+                    .label("Edit…")
+                    .disabled(read_only)
+                    .on_click(move |_, window, cx| {
+                        let record = SettingsHub::global(cx)
+                            .settings()
+                            .accounts()
+                            .iter()
+                            .find(|a| a.id == edit_id)
+                            .cloned();
+                        if let Some(record) = record {
+                            open_account_dialog(catalog::info(&record.provider).id, Some(record), window, cx);
+                        }
+                    }),
+            )
+            .child(
+                Button::new(SharedString::from(format!("remove-{}", current.id)))
+                    .small()
+                    .ghost()
+                    .label("Remove…")
+                    .disabled(read_only)
+                    .on_click(move |_, window, cx| confirm_remove(remove.clone(), window, cx)),
+            )
+    })
+    .keywords(keywords)
+}
+
+/// The fields of the add/edit dialog, created once per dialog so typing survives re-renders.
+struct AccountForm {
+    providers: Entity<SelectState<Vec<SharedString>>>,
+    methods: Entity<SelectState<Vec<SharedString>>>,
+    label: Entity<InputState>,
+    secret: Entity<InputState>,
+    username: Entity<InputState>,
+    workspace: Entity<InputState>,
+    error: Rc<RefCell<Option<SharedString>>>,
+}
+
+fn open_account_dialog(provider: &'static str, existing: Option<AccountRecord>, window: &mut Window, cx: &mut App) {
+    if SettingsHub::global(cx).is_read_only() {
+        return;
+    }
+    let provider_ix = PROVIDERS.iter().position(|info| info.id == provider).unwrap_or(0);
+    let method = existing
+        .as_ref()
+        .map_or(catalog::info(provider).default_method, |r| r.method);
+    let method_ix = AuthMethod::ALL.iter().position(|m| *m == method).unwrap_or(0);
+    let form = Rc::new(AccountForm {
+        providers: cx.new(|cx| {
+            SelectState::new(
+                PROVIDERS.iter().map(|i| SharedString::from(i.display)).collect(),
+                Some(IndexPath::default().row(provider_ix)),
+                window,
+                cx,
+            )
+        }),
+        methods: cx.new(|cx| {
+            SelectState::new(
+                AuthMethod::ALL.iter().map(|m| SharedString::from(m.label())).collect(),
+                Some(IndexPath::default().row(method_ix)),
+                window,
+                cx,
+            )
+        }),
+        label: cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("Work, Personal…")
+                .default_value(
+                    existing
+                        .as_ref()
+                        .map_or_else(|| catalog::info(provider).display.to_owned(), |r| r.label.clone()),
+                )
+        }),
+        secret: cx.new(|cx| {
+            InputState::new(window, cx)
+                .masked(true)
+                .placeholder("Leave blank to keep the current one")
+        }),
+        username: cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("GitHub username, blank for every gh account")
+                .default_value(
+                    existing
+                        .as_ref()
+                        .and_then(|r| r.external_id.clone())
+                        .unwrap_or_default(),
+                )
+        }),
+        workspace: cx.new(|cx| {
+            InputState::new(window, cx).placeholder("wrk_…").default_value(
+                existing
+                    .as_ref()
+                    .and_then(|r| r.workspace_id.clone())
+                    .unwrap_or_default(),
+            )
+        }),
+        error: Rc::default(),
+    });
+    let editing = existing.is_some();
+    let title = if editing { "Edit account" } else { "Add account" };
+
+    window.open_dialog(cx, move |dialog, _, cx| {
+        let form_for_ok = form.clone();
+        let existing = existing.clone();
+        let provider_ix = form
+            .providers
+            .read(cx)
+            .selected_index(cx)
+            .map_or(provider_ix, |ix| ix.row);
+        let info = &PROVIDERS[provider_ix.min(PROVIDERS.len() - 1)];
+        let error = form.error.borrow().clone();
+        let field = |label: &'static str, control: AnyElement| {
+            v_flex()
+                .gap_1()
+                .child(div().text_sm().font_semibold().child(label))
+                .child(control)
+        };
+        dialog
+            .title(title)
+            .w(px(520.))
+            .child(
+                v_flex()
+                    .gap_3()
+                    .child(field(
+                        "Provider",
+                        Select::new(&form.providers)
+                            .disabled(editing)
+                            .accessibility_label("Provider")
+                            .into_any_element(),
+                    ))
+                    .child(
+                        div()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(info.sign_in),
+                    )
+                    .child(field("Name", Input::new(&form.label).into_any_element()))
+                    .child(field(
+                        "Sign-in method",
+                        Select::new(&form.methods)
+                            .accessibility_label("Sign-in method")
+                            .into_any_element(),
+                    ))
+                    .when_some(info.secret.as_ref(), |this, spec| {
+                        this.child(field(
+                            spec.label,
+                            Input::new(&form.secret).mask_toggle().into_any_element(),
+                        ))
+                        .child(div().text_xs().text_color(cx.theme().muted_foreground).child(format!(
+                            "Saved in Windows Credential Manager. The {} environment variable overrides it.",
+                            spec.env
+                        )))
+                    })
+                    .when(info.id == names::COPILOT, |this| {
+                        this.child(field("GitHub username", Input::new(&form.username).into_any_element()))
+                    })
+                    .when(info.id == names::OPENCODE_GO, |this| {
+                        this.child(field("Workspace id", Input::new(&form.workspace).into_any_element()))
+                    })
+                    .when_some(error, |this, error| {
+                        this.child(div().text_sm().text_color(cx.theme().danger).child(error))
+                    }),
+            )
+            .footer(
+                DialogFooter::new()
+                    .child(DialogClose::new().trigger(|button| button.outline().label("Cancel")))
+                    .child(
+                        DialogAction::new().child(Button::new("account-save").primary().label(if editing {
+                            "Save"
+                        } else {
+                            "Add"
+                        })),
+                    ),
+            )
+            .on_ok(move |_, window, cx| save_account(&form_for_ok, existing.clone(), window, cx))
+    });
+}
+
+/// Validates and saves the dialog. Returns false (keeping the dialog open) on any failure.
+fn save_account(form: &AccountForm, existing: Option<AccountRecord>, window: &mut Window, cx: &mut App) -> bool {
+    let provider_ix = form.providers.read(cx).selected_index(cx).map_or(0, |ix| ix.row);
+    let info = &PROVIDERS[provider_ix.min(PROVIDERS.len() - 1)];
+    let method_ix = form.methods.read(cx).selected_index(cx).map_or(0, |ix| ix.row);
+    let method = AuthMethod::ALL[method_ix.min(AuthMethod::ALL.len() - 1)];
+    let label = form.label.read(cx).value().trim().to_owned();
+    let secret = form.secret.read(cx).value().trim().to_owned();
+    let username = form.username.read(cx).value().trim().to_owned();
+    let workspace = form.workspace.read(cx).value().trim().to_owned();
+
+    let mut record = existing.unwrap_or_else(|| AccountRecord::new(info.id, &label, method));
+    record.label = label;
+    record.method = method;
+    if info.id == names::COPILOT {
+        record.external_id = (!username.is_empty()).then_some(username);
+    }
+    if info.id == names::OPENCODE_GO {
+        record.workspace_id = (!workspace.is_empty()).then_some(workspace);
+    }
+
+    // The secret is written first: if Credential Manager fails, the account isn't saved without its key.
+    if info.secret.is_some() && !secret.is_empty() {
+        let store = SettingsHub::global(cx).credentials();
+        if let Err(err) = store.write(&record.id, &secret) {
+            *form.error.borrow_mut() = Some(err.to_string().into());
+            window.refresh();
+            return false;
+        }
+    }
+    match SettingsHub::update(cx, |settings| settings.upsert(record)) {
+        Ok(()) => true,
+        Err(err) => {
+            *form.error.borrow_mut() = Some(err.to_string().into());
+            window.refresh();
+            false
+        }
+    }
+}
+
+fn confirm_remove(record: AccountRecord, window: &mut Window, cx: &mut App) {
+    let label = record.label.clone();
+    // Only accounts that hold a pasted secret have anything in Credential Manager to delete.
+    let description = if catalog::info(&record.provider).secret.is_some() {
+        "Its saved key is deleted from Credential Manager. Usage history is kept."
+    } else {
+        "The provider's own sign-in and usage history are kept."
+    };
+    window.open_alert_dialog(cx, move |alert, _, _| {
+        let record = record.clone();
+        alert
+            .title(format!("Remove “{label}”?"))
+            .description(description)
+            .button_props(
+                DialogButtonProps::default()
+                    .ok_text("Remove")
+                    .ok_variant(ButtonVariant::Danger)
+                    .show_cancel(true),
+            )
+            .on_ok(move |_, _, cx| {
+                let id = record.id.clone();
+                let result = SettingsHub::update(cx, |settings| {
+                    settings.remove(&id);
+                    Ok(())
+                });
+                if result.is_ok()
+                    && let Err(err) = SettingsHub::global(cx).credentials().delete(&id)
+                {
+                    SettingsHub::set_error(
+                        cx,
+                        Some(format!("The account was removed, but its key couldn't be deleted: {err}").into()),
+                    );
+                }
+                true
+            })
+    });
+}
+
+fn confirm_reset(window: &mut Window, cx: &mut App) {
+    window.open_alert_dialog(cx, |alert, _, _| {
+        alert
+            .title("Reset all accounts?")
+            .description("Every account and its saved keys are removed. Providers fall back to their default sign-in. This can't be undone.")
+            .button_props(DialogButtonProps::default().ok_text("Reset accounts").ok_variant(ButtonVariant::Danger).show_cancel(true))
+            .on_ok(|_, _, cx| {
+                let ids: Vec<String> = SettingsHub::global(cx).settings().accounts().iter().map(|a| a.id.clone()).collect();
+                if SettingsHub::update(cx, |settings| {
+                    settings.clear_accounts();
+                    Ok(())
+                })
+                .is_ok()
+                {
+                    let store = SettingsHub::global(cx).credentials();
+                    let failed = ids.iter().filter(|id| store.delete(id).is_err()).count();
+                    if failed > 0 {
+                        SettingsHub::set_error(cx, Some(format!("Accounts were reset, but {failed} saved keys couldn't be deleted.").into()));
+                    }
+                }
+                true
+            })
+    });
+}
+
+fn info_item(title: &'static str, body: &'static str) -> SettingItem {
+    SettingItem::render(move |_, _, cx| {
+        v_flex()
+            .gap_1()
+            .child(div().font_semibold().child(title))
+            .child(div().text_sm().text_color(cx.theme().muted_foreground).child(body))
+    })
+}
+
+fn alerts_page() -> SettingPage {
+    SettingPage::new("Alerts").icon(IconName::Bell).group(SettingGroup::new().title("Usage alerts").item(info_item(
+        "Not available yet",
+        "Threshold alerts with Windows notifications arrive with #87. Status tags on the dashboard already mark accounts at risk.",
+    )))
+}
+
+fn appearance_page() -> SettingPage {
+    SettingPage::new("Appearance")
+        .icon(IconName::Palette)
+        .group(SettingGroup::new().title("Theme").item(info_item(
+            "CodexBar Dark",
+            "HemSoft gold on black. Light theme and provider branding arrive with #92.",
+        )))
+}
+
+fn widgets_page() -> SettingPage {
+    SettingPage::new("Widgets").icon(IconName::LayoutDashboard).group(
+        SettingGroup::new().title("Windows widgets").item(info_item(
+            "Not available yet",
+            "A Windows Widgets board provider arrives with #94 and #95.",
+        )),
+    )
+}
+
+fn about_page() -> SettingPage {
+    SettingPage::new("About").icon(IconName::Info).group(
+        SettingGroup::new()
+            .title("CodexBar for Windows")
+            .item(SettingItem::new(
+                "Version",
+                SettingField::render(|_, _, _| env!("CARGO_PKG_VERSION")),
+            ))
+            .item(SettingItem::new(
+                "Settings file",
+                SettingField::render(|_, _, cx| {
+                    SharedString::from(SettingsHub::global(cx).settings().path().display().to_string())
+                }),
+            ))
+            .item(SettingItem::new(
+                "Source and issues",
+                SettingField::render(|_, _, _| {
+                    Button::new("open-repo")
+                        .small()
+                        .outline()
+                        .label("GitHub…")
+                        .on_click(|_, _, cx| cx.open_url("https://github.com/HemSoft/codexbar"))
+                }),
+            )),
+    )
+}

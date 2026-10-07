@@ -5,8 +5,10 @@ use std::time::Instant;
 
 use chrono::{DateTime, Duration, Local, Utc};
 use codexbar_core::{AccountId, AccountSnapshot, Metric, demo::demo_accounts, format, sort_by_urgency};
-use codexbar_providers::{ProviderError, UsageProvider};
+use codexbar_providers::ProviderError;
 use codexbar_store::HistoryStore;
+
+use crate::settings_hub::SettingsHub;
 use gpui_kit::component::sidebar::{Sidebar, SidebarMenu, SidebarMenuItem};
 use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::table::{DataTable, TableEvent, TableState};
@@ -29,6 +31,7 @@ pub enum DashboardView {
     Usage,
     Spend,
     History,
+    Settings,
 }
 
 impl DashboardView {
@@ -39,6 +42,7 @@ impl DashboardView {
             Self::Usage => "Usage",
             Self::Spend => "Spend",
             Self::History => "History",
+            Self::Settings => "Settings",
         }
     }
 
@@ -47,11 +51,11 @@ impl DashboardView {
             Self::Usage => IconName::LayoutDashboard,
             Self::Spend => IconName::ChartPie,
             Self::History => IconName::Calendar,
+            Self::Settings => IconName::Settings,
         }
     }
 }
 
-const REFRESH_INTERVAL_SECS: i64 = 120;
 /// Row height of a large `DataTable` (header and body rows).
 const TABLE_ROW_HEIGHT: gpui_kit::Pixels = px(40.);
 /// A tray click this soon after the window lost focus means "hide it": the click itself took the focus away.
@@ -60,10 +64,8 @@ const TOGGLE_GRACE: std::time::Duration = std::time::Duration::from_millis(400);
 /// Where accounts come from.
 pub enum DataSource {
     /// Real provider adapters, fetched off the UI thread, with their history.
-    Live {
-        providers: Vec<Arc<dyn UsageProvider>>,
-        history: Arc<Mutex<HistoryStore>>,
-    },
+    /// Providers are rebuilt from the account settings on every refresh, so edits apply at once.
+    Live { history: Arc<Mutex<HistoryStore>> },
     /// Synthetic accounts for design work (`CODEXBAR_DEMO=1`).
     Demo,
 }
@@ -119,9 +121,12 @@ impl Dashboard {
                 cx.background_executor().timer(std::time::Duration::from_secs(1)).await;
                 let alive = this.update(cx, |this, cx| {
                     this.now = Utc::now();
-                    let due = this
-                        .last_refresh
-                        .is_none_or(|at| this.now - at >= Duration::seconds(REFRESH_INTERVAL_SECS));
+                    let interval = SettingsHub::global(cx).settings().refresh_interval_secs();
+                    let due = match (this.last_refresh, interval) {
+                        (None, _) => true,
+                        (Some(_), None) => false,
+                        (Some(at), Some(secs)) => this.now - at >= Duration::seconds(secs as i64),
+                    };
                     if due && !this.loading {
                         this.refresh(cx);
                     }
@@ -158,6 +163,12 @@ impl Dashboard {
     }
 
     /// Fetches every provider off the UI thread. A failed provider keeps its last good accounts.
+    /// Switches the visible view (the tray's Settings… item, the `--settings` flag).
+    pub fn show_view(&mut self, view: DashboardView, cx: &mut Context<Self>) {
+        self.view = view;
+        cx.notify();
+    }
+
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
         let providers = match &self.source {
             DataSource::Demo => {
@@ -166,9 +177,10 @@ impl Dashboard {
                 self.set_accounts(demo_accounts(now, &Local), cx);
                 return;
             }
-            DataSource::Live { providers, history } => (providers.clone(), history.clone()),
+            DataSource::Live { history } => history.clone(),
         };
-        let (providers, history) = providers;
+        let history = providers;
+        let providers = crate::providers::enabled(SettingsHub::global(cx));
         self.loading = true;
         cx.notify();
         cx.spawn(async move |this, cx| {
@@ -289,22 +301,25 @@ impl Dashboard {
                     .items_center()
                     .child(Icon::new(IconName::LayoutDashboard).text_color(cx.theme().primary))
                     .child(div().font_semibold().child("CodexBar"))
-                    .child(
-                        div()
-                            .pl_6()
-                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                            .child(
-                                TabBar::new("views")
-                                    .underline()
-                                    .small()
-                                    .selected_index(selected)
-                                    .on_click(cx.listener(|this, ix: &usize, _, cx| {
-                                        this.view = DashboardView::ALL[*ix];
-                                        cx.notify();
-                                    }))
-                                    .children(DashboardView::ALL.map(|view| Tab::new().label(view.title()))),
-                            ),
-                    ),
+                    // The view tabs switch dashboard views; Settings has its own navigation.
+                    .when(self.view != DashboardView::Settings, |this| {
+                        this.child(
+                            div()
+                                .pl_6()
+                                .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                                .child(
+                                    TabBar::new("views")
+                                        .underline()
+                                        .small()
+                                        .selected_index(selected)
+                                        .on_click(cx.listener(|this, ix: &usize, _, cx| {
+                                            this.view = DashboardView::ALL[*ix];
+                                            cx.notify();
+                                        }))
+                                        .children(DashboardView::ALL.map(|view| Tab::new().label(view.title()))),
+                                ),
+                        )
+                    }),
             )
             .child(
                 h_flex()
@@ -353,10 +368,15 @@ impl Dashboard {
                     .child(div().text_xs().child("Ctrl+K")),
             )
             .child(
-                SidebarMenu::new()
-                    .children(items)
-                    .child(SidebarMenuItem::new("Accounts").icon(IconName::CircleUser))
-                    .child(SidebarMenuItem::new("Settings").icon(IconName::Settings)),
+                SidebarMenu::new().children(items).child(
+                    SidebarMenuItem::new("Settings")
+                        .icon(IconName::Settings)
+                        .active(self.view == DashboardView::Settings)
+                        .on_click(cx.listener(|this, _, _, cx| {
+                            this.view = DashboardView::Settings;
+                            cx.notify();
+                        })),
+                ),
             )
     }
 
@@ -478,10 +498,17 @@ impl Dashboard {
             .iter()
             .filter(|a| a.assess(self.now).severity().needs_attention())
             .count();
-        let next_refresh = self
-            .last_refresh
-            .map(|at| at + Duration::seconds(REFRESH_INTERVAL_SECS) - self.now)
-            .unwrap_or_default();
+        let interval = SettingsHub::global(cx).settings().refresh_interval_secs();
+        let next_refresh = match (self.last_refresh, interval) {
+            (Some(at), Some(secs)) => {
+                format!(
+                    "next refresh {}",
+                    format::clock_countdown(at + Duration::seconds(secs as i64) - self.now)
+                )
+            }
+            (_, None) => "auto refresh off".to_owned(),
+            (None, Some(_)) => "refreshing".to_owned(),
+        };
         h_flex()
             .gap_2()
             .text_sm()
@@ -497,16 +524,17 @@ impl Dashboard {
                     .child(format!("{attention} need attention")),
             )
             .child("·")
-            .child(format!("next refresh {}", format::clock_countdown(next_refresh)))
+            .child(next_refresh)
     }
 }
 
 use gpui_kit::prelude::FluentBuilder as _;
 
 impl Render for Dashboard {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let body = match self.view {
             DashboardView::Usage => self.render_usage(cx),
+            DashboardView::Settings => crate::settings_view::render(window, cx).into_any_element(),
             _ => self.render_placeholder(cx).into_any_element(),
         };
         v_flex()

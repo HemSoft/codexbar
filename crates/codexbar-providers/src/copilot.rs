@@ -103,11 +103,22 @@ fn reset_date(json: &Value) -> Option<DateTime<Utc>> {
 pub struct CopilotProvider<H: HttpClient, C: CommandRunner> {
     http: H,
     commands: C,
+    /// When set, only these gh usernames are fetched (case-insensitive); otherwise every signed-in account.
+    only: Option<Vec<String>>,
 }
 
 impl<H: HttpClient, C: CommandRunner> CopilotProvider<H, C> {
     pub fn new(http: H, commands: C) -> Self {
-        Self { http, commands }
+        Self {
+            http,
+            commands,
+            only: None,
+        }
+    }
+
+    pub fn only_accounts(mut self, usernames: Vec<String>) -> Self {
+        self.only = Some(usernames);
+        self
     }
 
     fn gh(&self, args: &[&str]) -> Result<String, ProviderError> {
@@ -170,7 +181,10 @@ impl<H: HttpClient, C: CommandRunner> UsageProvider for CopilotProvider<H, C> {
 
     /// Every signed-in account. One failing account doesn't hide the others; the call fails only if all do.
     fn fetch(&self, now: DateTime<Utc>) -> Result<Vec<AccountSnapshot>, ProviderError> {
-        let accounts = parse_gh_accounts(&self.gh(&["auth", "status", "--hostname", HOST])?);
+        let mut accounts = parse_gh_accounts(&self.gh(&["auth", "status", "--hostname", HOST])?);
+        if let Some(only) = &self.only {
+            accounts.retain(|name| only.iter().any(|wanted| wanted.eq_ignore_ascii_case(name)));
+        }
         if accounts.is_empty() {
             return Err(ProviderError::NotSignedIn { hint: GH_MISSING });
         }
@@ -325,6 +339,21 @@ mod tests {
         let ids: Vec<&str> = accounts.iter().map(|a| a.id().as_str()).collect();
         assert_eq!(ids, ["copilot-hemsoft", "copilot-fhemmerrelias"]);
         assert_eq!(*provider.http.seen.lock().unwrap(), ["token tok-a", "token tok-b"]);
+    }
+
+    #[test]
+    fn fetch_only_selected_accounts() {
+        let gh = FakeGh {
+            tokens: HashMap::from([("HemSoft", "tok-a"), ("fhemmerrelias", "tok-b")]),
+        };
+        let http = FakeHttp {
+            by_token: HashMap::from([("token tok-a".into(), ok(USER))]),
+            seen: Mutex::default(),
+        };
+        let provider = CopilotProvider::new(http, gh).only_accounts(vec!["hemsoft".into()]);
+        let accounts = provider.fetch(now()).unwrap();
+        assert_eq!(accounts.len(), 1);
+        assert_eq!(*provider.http.seen.lock().unwrap(), ["token tok-a"]);
     }
 
     #[test]

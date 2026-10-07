@@ -1,6 +1,7 @@
 //! Local persistence for CodexBar. Today that is usage history (#85): bounded, deduplicated samples per account
 //! and metric, in a versioned JSON Lines file. Only account ids, metric keys, numbers and times are stored.
 
+pub mod credentials;
 mod enrich;
 mod history;
 pub mod settings;

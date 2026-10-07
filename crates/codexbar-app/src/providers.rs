@@ -1,73 +1,122 @@
-//! Which providers run: the WPF app's switches and keys (read-only), with environment variables taking precedence.
+//! Which providers run, built from the account records in the shared settings file. Environment variables still win
+//! for secrets; Credential Manager comes next; plaintext keys from the WPF app are the last fallback.
 
 use std::sync::Arc;
 
-use codexbar_providers::balance::{MoonshotProvider, OpenRouterProvider, resolve_key};
+use codexbar_providers::balance::{MoonshotProvider, OpenRouterProvider};
 use codexbar_providers::claude::{ClaudeProvider, default_credentials_path};
 use codexbar_providers::codex::{CodexProvider, default_auth_path};
 use codexbar_providers::copilot::CopilotProvider;
 use codexbar_providers::cursor::{self, CursorProvider};
 use codexbar_providers::opencode::OpenCodeProvider;
 use codexbar_providers::{SystemCommandRunner, UreqClient, UsageProvider};
-use codexbar_store::settings::{LegacySettings, names};
+use codexbar_store::settings::{AccountRecord, names};
 
-/// Every enabled provider. A provider whose sign-in is missing still runs, so its row explains how to sign in.
-pub fn enabled(settings: &LegacySettings) -> Vec<Arc<dyn UsageProvider>> {
+use crate::settings_hub::SettingsHub;
+
+/// Enabled accounts for a provider, or its implicit legacy account when it has no records and is switched on.
+fn enabled_accounts(hub: &SettingsHub, provider: &str) -> Vec<AccountRecord> {
+    let settings = hub.settings();
+    if !settings.is_enabled(provider) {
+        return Vec::new();
+    }
+    let records: Vec<AccountRecord> = settings.accounts_for(provider).cloned().collect();
+    if records.is_empty() {
+        vec![SettingsHub::implicit_account(provider)]
+    } else {
+        records.into_iter().filter(|account| account.enabled).collect()
+    }
+}
+
+pub fn enabled(hub: &SettingsHub) -> Vec<Arc<dyn UsageProvider>> {
     let mut providers: Vec<Arc<dyn UsageProvider>> = Vec::new();
-    if settings.is_enabled(names::CODEX) {
+    if !enabled_accounts(hub, names::CODEX).is_empty() {
         providers.push(Arc::new(CodexProvider::new(UreqClient::new(), default_auth_path())));
     }
-    if settings.is_enabled(names::COPILOT) {
-        providers.push(Arc::new(CopilotProvider::new(UreqClient::new(), SystemCommandRunner)));
+
+    let copilot = enabled_accounts(hub, names::COPILOT);
+    if !copilot.is_empty() {
+        let usernames: Vec<String> = copilot.iter().filter_map(|a| a.external_id.clone()).collect();
+        let provider = CopilotProvider::new(UreqClient::new(), SystemCommandRunner);
+        // Records without usernames mean "every gh account", as the WPF app's automatic discovery does.
+        let provider = if usernames.len() == copilot.len() {
+            provider.only_accounts(usernames)
+        } else {
+            provider
+        };
+        providers.push(Arc::new(provider));
     }
-    if settings.is_enabled(names::CLAUDE) {
+
+    if !enabled_accounts(hub, names::CLAUDE).is_empty() {
         providers.push(Arc::new(ClaudeProvider::new(
             UreqClient::new(),
             default_credentials_path(),
         )));
     }
-    if settings.is_enabled(names::CURSOR) {
+    if !enabled_accounts(hub, names::CURSOR).is_empty() {
         providers.push(Arc::new(CursorProvider::new(
             UreqClient::new(),
             cursor::default_auth_path(),
         )));
     }
-    if settings.is_enabled(names::OPENROUTER) {
-        let key = resolve_key("OPENROUTER_API_KEY", settings.api_key(names::OPENROUTER));
-        providers.push(Arc::new(OpenRouterProvider::new(UreqClient::new(), key)));
+
+    let openrouter = enabled_accounts(hub, names::OPENROUTER);
+    let multiple = openrouter.len() > 1;
+    for account in openrouter {
+        let key = hub.secret_for(&account).0;
+        let provider = OpenRouterProvider::new(UreqClient::new(), key);
+        let provider = if multiple {
+            provider.with_account(account.id.clone(), account.label.clone())
+        } else {
+            provider
+        };
+        providers.push(Arc::new(provider));
     }
-    if let Some(opencode) = opencode(settings) {
+
+    if let Some(opencode) = opencode(hub) {
         providers.push(opencode);
     }
-    if settings.is_enabled(names::MOONSHOT) {
-        let key = resolve_key("MOONSHOT_API_KEY", settings.api_key(names::MOONSHOT));
-        providers.push(Arc::new(MoonshotProvider::new(UreqClient::new(), key)));
+
+    let moonshot = enabled_accounts(hub, names::MOONSHOT);
+    let multiple = moonshot.len() > 1;
+    for account in moonshot {
+        let key = hub.secret_for(&account).0;
+        let provider = MoonshotProvider::new(UreqClient::new(), key);
+        let provider = if multiple {
+            provider.with_account(account.id.clone(), account.label.clone())
+        } else {
+            provider
+        };
+        providers.push(Arc::new(provider));
     }
     providers
 }
 
-/// Go and Zen share the dashboard and its cookie; either half can be switched off.
-fn opencode(settings: &LegacySettings) -> Option<Arc<dyn UsageProvider>> {
+/// Go and Zen share one dashboard account; either half can be switched off. Zen falls back to Go's cookie.
+fn opencode(hub: &SettingsHub) -> Option<Arc<dyn UsageProvider>> {
+    let go = enabled_accounts(hub, names::OPENCODE_GO).into_iter().next();
+    let zen = enabled_accounts(hub, names::OPENCODE_ZEN).into_iter().next();
+    if go.is_none() && zen.is_none() {
+        return None;
+    }
     let env = |name: &str| {
         std::env::var(name)
             .ok()
-            .map(|value| value.trim().to_owned())
+            .map(|v| v.trim().to_owned())
             .filter(|v| !v.is_empty())
     };
-    let go_on = settings.is_enabled(names::OPENCODE_GO);
-    let zen_on = settings.is_enabled(names::OPENCODE_ZEN);
-    if !go_on && !zen_on {
-        return None;
-    }
-    let workspace = env("OPENCODE_GO_WORKSPACE_ID").or_else(|| settings.opencode_workspace_id());
-    let go_cookie = env("OPENCODE_GO_AUTH_COOKIE").or_else(|| settings.api_key(names::OPENCODE_GO));
-    let zen_cookie = env("OPENCODE_ZEN_AUTH_COOKIE")
-        .or_else(|| settings.api_key(names::OPENCODE_ZEN))
+    let workspace = env("OPENCODE_GO_WORKSPACE_ID")
+        .or_else(|| go.as_ref().and_then(|a| a.workspace_id.clone()))
+        .or_else(|| hub.settings().opencode_workspace_id());
+    let go_cookie = go.as_ref().and_then(|account| hub.secret_for(account).0);
+    let zen_cookie = zen
+        .as_ref()
+        .and_then(|account| hub.secret_for(account).0)
         .or_else(|| go_cookie.clone());
     Some(Arc::new(OpenCodeProvider::new(
         UreqClient::without_redirects(),
         workspace,
-        go_on.then_some(go_cookie).flatten(),
-        zen_on.then_some(zen_cookie).flatten(),
+        go_cookie,
+        zen.is_some().then_some(zen_cookie).flatten(),
     )))
 }

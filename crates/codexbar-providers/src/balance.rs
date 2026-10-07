@@ -90,6 +90,22 @@ pub fn parse_moonshot(payload: &str, now: DateTime<Utc>) -> Result<AccountSnapsh
     ))
 }
 
+/// Moves a parsed account onto a configured account's id and label.
+fn relabel(account: AccountSnapshot, configured: &Option<(String, String)>) -> AccountSnapshot {
+    match configured {
+        Some((id, label)) => {
+            let relabeled = AccountSnapshot::new(
+                AccountId::new(id.clone()),
+                account.provider(),
+                account.metrics().to_vec(),
+                account.fetched_at(),
+            );
+            relabeled.with_label(label.clone())
+        }
+        None => account,
+    }
+}
+
 fn status_error(status: u16, hint: &'static str) -> ProviderError {
     match status {
         401 | 403 => ProviderError::Expired { hint },
@@ -100,6 +116,7 @@ fn status_error(status: u16, hint: &'static str) -> ProviderError {
 pub struct OpenRouterProvider<H: HttpClient> {
     http: H,
     key: Option<String>,
+    account: Option<(String, String)>,
 }
 
 impl<H: HttpClient> OpenRouterProvider<H> {
@@ -107,7 +124,14 @@ impl<H: HttpClient> OpenRouterProvider<H> {
         Self {
             http,
             key: normalize_key(key),
+            account: None,
         }
+    }
+
+    /// Reports under a configured account's id and label (for several accounts of one provider).
+    pub fn with_account(mut self, id: impl Into<String>, label: impl Into<String>) -> Self {
+        self.account = Some((id.into(), label.into()));
+        self
     }
 }
 
@@ -126,7 +150,7 @@ impl<H: HttpClient> UsageProvider for OpenRouterProvider<H> {
             &[("Authorization", &bearer), ("X-Title", "CodexBar")],
         )?;
         match response.status {
-            200..=299 => parse_openrouter(&response.body, now).map(|account| vec![account]),
+            200..=299 => parse_openrouter(&response.body, now).map(|account| vec![relabel(account, &self.account)]),
             status => Err(status_error(status, OPENROUTER_KEY_HINT)),
         }
     }
@@ -135,6 +159,7 @@ impl<H: HttpClient> UsageProvider for OpenRouterProvider<H> {
 pub struct MoonshotProvider<H: HttpClient> {
     http: H,
     key: Option<String>,
+    account: Option<(String, String)>,
 }
 
 impl<H: HttpClient> MoonshotProvider<H> {
@@ -142,7 +167,14 @@ impl<H: HttpClient> MoonshotProvider<H> {
         Self {
             http,
             key: normalize_key(key),
+            account: None,
         }
+    }
+
+    /// Reports under a configured account's id and label (for several accounts of one provider).
+    pub fn with_account(mut self, id: impl Into<String>, label: impl Into<String>) -> Self {
+        self.account = Some((id.into(), label.into()));
+        self
     }
 }
 
@@ -161,7 +193,7 @@ impl<H: HttpClient> UsageProvider for MoonshotProvider<H> {
             &[("Authorization", &bearer), ("Accept", "application/json")],
         )?;
         match response.status {
-            200..=299 => parse_moonshot(&response.body, now).map(|account| vec![account]),
+            200..=299 => parse_moonshot(&response.body, now).map(|account| vec![relabel(account, &self.account)]),
             status => Err(status_error(status, MOONSHOT_KEY_HINT)),
         }
     }
@@ -215,6 +247,21 @@ mod tests {
             785
         );
         assert!(parse_moonshot(r#"{"data":{}}"#, now()).is_err());
+    }
+
+    #[test]
+    fn fetch_with_account_reports_configured_identity() {
+        let provider = OpenRouterProvider::new(
+            Fixed(HttpResponse::new(
+                200,
+                r#"{"data":{"total_credits":5,"total_usage":1}}"#,
+            )),
+            Some("k".into()),
+        )
+        .with_account("acct-2", "Team");
+        let account = provider.fetch(now()).unwrap().remove(0);
+        assert_eq!(account.id().as_str(), "acct-2");
+        assert_eq!(account.display_name(), "OpenRouter · Team");
     }
 
     #[test]

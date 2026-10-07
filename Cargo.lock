@@ -1072,6 +1072,8 @@ dependencies = [
  "codexbar-core",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
+ "windows 0.62.2",
 ]
 
 [[package]]

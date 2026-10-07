@@ -21,6 +21,7 @@ pub enum TrayCommand {
     Toggle,
     Open,
     Refresh,
+    Settings,
     Quit,
 }
 
@@ -28,6 +29,7 @@ struct TrayState {
     icon: TrayIcon,
     open: MenuId,
     refresh: MenuId,
+    settings: MenuId,
     quit: MenuId,
 }
 
@@ -37,9 +39,10 @@ impl Global for TrayState {}
 pub fn init(cx: &mut App, on_command: impl Fn(TrayCommand, &mut App) + 'static) -> anyhow::Result<()> {
     let open = MenuItem::new("Open dashboard", true, None);
     let refresh = MenuItem::new("Refresh now", true, None);
+    let settings = MenuItem::new("Settings…", true, None);
     let quit = MenuItem::new("Quit CodexBar", true, None);
     let menu = Menu::new();
-    menu.append_items(&[&open, &refresh, &PredefinedMenuItem::separator(), &quit])?;
+    menu.append_items(&[&open, &refresh, &settings, &PredefinedMenuItem::separator(), &quit])?;
 
     let icon = TrayIconBuilder::new()
         .with_icon(brand_icon()?)
@@ -52,6 +55,7 @@ pub fn init(cx: &mut App, on_command: impl Fn(TrayCommand, &mut App) + 'static) 
         icon,
         open: open.id().clone(),
         refresh: refresh.id().clone(),
+        settings: settings.id().clone(),
         quit: quit.id().clone(),
     });
 
@@ -85,6 +89,7 @@ fn drain_commands(cx: &App) -> Vec<TrayCommand> {
         let command = match event.id() {
             id if *id == state.open => TrayCommand::Open,
             id if *id == state.refresh => TrayCommand::Refresh,
+            id if *id == state.settings => TrayCommand::Settings,
             id if *id == state.quit => TrayCommand::Quit,
             _ => continue,
         };

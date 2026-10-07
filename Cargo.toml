@@ -20,7 +20,8 @@ ureq = "3.4"
 tray-icon = "0.26"
 raw-window-handle = "0.6"
 anyhow = "1"
-windows = { version = "0.62", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }
+sha2 = "0.10"
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Security_Credentials", "Win32_UI_WindowsAndMessaging"] }
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
