@@ -312,7 +312,7 @@ impl HistoryView {
             account,
             metric,
             kind: ValueKind::of(metric),
-            series: chart_series(&points, MAX_CHART_POINTS, GAP_THRESHOLD),
+            series: chart_series(&points, MAX_CHART_POINTS),
             summary,
         })
     }
@@ -573,13 +573,16 @@ impl HistoryView {
                 },
             ));
 
-        // The keyboard reads real readings only, never the line drawn across a gap.
-        let readings: Vec<ChartPoint> = selection
+        // The keyboard reads real readings only, never the line drawn across a gap, and skips a reading repeated at
+        // the same time and value (one refresh can record the value another just stored), so each key press moves.
+        let mut readings: Vec<ChartPoint> = selection
             .series
             .iter()
             .copied()
             .filter(|point| point.measured)
             .collect();
+        readings
+            .dedup_by(|next, kept| next.at.timestamp() / 60 == kept.at.timestamp() / 60 && next.value == kept.value);
         let len = readings.len();
         let cursor = self.cursor.unwrap_or(len.saturating_sub(1)).min(len.saturating_sub(1));
         let readout = readings.get(cursor).map(|point| {

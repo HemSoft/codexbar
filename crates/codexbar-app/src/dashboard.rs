@@ -74,6 +74,25 @@ pub enum DataSource {
     Demo,
 }
 
+/// Moves history and Show history preferences saved under a single OpenRouter or Moonshot account's legacy id to its
+/// configured id. With unreadable settings (newer schema, invalid accounts) the hub holds defaults rather than the
+/// real accounts, so ownership is unknown and nothing moves until the file is readable.
+pub fn migrate_legacy_ids(history: &Mutex<HistoryStore>, cx: &mut gpui_kit::App) {
+    let hub = SettingsHub::global(cx);
+    if hub.is_read_only() {
+        return;
+    }
+    let renames = crate::providers::legacy_ids(hub);
+    {
+        let mut store = history.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        for (from, to) in &renames {
+            // A failed rewrite keeps the samples in memory under the new id; the next prune retries it.
+            let _ = store.rename_account(from, to);
+        }
+    }
+    crate::history_view::HistoryPrefs::rename_accounts(cx, &renames);
+}
+
 /// A provider whose last fetch failed. Its last good accounts stay on screen.
 struct Failure {
     provider: &'static str,
@@ -161,15 +180,7 @@ impl Dashboard {
 
         let history = match &source {
             DataSource::Live { history } => {
-                let renames = crate::providers::legacy_ids(SettingsHub::global(cx));
-                {
-                    let mut store = history.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-                    for (from, to) in &renames {
-                        // A failed rewrite keeps the samples in memory under the new id; the next prune retries it.
-                        let _ = store.rename_account(from, to);
-                    }
-                }
-                crate::history_view::HistoryPrefs::rename_accounts(cx, &renames);
+                migrate_legacy_ids(history, cx);
                 history.clone()
             }
             DataSource::Demo => Arc::new(Mutex::new(demo_history(&demo_accounts(now, &Local), now))),

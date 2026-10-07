@@ -94,23 +94,24 @@ pub struct ChartPoint {
     pub measured: bool,
 }
 
-/// Points to draw, evenly spaced in time. A short series without gaps is drawn as is. Otherwise the span is split
-/// into `max_points / 2` equal time buckets of two points each: a bucket with readings keeps its lowest and highest
-/// in time order, so both spikes and resets survive; an empty bucket gets two unmeasured points on the line between
-/// its neighbors. The first and last readings are always kept.
-pub fn chart_series(points: &[Point], max_points: usize, gap: Duration) -> Vec<ChartPoint> {
+/// Points to draw, evenly spaced in time, because the chart places its i-th point at the i-th slot whatever the
+/// timestamps say. The real first and last readings are the ends; between them the span is split into
+/// `(max_points - 2) / 2` equal time buckets of two points each. A bucket with readings keeps its lowest and highest in
+/// time order, so spikes and resets both survive, even next to the ends. An empty bucket gets two unmeasured points
+/// on the straight line between its neighbors, so missing time keeps its width.
+pub fn chart_series(points: &[Point], max_points: usize) -> Vec<ChartPoint> {
     let finite: Vec<Point> = points.iter().copied().filter(|point| point.value.is_finite()).collect();
     let measured = |point: &Point| ChartPoint {
         at: point.at,
         value: point.value,
         measured: true,
     };
-    let has_gap = finite.windows(2).any(|pair| pair[1].at - pair[0].at > gap);
-    let buckets = (max_points / 2).max(2);
-    if finite.len() <= max_points && !has_gap {
-        return finite.iter().map(measured).collect();
-    }
-    let (first, last) = (finite[0], finite[finite.len() - 1]);
+    let (first, last) = match finite.as_slice() {
+        [] => return Vec::new(),
+        [only] => return vec![measured(only)],
+        [first, .., last] => (*first, *last),
+    };
+    let buckets = (max_points.saturating_sub(2) / 2).max(2);
     let start = first.at.timestamp();
     let span = (last.at.timestamp() - start).max(1);
     let bucket_of = |point: &Point| {
@@ -118,9 +119,9 @@ pub fn chart_series(points: &[Point], max_points: usize, gap: Duration) -> Vec<C
         (offset as usize).min(buckets - 1)
     };
 
-    // Lowest and highest reading per bucket.
+    // Lowest and highest reading per bucket, between the two ends.
     let mut extremes: Vec<Option<(Point, Point)>> = vec![None; buckets];
-    for point in &finite {
+    for point in &finite[1..finite.len() - 1] {
         let slot = &mut extremes[bucket_of(point)];
         *slot = Some(match *slot {
             None => (*point, *point),
@@ -130,25 +131,13 @@ pub fn chart_series(points: &[Point], max_points: usize, gap: Duration) -> Vec<C
             ),
         });
     }
-    // The chart starts and ends on real readings: the first and last replace the nearer extreme of their buckets.
-    for (ix, keep) in [(0, first), (buckets - 1, last)] {
-        if let Some((low, high)) = extremes[ix].as_mut()
-            && low.at != keep.at
-            && high.at != keep.at
-        {
-            if keep.value - low.value <= high.value - keep.value {
-                *low = keep;
-            } else {
-                *high = keep;
-            }
-        }
-    }
 
     let bucket_time = |ix: usize, quarter: i64| {
         let seconds = (span as i128 + 1) * (ix as i128 * 4 + quarter as i128) / (buckets as i128 * 4);
         first.at + Duration::seconds(seconds as i64)
     };
-    let mut out = Vec::with_capacity(buckets * 2);
+    let mut out = Vec::with_capacity(buckets * 2 + 2);
+    out.push(measured(&first));
     for ix in 0..buckets {
         match extremes[ix] {
             Some((low, high)) => {
@@ -162,7 +151,6 @@ pub fn chart_series(points: &[Point], max_points: usize, gap: Duration) -> Vec<C
                 });
             }
             None => {
-                // Empty buckets lie strictly between the first and last, so both neighbors exist.
                 let before = out.last().copied().unwrap_or_else(|| measured(&first));
                 let after = extremes[ix + 1..]
                     .iter()
@@ -183,6 +171,7 @@ pub fn chart_series(points: &[Point], max_points: usize, gap: Duration) -> Vec<C
             }
         }
     }
+    out.push(measured(&last));
     out
 }
 
@@ -268,11 +257,43 @@ mod tests {
     }
 
     #[test]
-    fn chart_series_draws_short_regular_series_as_is() {
-        let series = chart_series(&points(&[(0, 0.1), (15, f64::NAN), (30, 0.3)]), 120, GAP_THRESHOLD);
-        assert_eq!(values(&series), vec![0.1, 0.3]);
-        assert!(series.iter().all(|point| point.measured));
-        assert!(chart_series(&[], 120, GAP_THRESHOLD).is_empty());
+    fn chart_series_keeps_every_reading_of_a_short_series() {
+        assert!(chart_series(&[], 120).is_empty());
+        assert_eq!(values(&chart_series(&points(&[(5, 0.4)]), 120)), vec![0.4]);
+        let series = chart_series(&points(&[(0, 0.1), (15, f64::NAN), (30, 0.3)]), 120);
+        let real: Vec<f64> = series
+            .iter()
+            .filter(|point| point.measured)
+            .map(|point| point.value)
+            .collect();
+        assert_eq!(real, vec![0.1, 0.3]);
+        assert_eq!(series.len(), 120, "drawn on the time scale like any other series");
+    }
+
+    #[test]
+    fn chart_series_spaces_irregular_readings_by_time() {
+        // Every 2 minutes for an hour, then hourly for 2 hours: the hourly part spans 2/3 of the time.
+        let mut samples: Vec<(i64, f64)> = (0..30).map(|ix| (ix * 2, 0.1)).collect();
+        samples.extend([(120, 0.5), (180, 0.9)]);
+        let series = chart_series(&points(&samples), 62);
+        let later = series.iter().filter(|point| point.at > at(60)).count();
+        assert!(
+            (38..=42).contains(&later),
+            "{later} of 62 points cover the last two thirds"
+        );
+    }
+
+    #[test]
+    fn chart_series_keeps_both_extremes_next_to_the_ends() {
+        // The first bucket holds a trough and a peak besides the first reading.
+        let mut samples = vec![(0, 0.5), (1, 0.1), (2, 0.9)];
+        samples.extend((3..200).map(|ix| (ix * 10, 0.5)));
+        let series = chart_series(&points(&samples), 40);
+        let (low, high) = series.iter().fold((f64::MAX, f64::MIN), |(low, high), point| {
+            (low.min(point.value), high.max(point.value))
+        });
+        assert_eq!((low, high), (0.1, 0.9));
+        assert_eq!(series[0].value, 0.5, "the chart still starts on the first reading");
     }
 
     #[test]
@@ -281,8 +302,8 @@ mod tests {
         let samples: Vec<(i64, f64)> = (0..30 * 24 * 4)
             .map(|ix| (ix * 15, (ix % 20) as f64 / 19.0 * 0.9))
             .collect();
-        let series = chart_series(&points(&samples), 120, GAP_THRESHOLD);
-        assert_eq!(series.len(), 120, "two points per bucket");
+        let series = chart_series(&points(&samples), 120);
+        assert_eq!(series.len(), 120, "the ends plus two points per bucket");
         let (low, high) = series.iter().fold((f64::MAX, f64::MIN), |(low, high), point| {
             (low.min(point.value), high.max(point.value))
         });
@@ -296,7 +317,7 @@ mod tests {
     fn chart_series_keeps_a_short_spike() {
         let mut samples: Vec<(i64, f64)> = (0..1000).map(|ix| (ix, 0.1)).collect();
         samples[503].1 = 0.95;
-        let series = chart_series(&points(&samples), 50, GAP_THRESHOLD);
+        let series = chart_series(&points(&samples), 50);
         assert!(series.iter().any(|point| point.value == 0.95));
         assert_eq!(series.first().unwrap().at, at(0));
         assert_eq!(series.last().unwrap().at, at(999));
@@ -308,14 +329,14 @@ mod tests {
         // Readings for 100 minutes, nothing for 800, readings again for 100.
         let mut samples: Vec<(i64, f64)> = (0..100).map(|ix| (ix, 0.2)).collect();
         samples.extend((900..1000).map(|ix| (ix, 0.4)));
-        let series = chart_series(&points(&samples), 40, GAP_THRESHOLD);
+        let series = chart_series(&points(&samples), 40);
         assert_eq!(series.len(), 40);
-        // Evenly spaced: the 800 empty minutes take 16 of the 20 buckets, as they take 80% of the time.
+        // Evenly spaced: the empty minutes take 15 of the 19 buckets, as they take most of the time.
         let in_gap: Vec<&ChartPoint> = series
             .iter()
             .filter(|point| point.at > at(99) && point.at < at(900))
             .collect();
-        assert_eq!(in_gap.len(), 32, "two points per empty bucket");
+        assert_eq!(in_gap.len(), 30, "two points per empty bucket");
         assert!(
             in_gap.iter().all(|point| !point.measured),
             "nothing in the gap claims to be a reading"
@@ -332,7 +353,6 @@ mod tests {
         let series = chart_series(
             &[Point::new(start, 0.1), Point::new(start, 0.5), Point::new(at(600), 0.3)],
             20,
-            GAP_THRESHOLD,
         );
         let real: Vec<f64> = series
             .iter()
@@ -356,7 +376,7 @@ mod tests {
 
     #[test]
     fn chart_series_spaces_a_small_gappy_series_by_time() {
-        let series = chart_series(&points(&[(0, 0.1), (15, 0.2), (600, 0.3)]), 20, GAP_THRESHOLD);
+        let series = chart_series(&points(&[(0, 0.1), (15, 0.2), (600, 0.3)]), 20);
         assert_eq!(series.len(), 20);
         assert_eq!(series.iter().filter(|point| point.measured).count(), 3);
     }

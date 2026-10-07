@@ -478,3 +478,35 @@ fn legacy_history_is_not_moved_when_several_accounts_could_own_it(cx: &mut TestA
     // Moonshot's one account is disabled but still the only owner, so its legacy id moves to it.
     assert_eq!(renames, vec![("moonshot", "kimi".to_owned())]);
 }
+
+fn legacy_history_after_migration(cx: &mut TestAppContext, settings_json: &str, name: &str) -> (usize, usize) {
+    use codexbar_store::HistoryStore;
+    use codexbar_store::summary::Point;
+    use std::sync::Mutex;
+
+    let settings = TempSettings::new(name, settings_json);
+    cx.update(|cx| {
+        SettingsHub::init_with(cx, &settings.0, Arc::new(MemoryCredentialStore::default()));
+        crate::history_view::HistoryPrefs::init(cx, &settings.0);
+    });
+    let mut store = HistoryStore::in_memory(chrono::Duration::days(30));
+    store.insert_points("openrouter", "credits", &[Point::new(chrono::Utc::now(), 12.5)]);
+    let history = Mutex::new(store);
+    cx.update(|cx| crate::dashboard::migrate_legacy_ids(&history, cx));
+    let store = history.lock().unwrap();
+    let legacy = store.series("openrouter", "credits").count();
+    (legacy, store.len() - legacy)
+}
+
+#[gpui_kit::test]
+fn legacy_history_moves_only_when_settings_are_readable(cx: &mut TestAppContext) {
+    // Readable settings: the implicit OpenRouter account owns the legacy history.
+    assert_eq!(legacy_history_after_migration(cx, "{}", "migrate-readable"), (0, 1));
+}
+
+#[gpui_kit::test]
+fn legacy_history_stays_put_when_settings_are_from_a_newer_version(cx: &mut TestAppContext) {
+    // A newer schema can't be read, so the hub falls back to defaults; nothing may move on their say-so.
+    let newer = r#"{ "accountConfigurationVersion": 2, "accounts": [] }"#;
+    assert_eq!(legacy_history_after_migration(cx, newer, "migrate-newer"), (1, 0));
+}
