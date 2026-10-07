@@ -8,10 +8,11 @@ use gpui_kit::component::table::{Column, TableDelegate, TableState};
 use gpui_kit::component::{ActiveTheme as _, Sizable as _, h_flex};
 use gpui_kit::{
     Context, ElementId, IntoElement, ParentElement as _, SharedString, Styled as _, Window, div, linear_color_stop,
-    linear_gradient, px,
+    linear_gradient, rems,
 };
 
 use crate::status::{severity_color, severity_dot_color, severity_tag};
+use crate::zoom::scaled;
 
 #[derive(Clone, Copy)]
 enum Col {
@@ -59,15 +60,18 @@ impl TableDelegate for AccountTable {
         self.rows.len()
     }
 
-    fn column(&self, col_ix: usize, _: &gpui_kit::App) -> Column {
+    fn column(&self, col_ix: usize, cx: &gpui_kit::App) -> Column {
         match COLUMNS[col_ix] {
-            Col::Account => Column::new("account", "Account").width(px(320.)).min_width(px(220.)),
-            Col::Limit => Column::new("limit", "Limit").width(px(150.)),
-            Col::Used => Column::new("used", "Used").width(px(110.)).text_right(),
-            Col::Percent => Column::new("percent", "%").width(px(64.)).text_right(),
-            Col::Progress => Column::new("progress", "Progress").width(px(200.)),
-            Col::Resets => Column::new("resets", "Resets").width(px(110.)),
-            Col::Trend => Column::new("trend", "14-day trend").width(px(200.)),
+            // DataTable widths are pixels, so they follow the interface zoom explicitly (#116).
+            Col::Account => Column::new("account", "Account")
+                .width(scaled(320., cx))
+                .min_width(scaled(220., cx)),
+            Col::Limit => Column::new("limit", "Limit").width(scaled(150., cx)),
+            Col::Used => Column::new("used", "Used").width(scaled(110., cx)).text_right(),
+            Col::Percent => Column::new("percent", "%").width(scaled(64., cx)).text_right(),
+            Col::Progress => Column::new("progress", "Progress").width(scaled(200., cx)),
+            Col::Resets => Column::new("resets", "Resets").width(scaled(110., cx)),
+            Col::Trend => Column::new("trend", "14-day trend").width(scaled(200., cx)),
         }
     }
 
@@ -187,7 +191,7 @@ fn sparkline(row: &AccountSnapshot, cx: &Context<TableState<AccountTable>>) -> g
     let pad = ((high - low) * 0.15).max(0.01);
     div()
         .w_full()
-        .h(px(26.))
+        .h(rems(1.625))
         .child(
             AreaChart::new(points)
                 .id(ElementId::Name(format!("trend-{}", row.id().as_str()).into()))

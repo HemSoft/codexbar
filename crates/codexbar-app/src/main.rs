@@ -10,6 +10,7 @@ mod settings_view;
 mod status;
 mod theme;
 mod tray;
+mod zoom;
 
 use std::sync::{Arc, Mutex};
 
@@ -40,6 +41,7 @@ fn main() {
         gpui_kit::init(cx);
         theme::init(cx);
         settings_hub::SettingsHub::init(cx);
+        zoom::init(cx);
 
         let bounds = Bounds::centered(None, size(px(1440.), px(960.)), cx);
         let options = WindowOptions {
