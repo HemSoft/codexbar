@@ -1,6 +1,7 @@
 //! Delivers alerts (#87) as Windows notifications and keeps the active-alert set: an alert is marked active only once
 //! it was shown, so a blocked or failed notification is tried again on the next refresh.
 
+use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 
 use chrono::{DateTime, Utc};
@@ -27,16 +28,37 @@ pub trait Notifier: Send + Sync {
 pub struct Notifications {
     notifier: Arc<dyn Notifier>,
     problem: Option<SharedString>,
+    /// Where active alerts are kept: `dashboard.json` for live data, or this in-memory set for the demo, whose
+    /// synthetic accounts share ids with real ones and must never mark real alerts as already sent.
+    memory: Option<BTreeSet<String>>,
 }
 
 impl Global for Notifications {}
 
 impl Notifications {
-    pub fn init(cx: &mut App, notifier: Arc<dyn Notifier>) {
+    /// `persist` keeps active alerts in `dashboard.json`; the demo passes false.
+    pub fn init(cx: &mut App, notifier: Arc<dyn Notifier>, persist: bool) {
         cx.set_global(Self {
             notifier,
             problem: None,
+            memory: (!persist).then(BTreeSet::new),
         });
+    }
+
+    /// The alerts already notified and not yet recovered.
+    pub fn active(cx: &App) -> BTreeSet<String> {
+        match cx.try_global::<Self>().and_then(|global| global.memory.clone()) {
+            Some(memory) => memory,
+            None => PrefsHub::active_alerts(cx),
+        }
+    }
+
+    fn set_active(cx: &mut App, active: BTreeSet<String>) {
+        if cx.try_global::<Self>().is_some_and(|global| global.memory.is_some()) {
+            cx.update_global(|global: &mut Self, _| global.memory = Some(active));
+        } else {
+            PrefsHub::set_active_alerts(cx, active);
+        }
     }
 
     pub fn status(cx: &App) -> Option<NotifierStatus> {
@@ -74,7 +96,7 @@ impl Notifications {
 
     /// Forgets which alerts were already shown, so conditions that still hold notify again on the next refresh.
     pub fn reset(cx: &mut App) {
-        PrefsHub::set_active_alerts(cx, Default::default());
+        Self::set_active(cx, Default::default());
         cx.refresh_windows();
     }
 }
@@ -86,9 +108,11 @@ pub fn process(cx: &mut App, refreshed: &[AccountSnapshot], now: DateTime<Utc>) 
         return;
     };
     let settings = PrefsHub::alert_settings(cx);
-    let active = PrefsHub::active_alerts(cx);
+    let active = Notifications::active(cx);
     let evaluation = evaluate(&settings, &active, refreshed, now);
-    if evaluation.notify.is_empty() && evaluation.recovered.is_empty() {
+    if evaluation.notify.is_empty() && evaluation.recovered.is_empty() && evaluation.covered.is_empty() {
+        // Nothing new; still retry an active-alert save that failed earlier.
+        Notifications::set_active(cx, active);
         return;
     }
 
@@ -96,6 +120,7 @@ pub fn process(cx: &mut App, refreshed: &[AccountSnapshot], now: DateTime<Utc>) 
     for key in &evaluation.recovered {
         next.remove(key);
     }
+    next.extend(evaluation.covered.iter().cloned());
     let mut problem = None;
     if !evaluation.notify.is_empty() {
         match notifier.status() {
@@ -111,7 +136,9 @@ pub fn process(cx: &mut App, refreshed: &[AccountSnapshot], now: DateTime<Utc>) 
         }
     }
     cx.update_global(|global: &mut Notifications, _| global.problem = problem.map(Into::into));
-    PrefsHub::set_active_alerts(cx, next);
+    // If this save fails (lock busy), the change stays pending and is retried on the next refresh; Settings shows
+    // the save error meanwhile.
+    Notifications::set_active(cx, next);
 }
 
 /// Keeps notifications in memory: the demo dashboard (so design work never pops real notifications) and tests.
@@ -196,6 +223,11 @@ fn toast_xml(title: &str, body: &str) -> String {
 }
 
 fn escape(text: &str) -> String {
+    // XML 1.0 forbids most control characters; one in a provider's label would make the whole toast fail to load.
+    let text: String = text
+        .chars()
+        .filter(|ch| matches!(ch, '\t' | '\n' | '\r') || !ch.is_control())
+        .collect();
     text.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
@@ -247,5 +279,12 @@ mod tests {
         let xml = toast_xml("A & B", "<5% left> \"quoted\" it's");
         assert!(xml.contains("<text>A &amp; B</text>"));
         assert!(xml.contains("<text>&lt;5% left&gt; &quot;quoted&quot; it&apos;s</text>"));
+    }
+
+    #[test]
+    fn toast_xml_drops_characters_xml_cannot_hold() {
+        let xml = toast_xml("Team\u{1}\u{8} A", "ok\u{b}");
+        assert!(xml.contains("<text>Team A</text>"));
+        assert!(xml.contains("<text>ok</text>"));
     }
 }

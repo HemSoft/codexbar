@@ -25,8 +25,11 @@ pub struct DashboardPrefs {
     alerts: AlertSettings,
     /// Alert conditions already notified and not yet recovered, so a restart doesn't notify them again.
     active_alerts: BTreeSet<String>,
-    /// Whole values not yet saved (alert settings, active alerts), by key; a save replaces these keys.
-    pending_values: BTreeMap<&'static str, Value>,
+    /// Alert-setting fields changed and not yet saved, by JSON name. A save merges these into the file's `alerts`,
+    /// so two processes editing different fields don't undo each other.
+    pending_alert_fields: BTreeMap<&'static str, Value>,
+    /// Active-alert changes not yet saved: true adds a key, false removes it. Merged like `pending`.
+    pending_active: BTreeMap<String, bool>,
     /// The file came from a newer version: read what we understand, never write it.
     read_only: bool,
 }
@@ -52,7 +55,8 @@ impl DashboardPrefs {
                 .and_then(Value::as_array)
                 .map(|keys| keys.iter().filter_map(Value::as_str).map(str::to_owned).collect())
                 .unwrap_or_default(),
-            pending_values: BTreeMap::new(),
+            pending_alert_fields: BTreeMap::new(),
+            pending_active: BTreeMap::new(),
             read_only: version > VERSION,
         }
     }
@@ -62,7 +66,12 @@ impl DashboardPrefs {
     }
 
     pub fn set_alert_settings(&mut self, alerts: AlertSettings) {
-        self.pending_values.insert("alerts", alerts_to_json(&alerts));
+        let (old, new) = (alerts_to_json(&self.alerts), alerts_to_json(&alerts));
+        for name in ALERT_FIELDS {
+            if old[name] != new[name] {
+                self.pending_alert_fields.insert(name, new[name].clone());
+            }
+        }
         self.alerts = alerts;
     }
 
@@ -71,13 +80,18 @@ impl DashboardPrefs {
     }
 
     pub fn set_active_alerts(&mut self, active: BTreeSet<String>) {
-        self.pending_values.insert("activeAlerts", json!(active));
+        for removed in self.active_alerts.difference(&active) {
+            self.pending_active.insert(removed.clone(), false);
+        }
+        for added in active.difference(&self.active_alerts) {
+            self.pending_active.insert(added.clone(), true);
+        }
         self.active_alerts = active;
     }
 
     /// True when there are changes to save.
     pub fn is_dirty(&self) -> bool {
-        !self.pending.is_empty() || !self.pending_values.is_empty()
+        !self.pending.is_empty() || !self.pending_alert_fields.is_empty() || !self.pending_active.is_empty()
     }
 
     pub fn shows_history(&self, account: &str) -> bool {
@@ -91,13 +105,28 @@ impl DashboardPrefs {
 
     /// Carries a preference from an account's old id to its new one. Returns true when something changed.
     pub fn rename_account(&mut self, from: &str, to: &str) -> bool {
+        let mut changed = false;
         if self.hidden_history.contains(from) {
             self.set_shows_history(from, true);
             self.set_shows_history(to, false);
-            true
-        } else {
-            false
+            changed = true;
         }
+        // Active alerts are keyed `account|metric|kind`; they follow the account so a held condition doesn't
+        // notify again under the new id.
+        let prefix = format!("{from}|");
+        let moved: BTreeSet<String> = self
+            .active_alerts
+            .iter()
+            .map(|key| match key.strip_prefix(&prefix) {
+                Some(rest) => format!("{to}|{rest}"),
+                None => key.clone(),
+            })
+            .collect();
+        if moved != self.active_alerts {
+            self.set_active_alerts(moved);
+            changed = true;
+        }
+        changed
     }
 
     pub fn is_read_only(&self) -> bool {
@@ -136,22 +165,46 @@ impl DashboardPrefs {
         for (account, show) in &self.pending {
             apply(&mut hidden, account, *show);
         }
+        let mut alerts = match doc.get("alerts") {
+            Some(Value::Object(fields)) => fields.clone(),
+            _ => Map::new(),
+        };
+        for (name, value) in &self.pending_alert_fields {
+            alerts.insert((*name).into(), value.clone());
+        }
+        let mut active: BTreeSet<String> = string_set(doc.get("activeAlerts"));
+        for (key, add) in &self.pending_active {
+            apply(&mut active, key, !add);
+        }
         doc.insert("version".into(), json!(VERSION));
         doc.insert("hiddenHistory".into(), json!(hidden));
-        for (key, value) in &self.pending_values {
-            doc.insert((*key).into(), value.clone());
-        }
+        doc.insert("alerts".into(), Value::Object(alerts.clone()));
+        doc.insert("activeAlerts".into(), json!(active));
         let text = serde_json::to_string_pretty(&Value::Object(doc)).map_err(io::Error::other)?;
         std::fs::create_dir_all(dir)?;
         let path = dir.join(PREFS_FILE);
         let tmp = path.with_extension("json.tmp");
         std::fs::write(&tmp, text)?;
         std::fs::rename(&tmp, &path)?;
+        // This instance now holds the merged result, including other writers' changes.
         self.hidden_history = hidden;
+        self.alerts = alerts_from_json(&Value::Object(alerts));
+        self.active_alerts = active;
         self.pending.clear();
-        self.pending_values.clear();
+        self.pending_alert_fields.clear();
+        self.pending_active.clear();
         Ok(())
     }
+}
+
+/// The JSON names of the alert settings, as `alerts_to_json` writes them.
+const ALERT_FIELDS: [&str; 5] = ["enabled", "usageThreshold", "balanceThreshold", "warning", "critical"];
+
+fn string_set(value: Option<&Value>) -> BTreeSet<String> {
+    value
+        .and_then(Value::as_array)
+        .map(|items| items.iter().filter_map(Value::as_str).map(str::to_owned).collect())
+        .unwrap_or_default()
 }
 
 fn alerts_from_json(value: &Value) -> AlertSettings {
@@ -321,6 +374,45 @@ mod tests {
         assert_eq!(loaded.alert_settings(), &settings);
         assert!(loaded.active_alerts().contains("a|weekly|usage"));
         assert_eq!(dir.read()["alerts"]["usageThreshold"], json!(0.9));
+    }
+
+    #[test]
+    fn concurrent_alert_edits_merge_by_field_and_key() {
+        let dir = Dir::new("alerts-merge");
+        let mut first = DashboardPrefs::load(&dir.0);
+        let mut second = DashboardPrefs::load(&dir.0);
+        let mut enabled = first.alert_settings().clone();
+        enabled.enabled = true;
+        first.set_alert_settings(enabled);
+        first.set_active_alerts(["a|weekly|usage".to_owned()].into());
+        first.save(&dir.0).unwrap();
+
+        // The second process loaded before; it changes another field and another key.
+        let mut balance = second.alert_settings().clone();
+        balance.balance_threshold = 20.0;
+        second.set_alert_settings(balance);
+        second.set_active_alerts(["b|credits|balance".to_owned()].into());
+        second.save(&dir.0).unwrap();
+
+        let merged = DashboardPrefs::load(&dir.0);
+        assert!(merged.alert_settings().enabled, "the first process's change survives");
+        assert_eq!(merged.alert_settings().balance_threshold, 20.0);
+        assert_eq!(merged.active_alerts().len(), 2);
+        assert_eq!(
+            second.alert_settings(),
+            merged.alert_settings(),
+            "the saver holds the merged result"
+        );
+        assert_eq!(second.active_alerts(), merged.active_alerts());
+    }
+
+    #[test]
+    fn rename_account_moves_active_alert_keys() {
+        let mut prefs = DashboardPrefs::default();
+        prefs.set_active_alerts(["openrouter|credits|balance".to_owned(), "c|weekly|usage".to_owned()].into());
+        assert!(prefs.rename_account("openrouter", "or-1"));
+        let keys: Vec<&str> = prefs.active_alerts().iter().map(String::as_str).collect();
+        assert_eq!(keys, vec!["c|weekly|usage", "or-1|credits|balance"]);
     }
 
     #[test]

@@ -547,10 +547,32 @@ const USAGE_ALERT_CHOICES: [u32; 10] = [50, 55, 60, 65, 70, 75, 80, 85, 90, 95];
 /// Balance alert choices, in dollars left.
 const BALANCE_ALERT_CHOICES: [u32; 6] = [1, 2, 5, 10, 20, 50];
 
+fn usage_percent(settings: &codexbar_core::alerts::AlertSettings) -> u32 {
+    (settings.usage_threshold * 100.0).round() as u32
+}
+
+/// The balance threshold as its option value: whole dollars without decimals, others with cents.
+fn balance_value(settings: &codexbar_core::alerts::AlertSettings) -> String {
+    let dollars = settings.balance_threshold;
+    if dollars.fract() == 0.0 {
+        format!("{dollars:.0}")
+    } else {
+        format!("{dollars:.2}")
+    }
+}
+
 fn alerts_page(cx: &App) -> SettingPage {
     let settings = PrefsHub::alert_settings(cx);
     let off = !settings.enabled;
-    let usage_options = USAGE_ALERT_CHOICES
+    // A stored value that isn't a standard choice (written by hand or an older build) is kept and shown as its own
+    // option rather than misreported, as the refresh interval does.
+    let mut usage_choices: Vec<u32> = USAGE_ALERT_CHOICES.to_vec();
+    let usage_current = usage_percent(&settings);
+    if !usage_choices.contains(&usage_current) {
+        usage_choices.push(usage_current);
+        usage_choices.sort_unstable();
+    }
+    let usage_options = usage_choices
         .iter()
         .map(|percent| {
             (
@@ -559,11 +581,24 @@ fn alerts_page(cx: &App) -> SettingPage {
             )
         })
         .collect();
-    let balance_options = BALANCE_ALERT_CHOICES
+    let mut balance_choices: Vec<String> = BALANCE_ALERT_CHOICES
+        .iter()
+        .map(|dollars| dollars.to_string())
+        .collect();
+    let balance_current = balance_value(&settings);
+    if !balance_choices.contains(&balance_current) {
+        balance_choices.push(balance_current);
+        balance_choices.sort_by(|a, b| {
+            a.parse::<f64>()
+                .unwrap_or(0.0)
+                .total_cmp(&b.parse::<f64>().unwrap_or(0.0))
+        });
+    }
+    let balance_options = balance_choices
         .iter()
         .map(|dollars| {
             (
-                SharedString::from(dollars.to_string()),
+                SharedString::from(dollars.clone()),
                 SharedString::from(format!("Under ${dollars}")),
             )
         })
@@ -589,10 +624,7 @@ fn alerts_page(cx: &App) -> SettingPage {
                         "Usage alert",
                         SettingField::dropdown(
                             usage_options,
-                            |cx: &App| {
-                                let percent = (PrefsHub::alert_settings(cx).usage_threshold * 100.0).round();
-                                SharedString::from(format!("{percent:.0}"))
-                            },
+                            |cx: &App| SharedString::from(usage_percent(&PrefsHub::alert_settings(cx)).to_string()),
                             |value: SharedString, cx: &mut App| {
                                 if let Ok(percent) = value.parse::<f64>() {
                                     PrefsHub::update_alert_settings(cx, |s| s.usage_threshold = percent / 100.0);
@@ -608,9 +640,7 @@ fn alerts_page(cx: &App) -> SettingPage {
                         "Balance alert",
                         SettingField::dropdown(
                             balance_options,
-                            |cx: &App| {
-                                SharedString::from(format!("{:.0}", PrefsHub::alert_settings(cx).balance_threshold))
-                            },
+                            |cx: &App| SharedString::from(balance_value(&PrefsHub::alert_settings(cx))),
                             |value: SharedString, cx: &mut App| {
                                 if let Ok(dollars) = value.parse::<f64>() {
                                     PrefsHub::update_alert_settings(cx, |s| s.balance_threshold = dollars);
@@ -649,8 +679,11 @@ fn alerts_page(cx: &App) -> SettingPage {
                 Some(NotifierStatus::Ready) | None => None,
                 Some(NotifierStatus::Blocked(reason)) => Some(reason),
             };
-            let problem = Notifications::problem(cx).map(|problem| problem.to_string()).or(status);
-            let active = PrefsHub::active_alerts(cx).len();
+            let problem = PrefsHub::error(cx)
+                .or_else(|| Notifications::problem(cx))
+                .map(|problem| problem.to_string())
+                .or(status);
+            let active = Notifications::active(cx).len();
             let summary = match (&problem, active) {
                 (Some(problem), _) => problem.clone(),
                 (None, 0) => "Windows notifications are on. No alerts are active.".to_owned(),

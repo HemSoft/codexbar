@@ -57,7 +57,7 @@ fn main() {
         } else {
             std::sync::Arc::new(notifications::WindowsNotifier::new())
         };
-        notifications::Notifications::init(cx, notifier);
+        notifications::Notifications::init(cx, notifier, !is_demo());
         zoom::init(cx);
 
         let bounds = Bounds::centered(None, size(px(1440.), px(960.)), cx);

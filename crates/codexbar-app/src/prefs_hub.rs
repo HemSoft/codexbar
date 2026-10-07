@@ -67,8 +67,11 @@ impl PrefsHub {
             .unwrap_or_default()
     }
 
+    /// Records the active alerts and saves. Also retries an earlier save that failed (the lock was busy), even
+    /// when the set itself hasn't changed since.
     pub fn set_active_alerts(cx: &mut App, active: BTreeSet<String>) {
-        if Self::active_alerts(cx) != active {
+        let dirty = cx.try_global::<Self>().is_some_and(|hub| hub.prefs.is_dirty());
+        if dirty || Self::active_alerts(cx) != active {
             Self::edit(cx, |prefs| prefs.set_active_alerts(active));
         }
     }

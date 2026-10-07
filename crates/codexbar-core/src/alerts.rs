@@ -93,8 +93,12 @@ impl Alert {
 pub struct Evaluation {
     /// Conditions that hold and aren't active yet: notify, then mark active.
     pub notify: Vec<Alert>,
-    /// Active keys whose condition cleared on a refreshed account: drop them so they can alert again.
+    /// Active keys whose condition cleared on a refreshed account, or whose metric the account no longer reports:
+    /// drop them so they can alert again.
     pub recovered: Vec<String>,
+    /// Conditions that hold but are covered by an active stronger alert (At risk while Limit soon is active): mark
+    /// them active without notifying.
+    pub covered: Vec<String>,
 }
 
 pub fn alert_key(account: &str, metric: &str, kind: AlertKind) -> String {
@@ -111,6 +115,19 @@ pub fn evaluate(
     let mut out = Evaluation::default();
     for account in refreshed {
         let id = account.id().as_str();
+        // Keys of metrics the account no longer reports recover: the condition can't be held by a missing metric.
+        let prefix = format!("{id}|");
+        let reported: BTreeSet<String> = account
+            .metrics()
+            .iter()
+            .map(|metric| format!("{prefix}{}|", metric.key()))
+            .collect();
+        out.recovered.extend(
+            active
+                .iter()
+                .filter(|key| key.starts_with(&prefix) && !reported.iter().any(|metric| key.starts_with(metric)))
+                .cloned(),
+        );
         for metric in account.metrics() {
             let first_new = out.notify.len();
             for kind in [
@@ -130,14 +147,23 @@ pub fn evaluate(
                     _ => {}
                 }
             }
-            // "Limit soon" supersedes "At risk" on the same metric: one notification, both conditions handled.
+            // "Limit soon" supersedes "At risk" on the same metric: one notification, both conditions handled. That
+            // holds whether Limit soon is new now or already active (say At risk was just switched on).
             let new = &mut out.notify[first_new..];
-            if let Some(critical) = new.iter().position(|alert| alert.kind == AlertKind::Critical)
-                && let Some(warning) = new.iter().position(|alert| alert.kind == AlertKind::Warning)
-            {
-                let warning_key = new[warning].key.clone();
-                new[critical].covers.push(warning_key);
-                out.notify.remove(first_new + warning);
+            if let Some(warning) = new.iter().position(|alert| alert.kind == AlertKind::Warning) {
+                let critical_key = alert_key(id, &metric.key(), AlertKind::Critical);
+                let critical_held = matches!(
+                    condition(settings, metric, AlertKind::Critical, now),
+                    Condition::Triggered | Condition::Holding
+                );
+                if let Some(critical) = new.iter().position(|alert| alert.kind == AlertKind::Critical) {
+                    let warning_key = new[warning].key.clone();
+                    new[critical].covers.push(warning_key);
+                    out.notify.remove(first_new + warning);
+                } else if active.contains(&critical_key) && critical_held {
+                    out.covered.push(new[warning].key.clone());
+                    out.notify.remove(first_new + warning);
+                }
             }
         }
     }
@@ -158,7 +184,12 @@ fn condition(settings: &AlertSettings, metric: &Metric, kind: AlertKind, now: Da
         AlertKind::Usage => match metric.used_fraction() {
             Some(_) if matches!(metric, Metric::Balance { .. }) => Condition::NotApplicable,
             Some(used) if used >= settings.usage_threshold => Condition::Triggered,
-            Some(used) if used > settings.usage_threshold - USAGE_RECOVERY_MARGIN => Condition::Holding,
+            // The recovery line stays above zero for low thresholds, so an alert can always recover.
+            Some(used)
+                if used > (settings.usage_threshold - USAGE_RECOVERY_MARGIN).max(settings.usage_threshold / 2.0) =>
+            {
+                Condition::Holding
+            }
             Some(_) => Condition::Clear,
             None => Condition::NotApplicable,
         },
@@ -300,6 +331,7 @@ mod tests {
                 for key in &evaluation.recovered {
                     active.remove(key);
                 }
+                active.extend(evaluation.covered.iter().cloned());
                 for alert in &evaluation.notify {
                     active.extend(alert.keys().cloned());
                 }
@@ -420,6 +452,68 @@ mod tests {
         );
         assert!(sent[1].is_empty(), "At risk was marked handled too");
         assert!(active.contains("x|5-hour-window|warning"));
+    }
+
+    #[test]
+    fn at_risk_switched_on_while_limit_soon_is_active_stays_quiet() {
+        let metric = Metric::Window {
+            label: "5-hour window".into(),
+            used: 0.97,
+            resets_at: now() + Duration::hours(2),
+            pace: Some(Pace::per_hour(0.1)),
+        };
+        let account = AccountSnapshot::new(AccountId::new("x"), Provider::Codex, vec![metric], now());
+        let critical_only = AlertSettings {
+            enabled: true,
+            usage_threshold: 1.0,
+            warning: false,
+            ..AlertSettings::default()
+        };
+        let mut active = BTreeSet::new();
+        run(&critical_only, &mut active, &[vec![account.clone()]]);
+        let both = AlertSettings {
+            warning: true,
+            ..critical_only
+        };
+        let sent = run(&both, &mut active, &[vec![account]]);
+        assert!(sent[0].is_empty(), "no downgrade to At risk while Limit soon is active");
+        assert!(active.contains("x|5-hour-window|warning"), "At risk is marked handled");
+    }
+
+    #[test]
+    fn a_metric_the_account_no_longer_reports_recovers() {
+        let active: BTreeSet<String> = [
+            alert_key("c", "weekly", AlertKind::Usage),
+            alert_key("d", "weekly", AlertKind::Usage),
+        ]
+        .into();
+        let without_weekly = AccountSnapshot::new(AccountId::new("c"), Provider::Claude, Vec::new(), now());
+        let evaluation = evaluate(&on(), &active, &[without_weekly], now());
+        assert_eq!(
+            evaluation.recovered,
+            vec!["c|weekly|usage".to_owned()],
+            "only the refreshed account's key"
+        );
+    }
+
+    #[test]
+    fn low_usage_thresholds_can_still_recover() {
+        let low = AlertSettings {
+            usage_threshold: 0.05,
+            ..on()
+        };
+        let mut active = BTreeSet::new();
+        let sent = run(
+            &low,
+            &mut active,
+            &[
+                vec![window("c", 0.06)],
+                vec![window("c", 0.02)],
+                vec![window("c", 0.06)],
+            ],
+        );
+        let counts: Vec<usize> = sent.iter().map(Vec::len).collect();
+        assert_eq!(counts, vec![1, 0, 1], "2% is below the recovery line for a 5% alert");
     }
 
     #[test]

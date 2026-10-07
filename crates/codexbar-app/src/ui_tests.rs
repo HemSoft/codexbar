@@ -52,7 +52,7 @@ fn open_dashboard(cx: &mut TestAppContext, settings: &TempSettings) -> (AnyWindo
         crate::prefs_hub::PrefsHub::init(cx, &settings.0);
         zoom::init(cx);
         if cx.try_global::<crate::notifications::Notifications>().is_none() {
-            crate::notifications::Notifications::init(cx, Arc::new(RecordingNotifier::default()));
+            crate::notifications::Notifications::init(cx, Arc::new(RecordingNotifier::default()), true);
         }
     });
     let mut dashboard = None;
@@ -535,7 +535,7 @@ const ALERTS_ON: &str = r#"{ "version": 1, "alerts": { "enabled": true, "usageTh
 fn open_with_alerts(cx: &mut TestAppContext, settings: &TempSettings) -> (Entity<Dashboard>, Arc<RecordingNotifier>) {
     let notifier = Arc::new(RecordingNotifier::default());
     let recorder = notifier.clone();
-    cx.update(|cx| crate::notifications::Notifications::init(cx, recorder));
+    cx.update(|cx| crate::notifications::Notifications::init(cx, recorder, true));
     let (_, dashboard) = open_dashboard(cx, settings);
     (dashboard, notifier)
 }
@@ -610,7 +610,7 @@ fn blocked_notifications_are_retried_once_allowed(cx: &mut TestAppContext) {
     let notifier = Arc::new(RecordingNotifier::default());
     *notifier.blocked.lock().unwrap() = Some("Notifications are off for CodexBar.".into());
     let recorder = notifier.clone();
-    cx.update(|cx| crate::notifications::Notifications::init(cx, recorder));
+    cx.update(|cx| crate::notifications::Notifications::init(cx, recorder, true));
     let (_, dashboard) = open_dashboard(cx, &settings);
 
     assert!(notifier.shown.lock().unwrap().is_empty());
@@ -665,4 +665,29 @@ fn alerts_settings_page_shows_status_and_actions(cx: &mut TestAppContext) {
     click(cx, handle, "alerts-reset");
     let status = label(cx, handle, "alerts-status").unwrap();
     assert_eq!(status, "Windows notifications are on. No alerts are active.");
+}
+
+#[gpui_kit::test]
+fn demo_alerts_never_touch_dashboard_json(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("alerts-demo", "{}");
+    std::fs::write(settings.0.join("dashboard.json"), ALERTS_ON).unwrap();
+    let notifier = Arc::new(RecordingNotifier::default());
+    let recorder = notifier.clone();
+    cx.update(|cx| crate::notifications::Notifications::init(cx, recorder, false));
+    let (dashboard, _) = {
+        let (handle, dashboard) = open_dashboard(cx, &settings);
+        (dashboard, handle)
+    };
+    assert!(
+        !notifier.shown.lock().unwrap().is_empty(),
+        "the demo still evaluates and records alerts"
+    );
+    assert!(
+        active_on_disk(&settings).is_empty(),
+        "but its synthetic keys stay in memory"
+    );
+    // And remembers them in memory, so a second demo refresh doesn't repeat them.
+    let shown = notifier.shown.lock().unwrap().len();
+    refresh(cx, &dashboard);
+    assert_eq!(notifier.shown.lock().unwrap().len(), shown);
 }
