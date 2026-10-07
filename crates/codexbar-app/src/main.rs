@@ -9,6 +9,7 @@ mod tray;
 
 use std::sync::{Arc, Mutex};
 
+use codexbar_providers::claude::{ClaudeProvider, default_credentials_path};
 use codexbar_providers::codex::{CodexProvider, default_auth_path};
 use codexbar_providers::copilot::CopilotProvider;
 use codexbar_providers::{SystemCommandRunner, UreqClient};
@@ -33,6 +34,7 @@ fn data_source() -> DataSource {
         providers: vec![
             Arc::new(CodexProvider::new(UreqClient::new(), default_auth_path())),
             Arc::new(CopilotProvider::new(UreqClient::new(), SystemCommandRunner)),
+            Arc::new(ClaudeProvider::new(UreqClient::new(), default_credentials_path())),
         ],
         history: Arc::new(Mutex::new(history)),
     }

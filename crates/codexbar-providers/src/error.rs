@@ -11,6 +11,8 @@ pub enum ProviderError {
     Http { status: u16 },
     /// The request never completed (DNS, TLS, timeout, offline).
     Network,
+    /// The provider asked us to wait; no request is made before `retry_at`.
+    RateLimited { retry_at: chrono::DateTime<chrono::Utc> },
     /// The response did not have the expected shape.
     Unexpected { detail: &'static str },
 }
@@ -22,6 +24,11 @@ impl fmt::Display for ProviderError {
             Self::Expired { hint } => write!(f, "Sign-in expired. {hint}"),
             Self::Http { status } => write!(f, "The usage service returned HTTP {status}."),
             Self::Network => write!(f, "Couldn't reach the usage service. Check your connection."),
+            Self::RateLimited { retry_at } => write!(
+                f,
+                "Rate-limited by the provider; retrying at {}.",
+                retry_at.with_timezone(&chrono::Local).format("%H:%M")
+            ),
             Self::Unexpected { detail } => write!(f, "Unexpected usage response: {detail}."),
         }
     }

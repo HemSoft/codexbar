@@ -7,6 +7,18 @@ use crate::ProviderError;
 pub struct HttpResponse {
     pub status: u16,
     pub body: String,
+    /// `Retry-After` in seconds, when the server sent one.
+    pub retry_after_secs: Option<u64>,
+}
+
+impl HttpResponse {
+    pub fn new(status: u16, body: impl Into<String>) -> Self {
+        Self {
+            status,
+            body: body.into(),
+            retry_after_secs: None,
+        }
+    }
 }
 
 /// The one HTTP operation providers need. A seam so parsers and status handling are tested without the network.
@@ -44,10 +56,19 @@ impl HttpClient for UreqClient {
         }
         let mut response = request.call().map_err(|_| ProviderError::Network)?;
         let status = response.status().as_u16();
+        let retry_after_secs = response
+            .headers()
+            .get("retry-after")
+            .and_then(|value| value.to_str().ok())
+            .and_then(|value| value.trim().parse().ok());
         let body = response
             .body_mut()
             .read_to_string()
             .map_err(|_| ProviderError::Network)?;
-        Ok(HttpResponse { status, body })
+        Ok(HttpResponse {
+            status,
+            body,
+            retry_after_secs,
+        })
     }
 }

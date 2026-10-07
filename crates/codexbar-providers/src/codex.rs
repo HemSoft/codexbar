@@ -207,10 +207,7 @@ mod tests {
     impl FakeHttp {
         fn status(status: u16, body: &str) -> Self {
             Self {
-                response: Ok(HttpResponse {
-                    status,
-                    body: body.into(),
-                }),
+                response: Ok(HttpResponse::new(status, body)),
                 seen_headers: Mutex::default(),
             }
         }

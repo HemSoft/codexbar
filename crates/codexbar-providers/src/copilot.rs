@@ -253,10 +253,7 @@ mod tests {
     }
 
     fn ok(body: &str) -> HttpResponse {
-        HttpResponse {
-            status: 200,
-            body: body.into(),
-        }
+        HttpResponse::new(200, body)
     }
 
     #[test]
@@ -364,10 +361,7 @@ mod tests {
         let gh = FakeGh {
             tokens: HashMap::from([("HemSoft", "tok-a"), ("fhemmerrelias", "tok-b")]),
         };
-        let denied = HttpResponse {
-            status: 401,
-            body: String::new(),
-        };
+        let denied = HttpResponse::new(401, String::new());
         let http = FakeHttp {
             by_token: HashMap::from([("token tok-a".into(), denied.clone()), ("token tok-b".into(), denied)]),
             seen: Mutex::default(),
