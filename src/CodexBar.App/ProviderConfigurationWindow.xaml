@@ -7,126 +7,128 @@
         mc:Ignorable="d"
         d:DataContext="{d:DesignInstance Type=vm:ProviderConfigurationViewModel, IsDesignTimeCreatable=False}"
         Title="Configure CodexBar"
-        Width="420"
-        SizeToContent="Height"
+        Width="760" Height="740" MinWidth="520" MinHeight="340"
         WindowStartupLocation="CenterOwner"
-        ResizeMode="NoResize"
         Background="{StaticResource BackgroundBrush}">
     <Window.Resources>
         <BooleanToVisibilityConverter x:Key="BoolToVis" />
     </Window.Resources>
 
-    <Border Padding="18"
-            BorderBrush="#3F3F5F"
-            BorderThickness="1">
+    <Border Padding="20" Background="{StaticResource BackgroundBrush}">
         <Grid>
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto" />
-                <RowDefinition Height="Auto" />
-                <RowDefinition Height="Auto" />
+                <RowDefinition Height="*" />
                 <RowDefinition Height="Auto" />
             </Grid.RowDefinitions>
 
-            <StackPanel Grid.Row="0"
-                        Margin="0,0,0,14">
-                <TextBlock Text="Provider Configuration"
-                           FontSize="20"
-                           FontWeight="SemiBold"
+            <StackPanel Grid.Row="0" Margin="0,0,0,18">
+                <TextBlock Text="Provider configuration" FontSize="20" FontWeight="SemiBold"
                            Foreground="{StaticResource TextPrimaryBrush}" />
-                <TextBlock Text="Choose which providers appear in CodexBar."
-                           Margin="0,4,0,0"
-                           FontSize="13"
+                <TextBlock Text="Choose providers and manage account settings. Changes apply when you save."
+                           Margin="0,6,0,0" FontSize="13" TextWrapping="Wrap"
                            Foreground="{StaticResource TextSecondaryBrush}" />
             </StackPanel>
 
-            <Border Grid.Row="1"
-                    Background="{StaticResource SurfaceBrush}"
-                    CornerRadius="8"
-                    Padding="10">
-                <ItemsControl ItemsSource="{Binding Providers}">
-                    <ItemsControl.ItemTemplate>
-                        <DataTemplate>
-                            <Grid Margin="0,4">
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="Auto" />
-                                    <ColumnDefinition Width="*" />
-                                </Grid.ColumnDefinitions>
-
-                                <CheckBox Grid.Column="0"
-                                          IsChecked="{Binding IsDisplayed, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                                          VerticalAlignment="Center"
-                                          Margin="0,0,10,0" />
-
-                                <StackPanel Grid.Column="1">
-                                    <TextBlock Text="{Binding DisplayName}"
-                                               FontSize="14"
-                                               FontWeight="Medium"
-                                               Foreground="{StaticResource TextPrimaryBrush}" />
-                                    <TextBlock Text="{Binding Description}"
-                                               Margin="0,2,0,0"
-                                               FontSize="12"
-                                               Foreground="{StaticResource TextSecondaryBrush}"
-                                               TextWrapping="Wrap" />
-                                </StackPanel>
-                            </Grid>
-                        </DataTemplate>
-                    </ItemsControl.ItemTemplate>
-                </ItemsControl>
-            </Border>
-
-            <Border Grid.Row="2"
-                    Margin="0,12,0,0"
-                    Background="{StaticResource SurfaceBrush}"
-                    CornerRadius="8"
-                    Padding="10"
-                    Visibility="{Binding HasCopilotAccounts, Converter={StaticResource BoolToVis}}">
-                <StackPanel>
-                    <TextBlock Text="Copilot Accounts"
-                               Margin="0,0,0,6"
-                               FontSize="13"
-                               FontWeight="SemiBold"
-                               Foreground="{StaticResource TextPrimaryBrush}" />
-
-                    <ItemsControl ItemsSource="{Binding CopilotAccounts}">
+            <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+                <StackPanel Margin="0,0,8,0">
+                    <TextBlock Text="Providers on the dashboard" FontSize="14" FontWeight="SemiBold"
+                               Foreground="{StaticResource TextPrimaryBrush}" Margin="0,0,0,8" />
+                    <ItemsControl ItemsSource="{Binding Providers}">
+                        <ItemsControl.ItemsPanel>
+                            <ItemsPanelTemplate><WrapPanel /></ItemsPanelTemplate>
+                        </ItemsControl.ItemsPanel>
                         <ItemsControl.ItemTemplate>
                             <DataTemplate>
-                                <Grid Margin="0,4">
-                                    <Grid.ColumnDefinitions>
-                                        <ColumnDefinition Width="Auto" />
-                                        <ColumnDefinition Width="*" />
-                                    </Grid.ColumnDefinitions>
-
-                                    <CheckBox Grid.Column="0"
-                                              IsChecked="{Binding IsEnabled, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                                              VerticalAlignment="Center"
-                                              Margin="0,0,10,0" />
-
-                                    <TextBlock Grid.Column="1"
-                                               Text="{Binding DisplayName}"
-                                               FontSize="14"
-                                               FontWeight="Medium"
-                                               Foreground="{StaticResource TextPrimaryBrush}" />
-                                </Grid>
+                                <CheckBox Content="{Binding DisplayName}" IsChecked="{Binding IsDisplayed, Mode=TwoWay}"
+                                          Foreground="{StaticResource TextPrimaryBrush}" Margin="0,0,18,10"
+                                          AutomationProperties.Name="{Binding DisplayName}" ToolTip="{Binding Description}" />
                             </DataTemplate>
                         </ItemsControl.ItemTemplate>
                     </ItemsControl>
-                </StackPanel>
-            </Border>
 
-            <StackPanel Grid.Row="3"
-                        Orientation="Horizontal"
-                        HorizontalAlignment="Right"
-                        Margin="0,16,0,0">
-                <Button Content="Cancel"
-                        Command="{Binding CancelCommand}"
-                        MinWidth="78"
-                        Padding="12,6"
-                        Margin="0,0,8,0" />
-                <Button Content="Save"
-                        Command="{Binding SaveCommand}"
-                        MinWidth="78"
-                        Padding="12,6" />
-            </StackPanel>
+                    <TextBlock Text="Accounts" FontSize="16" FontWeight="SemiBold"
+                               Foreground="{StaticResource TextPrimaryBrush}" Margin="0,18,0,6" />
+                    <TextBlock Text="Labels and authentication methods are configuration only. Provider sign-in connects credentials separately."
+                               TextWrapping="Wrap" Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,14" />
+                    <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
+                        <ComboBox ItemsSource="{Binding Providers}" DisplayMemberPath="DisplayName" SelectedValuePath="ProviderId"
+                                  SelectedValue="{Binding NewAccountProvider, Mode=TwoWay}" Width="180" Padding="6,4"
+                                  AutomationProperties.Name="Provider for new account" />
+                        <Button Content="Add account" Command="{Binding AddAccountCommand}" Padding="12,6" Margin="10,0,0,0" />
+                    </StackPanel>
+                    <TextBlock Text="No accounts yet. Choose a provider and add an account."
+                               Foreground="{StaticResource TextSecondaryBrush}" Margin="0,0,0,14">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock">
+                                <Setter Property="Visibility" Value="Collapsed" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding Accounts.Count}" Value="0"><Setter Property="Visibility" Value="Visible" /></DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
+                    <ItemsControl ItemsSource="{Binding Accounts}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Border BorderBrush="#3F3F5F" BorderThickness="0,0,0,1" Padding="0,10,0,14" Margin="0,0,0,6">
+                                    <Grid>
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="Auto" />
+                                        </Grid.RowDefinitions>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="30" />
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="154" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <CheckBox Grid.Column="0" IsChecked="{Binding Enabled, Mode=TwoWay}"
+                                                  VerticalAlignment="Center" AutomationProperties.Name="{Binding DisplayLabel, StringFormat=Enable {0}}" />
+                                        <StackPanel Grid.Column="1" Margin="0,0,12,0">
+                                            <TextBlock Text="{Binding ProviderName}" Foreground="{StaticResource TextSecondaryBrush}" FontSize="12" Margin="0,0,0,4" />
+                                            <TextBox Text="{Binding DisplayLabel, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Padding="6,4"
+                                                     AutomationProperties.Name="Account display label" ToolTip="{Binding Id}" />
+                                        </StackPanel>
+                                        <StackPanel Grid.Column="2" Margin="0,0,12,0">
+                                            <TextBlock Text="Authentication" Foreground="{StaticResource TextSecondaryBrush}" FontSize="12" Margin="0,0,0,4" />
+                                            <ComboBox ItemsSource="{Binding AuthenticationMethods}" DisplayMemberPath="Label" SelectedValuePath="Method"
+                                                      SelectedValue="{Binding AuthenticationMethod, Mode=TwoWay}" Padding="6,4" AutomationProperties.Name="Authentication method" />
+                                        </StackPanel>
+                                        <Button Grid.Column="3" Content="Remove" VerticalAlignment="Bottom" Padding="10,5"
+                                                Command="{Binding DataContext.RemoveAccountCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                CommandParameter="{Binding}" ToolTip="Remove this account configuration. Cancel discards unsaved changes."
+                                                AutomationProperties.Name="{Binding DisplayLabel, StringFormat=Remove {0}}" />
+                                        <StackPanel Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,10,12,0"
+                                                    Visibility="{Binding IsCopilot, Converter={StaticResource BoolToVis}}">
+                                            <TextBlock Text="GitHub username" Foreground="{StaticResource TextSecondaryBrush}" FontSize="12" Margin="0,0,0,4" />
+                                            <TextBox Text="{Binding ExternalAccountId, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Padding="6,4"
+                                                     AutomationProperties.Name="GitHub account username" ToolTip="CLI account username; leave blank for automatic discovery." />
+                                        </StackPanel>
+                                        <StackPanel Grid.Row="1" Grid.Column="1" Grid.ColumnSpan="2" Margin="0,10,12,0"
+                                                    Visibility="{Binding IsOpenCodeGo, Converter={StaticResource BoolToVis}}">
+                                            <TextBlock Text="Workspace ID" Foreground="{StaticResource TextSecondaryBrush}" FontSize="12" Margin="0,0,0,4" />
+                                            <TextBox Text="{Binding WorkspaceId, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Padding="6,4"
+                                                     AutomationProperties.Name="OpenCode Go workspace ID" />
+                                        </StackPanel>
+                                    </Grid>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+
+                </StackPanel>
+            </ScrollViewer>
+
+            <Grid Grid.Row="2" Margin="0,16,0,0">
+                <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions>
+                <TextBlock Text="{Binding ErrorMessage, NotifyOnTargetUpdated=True}" TargetUpdated="OnErrorMessageTargetUpdated"
+                           AutomationProperties.LiveSetting="Polite" TextWrapping="Wrap" Foreground="#FFB4AB" VerticalAlignment="Center" Margin="0,0,16,0" />
+                <StackPanel Grid.Column="1" Orientation="Horizontal">
+                    <Button Content="Cancel" Command="{Binding CancelCommand}" MinWidth="78" Padding="12,6" Margin="0,0,8,0" IsCancel="True" />
+                    <Button Content="Save" Command="{Binding SaveCommand}" MinWidth="78" Padding="12,6" IsDefault="True" />
+                </StackPanel>
+            </Grid>
         </Grid>
     </Border>
 </Window>
