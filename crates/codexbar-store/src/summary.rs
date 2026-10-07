@@ -45,23 +45,16 @@ impl HistorySummary {
     }
 }
 
-/// The shortest stretch without samples that counts as missing data. Unchanged values are re-sampled every 15
-/// minutes, so with frequent refreshes a quiet hour means the app wasn't running or fetching; callers with a longer
-/// refresh interval pass a longer threshold (see [`gap_threshold`]).
-pub const GAP_THRESHOLD: Duration = Duration::hours(1);
-
-/// The missing-data threshold for a refresh interval: twice the interval plus slack for fetch time, never under
-/// [`GAP_THRESHOLD`]. Without automatic refresh, samples only arrive on demand, so the default applies.
-pub fn gap_threshold(refresh_interval: Option<Duration>) -> Duration {
-    refresh_interval.map_or(GAP_THRESHOLD, |interval| {
-        (interval * 2 + Duration::minutes(5)).max(GAP_THRESHOLD)
-    })
-}
+/// The shortest stretch without samples that counts as missing data. It covers the slowest refresh choice (every 60
+/// minutes, plus fetch time) with room for one late refresh, and stays fixed when the setting changes, because stored
+/// readings keep the rhythm they were recorded with. Unchanged values are re-sampled every 15 minutes, so with any
+/// refresh choice a longer silence means the app wasn't running or fetching.
+pub const GAP_THRESHOLD: Duration = Duration::minutes(125);
 /// Differences smaller than this are not changes; matches the history store's deduplication.
 pub const FLAT_EPSILON: f64 = 0.0005;
 
 /// Summarizes points sorted oldest first, as of `end` (normally now). Stretches longer than `gap` count as missing
-/// data. `None` when there are none, so callers show an empty state instead of zeros. Non-finite values are ignored.
+/// data (normally [`GAP_THRESHOLD`]). `None` when there are none, so callers show an empty state instead of zeros. Non-finite values are ignored.
 pub fn summarize(points: &[Point], end: DateTime<Utc>, gap: Duration) -> Option<HistorySummary> {
     let mut finite = points.iter().filter(|point| point.value.is_finite());
     let first = *finite.next()?;
@@ -209,10 +202,6 @@ mod tests {
             .collect()
     }
 
-    fn summary_with(values: &[(i64, f64)], end_minutes: i64, gap: Duration) -> HistorySummary {
-        summarize(&points(values), at(end_minutes), gap).unwrap()
-    }
-
     fn summary_at(values: &[(i64, f64)], end_minutes: i64) -> HistorySummary {
         summarize(&points(values), at(end_minutes), GAP_THRESHOLD).unwrap()
     }
@@ -358,16 +347,9 @@ mod tests {
     }
 
     #[test]
-    fn gap_threshold_follows_the_refresh_interval() {
-        assert_eq!(gap_threshold(None), GAP_THRESHOLD);
-        assert_eq!(gap_threshold(Some(Duration::minutes(2))), GAP_THRESHOLD);
-        assert_eq!(gap_threshold(Some(Duration::minutes(60))), Duration::minutes(125));
-        // Hourly refreshes land a little over an hour apart; that is the rhythm, not a gap.
-        let hourly = summary_with(
-            &[(0, 0.1), (62, 0.2), (124, 0.3)],
-            124,
-            gap_threshold(Some(Duration::hours(1))),
-        );
+    fn hourly_refresh_rhythm_is_not_a_gap() {
+        // Hourly refreshes land a little over an hour apart; that is the rhythm, not missing data.
+        let hourly = summary_at(&[(0, 0.1), (62, 0.2), (124, 0.3)], 124 + 70);
         assert_eq!(hourly.longest_gap, None);
         assert_eq!(hourly.stale_for, None);
     }

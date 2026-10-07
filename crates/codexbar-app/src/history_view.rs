@@ -4,11 +4,11 @@
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use chrono::{DateTime, Duration, Local, Utc};
+use chrono::{Duration, Local, Utc};
 use codexbar_core::{AccountId, AccountSnapshot, Metric};
 use codexbar_store::HistoryStore;
 use codexbar_store::prefs::DashboardPrefs;
-use codexbar_store::summary::{ChartPoint, HistorySummary, chart_series, gap_threshold, summarize};
+use codexbar_store::summary::{ChartPoint, GAP_THRESHOLD, HistorySummary, chart_series, summarize};
 use gpui_kit::TestSupportExt as _;
 use gpui_kit::component::button::{Button, ButtonGroup, ButtonVariants as _};
 use gpui_kit::component::chart::AreaChart;
@@ -186,9 +186,14 @@ impl HistoryPrefs {
             for (from, to) in renames {
                 changed |= draft.rename_account(from, to);
             }
-            if changed && draft.save(&hub.dir).is_ok() {
-                hub.prefs = draft;
+            if !changed {
+                return;
             }
+            hub.error = draft
+                .save(&hub.dir)
+                .err()
+                .map(|err| format!("History setting not saved: {err}").into());
+            hub.prefs = draft;
         });
     }
 
@@ -209,7 +214,6 @@ struct Selection<'a> {
 pub struct HistoryView {
     history: Arc<Mutex<HistoryStore>>,
     accounts: Vec<AccountSnapshot>,
-    now: DateTime<Utc>,
     account: Option<AccountId>,
     /// True once an account is picked here; until then the view follows the Usage view's selection.
     pinned: bool,
@@ -225,7 +229,6 @@ impl HistoryView {
         Self {
             history,
             accounts: Vec::new(),
-            now: Utc::now(),
             account: None,
             pinned: false,
             metric: None,
@@ -240,12 +243,10 @@ impl HistoryView {
     pub fn set_accounts(
         &mut self,
         accounts: Vec<AccountSnapshot>,
-        now: DateTime<Utc>,
         preferred: Option<&AccountId>,
         cx: &mut Context<Self>,
     ) {
         self.accounts = accounts;
-        self.now = now;
         let known = |id: &AccountId| self.accounts.iter().any(|account| account.id() == id);
         if !self.account.as_ref().is_some_and(known) {
             self.pinned = false;
@@ -272,8 +273,8 @@ impl HistoryView {
 
     /// The account and metric key shown, for the headless UI tests.
     #[cfg(test)]
-    pub fn shown(&self, cx: &App) -> Option<(String, String)> {
-        let selection = self.selection(cx)?;
+    pub fn shown(&self) -> Option<(String, String)> {
+        let selection = self.selection()?;
         Some((selection.account.id().as_str().to_owned(), selection.metric.key()))
     }
 
@@ -287,7 +288,7 @@ impl HistoryView {
         cx.notify();
     }
 
-    fn selection(&self, cx: &App) -> Option<Selection<'_>> {
+    fn selection(&self) -> Option<Selection<'_>> {
         let account = self
             .account
             .as_ref()
@@ -306,13 +307,12 @@ impl HistoryView {
             let history = self.history.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             history.points(account.id().as_str(), &metric.key(), since)
         };
-        let gap = history_gap(cx);
-        let summary = summarize(&points, now, gap);
+        let summary = summarize(&points, now, GAP_THRESHOLD);
         Some(Selection {
             account,
             metric,
             kind: ValueKind::of(metric),
-            series: chart_series(&points, MAX_CHART_POINTS, gap),
+            series: chart_series(&points, MAX_CHART_POINTS, GAP_THRESHOLD),
             summary,
         })
     }
@@ -336,15 +336,6 @@ impl HistoryView {
     }
 }
 
-/// How long without samples counts as missing data, given the refresh interval in settings.
-pub fn history_gap(cx: &App) -> Duration {
-    let interval = cx
-        .try_global::<crate::settings_hub::SettingsHub>()
-        .and_then(|hub| hub.settings().refresh_interval_secs())
-        .map(|secs| Duration::seconds(secs as i64));
-    gap_threshold(interval)
-}
-
 /// Metrics that have numeric history, in the account's order.
 fn charted_metrics(account: &AccountSnapshot) -> impl Iterator<Item = &Metric> {
     account
@@ -366,7 +357,7 @@ impl Render for HistoryView {
         if self.accounts.is_empty() {
             return empty_state(IconName::Calendar, "No accounts connected yet", None, cx).into_any_element();
         }
-        let selection = self.selection(cx);
+        let selection = self.selection();
         h_flex()
             .size_full()
             .items_start()
@@ -402,7 +393,7 @@ impl HistoryView {
                 let id = account.id().clone();
                 let selected = self.account.as_ref() == Some(account.id());
                 let shown = HistoryPrefs::shows(cx, account.id().as_str());
-                let severity = account.assess(self.now).severity();
+                let severity = account.assess(Utc::now()).severity();
                 Button::new(("history-account", ix))
                     .ghost()
                     .w_full()

@@ -6,7 +6,7 @@ use std::time::Instant;
 use chrono::{DateTime, Duration, Local, Utc};
 use codexbar_core::{AccountId, AccountSnapshot, Metric, demo::demo_accounts, format, sort_by_urgency};
 use codexbar_providers::ProviderError;
-use codexbar_store::summary::summarize;
+use codexbar_store::summary::{GAP_THRESHOLD, summarize};
 use codexbar_store::{HistoryStore, TREND_DAYS, demo_history};
 
 use crate::settings_hub::SettingsHub;
@@ -337,10 +337,10 @@ impl Dashboard {
         self.accounts = accounts.clone();
         let now = self.now;
         self.compact_minute = now.timestamp() / 60;
-        let compact = self.compact_history(&accounts, cx);
+        let compact = self.compact_history(&accounts);
         let preferred = self.selected.clone();
         self.history_view.update(cx, |view, cx| {
-            view.set_accounts(accounts.clone(), now, preferred.as_ref(), cx);
+            view.set_accounts(accounts.clone(), preferred.as_ref(), cx);
         });
         self.table.update(cx, |table, cx| {
             *table.delegate_mut() = AccountTable::new(accounts, now, compact);
@@ -356,7 +356,7 @@ impl Dashboard {
     /// Recomputes the table's compact history for the current minute, keeping its rows and selection.
     fn update_compact_history(&mut self, cx: &mut Context<Self>) {
         self.compact_minute = self.now.timestamp() / 60;
-        let compact = self.compact_history(&self.accounts, cx);
+        let compact = self.compact_history(&self.accounts);
         self.table.update(cx, |table, cx| {
             table.delegate_mut().set_compact(compact);
             cx.notify();
@@ -364,8 +364,7 @@ impl Dashboard {
     }
 
     /// The compact history for each account's primary metric over the trend's 14 days (#86).
-    fn compact_history(&self, accounts: &[AccountSnapshot], cx: &gpui_kit::App) -> Compact {
-        let gap = crate::history_view::history_gap(cx);
+    fn compact_history(&self, accounts: &[AccountSnapshot]) -> Compact {
         let since = self.now - Duration::days(TREND_DAYS as i64);
         let history = self.history.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         accounts
@@ -373,7 +372,7 @@ impl Dashboard {
             .filter_map(|account| {
                 let metric = account.primary()?;
                 let points = history.points(account.id().as_str(), &metric.key(), since);
-                let summary = summarize(&points, self.now, gap)?;
+                let summary = summarize(&points, self.now, GAP_THRESHOLD)?;
                 Some((account.id().as_str().to_owned(), (summary, ValueKind::of(metric))))
             })
             .collect()

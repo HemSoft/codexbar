@@ -255,7 +255,7 @@ fn history_view_shows_summary_and_chart_for_the_selected_account(cx: &mut TestAp
     open_history(cx, handle);
 
     let (view, _) = cx.update(|cx| dashboard.read(cx).history_parts());
-    let shown = cx.update(|cx| view.read(cx).shown(cx)).unwrap();
+    let shown = cx.update(|cx| view.read(cx).shown()).unwrap();
     // The Usage view's selection (the most urgent account) carries over.
     assert_eq!(shown, ("codex-personal".to_owned(), "5-hour-window".to_owned()));
 
@@ -309,7 +309,7 @@ fn history_metric_and_range_can_be_changed(cx: &mut TestAppContext) {
     let (view, _) = cx.update(|cx| dashboard.read(cx).history_parts());
 
     click(cx, handle, ("history-metric", 1usize));
-    let shown = cx.update(|cx| view.read(cx).shown(cx)).unwrap();
+    let shown = cx.update(|cx| view.read(cx).shown()).unwrap();
     assert_eq!(shown.1, "weekly");
     let week = label(cx, handle, "history-chart-region").unwrap();
     assert!(week.starts_with("Weekly history, last 7 days."), "{week}");
@@ -365,7 +365,7 @@ fn history_view_handles_empty_and_single_sample_series(cx: &mut TestAppContext) 
     });
     let handle: AnyWindowHandle = handle.into();
     let view = view.unwrap();
-    cx.update(|cx| view.update(cx, |view, cx| view.set_accounts(accounts.clone(), now, None, cx)));
+    cx.update(|cx| view.update(cx, |view, cx| view.set_accounts(accounts.clone(), None, cx)));
     cx.update_window(handle, |_, window, cx| window.render_frame(cx))
         .unwrap();
 
@@ -410,7 +410,7 @@ fn history_follows_the_usage_selection_until_an_account_is_picked(cx: &mut TestA
     let settings = TempSettings::new("history-follow", "{}");
     let (handle, dashboard) = open_dashboard(cx, &settings);
     let (view, _) = cx.update(|cx| dashboard.read(cx).history_parts());
-    let shown = |cx: &mut TestAppContext| cx.update(|cx| view.read(cx).shown(cx)).unwrap().0;
+    let shown = |cx: &mut TestAppContext| cx.update(|cx| view.read(cx).shown()).unwrap().0;
     let row_id = |cx: &mut TestAppContext, ix: usize| cx.update(|cx| dashboard.read(cx).account_id(ix)).unwrap();
 
     // Selecting another Usage row after the first load still carries over.
@@ -442,11 +442,12 @@ fn single_balance_account_preferences_move_to_its_configured_id(cx: &mut TestApp
         crate::history_view::HistoryPrefs::init(cx, &settings.0);
     });
 
-    // OpenRouter is on by default with one implicit account; Moonshot is off.
+    // No configured records: each provider's implicit account is its only account, enabled or not (Moonshot is
+    // off by default), so both legacy ids map to configured ids.
     let renames = cx.update(|cx| crate::providers::legacy_ids(SettingsHub::global(cx)));
-    assert_eq!(renames.len(), 1, "{renames:?}");
-    let (legacy, configured) = renames[0].clone();
-    assert_eq!(legacy, "openrouter");
+    let legacy: Vec<&str> = renames.iter().map(|(legacy, _)| *legacy).collect();
+    assert_eq!(legacy, vec!["openrouter", "moonshot"], "{renames:?}");
+    let configured = renames[0].1.clone();
     assert_ne!(configured, "openrouter");
 
     cx.update(|cx| crate::history_view::HistoryPrefs::rename_accounts(cx, &renames));
@@ -457,4 +458,23 @@ fn single_balance_account_preferences_move_to_its_configured_id(cx: &mut TestApp
     );
     assert!(shows(cx, "openrouter"));
     assert_eq!(hidden_on_disk(&settings), serde_json::json!([configured]));
+}
+
+#[gpui_kit::test]
+fn legacy_history_is_not_moved_when_several_accounts_could_own_it(cx: &mut TestAppContext) {
+    // Two OpenRouter accounts, only one enabled: the legacy history may belong to either, so it stays put.
+    let settings = TempSettings::new(
+        "legacy-ambiguous",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "old", "providerId": "OpenRouter", "displayLabel": "Old", "enabled": false,
+              "authenticationMethod": "ApiKey" },
+            { "id": "new", "providerId": "OpenRouter", "displayLabel": "New", "enabled": true,
+              "authenticationMethod": "ApiKey" },
+            { "id": "kimi", "providerId": "Moonshot", "displayLabel": "Kimi", "enabled": false,
+              "authenticationMethod": "ApiKey" } ] }"#,
+    );
+    cx.update(|cx| SettingsHub::init_with(cx, &settings.0, Arc::new(MemoryCredentialStore::default())));
+    let renames = cx.update(|cx| crate::providers::legacy_ids(SettingsHub::global(cx)));
+    // Moonshot's one account is disabled but still the only owner, so its legacy id moves to it.
+    assert_eq!(renames, vec![("moonshot", "kimi".to_owned())]);
 }

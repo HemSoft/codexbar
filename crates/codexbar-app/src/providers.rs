@@ -96,13 +96,19 @@ pub fn enabled(hub: &SettingsHub) -> Vec<Arc<dyn UsageProvider>> {
 
 /// Accounts that used to report under their provider's legacy id: a provider's only OpenRouter or Moonshot account
 /// reported as `openrouter`/`moonshot` before it reported under its configured id. Each pair is (legacy, configured)
-/// for moving stored history and preferences. With several accounts the legacy history's owner is unknown, so none.
+/// for moving stored history and preferences. The one configured account counts whether or not it is enabled now (a
+/// disabled account keeps its history for when it is enabled again); with no records it is the implicit legacy
+/// account. With several configured accounts the legacy history's owner is unknown, so nothing moves.
 pub fn legacy_ids(hub: &SettingsHub) -> Vec<(&'static str, String)> {
     [("openrouter", names::OPENROUTER), ("moonshot", names::MOONSHOT)]
         .into_iter()
-        .filter_map(|(legacy, provider)| match enabled_accounts(hub, provider).as_slice() {
-            [only] => Some((legacy, only.id.clone())),
-            _ => None,
+        .filter_map(|(legacy, provider)| {
+            let records: Vec<&AccountRecord> = hub.settings().accounts_for(provider).collect();
+            match records.as_slice() {
+                [] => Some((legacy, SettingsHub::implicit_account(provider).id)),
+                [only] => Some((legacy, only.id.clone())),
+                _ => None,
+            }
         })
         .collect()
 }
