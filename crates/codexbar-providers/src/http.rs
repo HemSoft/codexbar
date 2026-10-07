@@ -24,6 +24,12 @@ impl HttpResponse {
 /// The one HTTP operation providers need. A seam so parsers and status handling are tested without the network.
 pub trait HttpClient: Send + Sync {
     fn get(&self, url: &str, headers: &[(&str, &str)]) -> Result<HttpResponse, ProviderError>;
+
+    /// POSTs a JSON body. Only Cursor needs it, so test doubles that never post can skip it.
+    fn post_json(&self, url: &str, headers: &[(&str, &str)], body: &str) -> Result<HttpResponse, ProviderError> {
+        let _ = (url, headers, body);
+        Err(ProviderError::Network)
+    }
 }
 
 /// Blocking HTTPS client with a short timeout. Non-2xx statuses are returned, not raised.
@@ -33,9 +39,19 @@ pub struct UreqClient {
 
 impl UreqClient {
     pub fn new() -> Self {
+        Self::build(10)
+    }
+
+    /// Returns redirects as responses, for dashboards that bounce an expired session to a login page.
+    pub fn without_redirects() -> Self {
+        Self::build(0)
+    }
+
+    fn build(max_redirects: u32) -> Self {
         let config = ureq::Agent::config_builder()
             .timeout_global(Some(Duration::from_secs(20)))
             .http_status_as_error(false)
+            .max_redirects(max_redirects)
             .user_agent("CodexBar")
             .build();
         Self { agent: config.into() }
@@ -54,21 +70,34 @@ impl HttpClient for UreqClient {
         for (name, value) in headers {
             request = request.header(*name, *value);
         }
-        let mut response = request.call().map_err(|_| ProviderError::Network)?;
-        let status = response.status().as_u16();
-        let retry_after_secs = response
-            .headers()
-            .get("retry-after")
-            .and_then(|value| value.to_str().ok())
-            .and_then(|value| value.trim().parse().ok());
-        let body = response
-            .body_mut()
-            .read_to_string()
-            .map_err(|_| ProviderError::Network)?;
-        Ok(HttpResponse {
-            status,
-            body,
-            retry_after_secs,
-        })
+        let response = request.call().map_err(|_| ProviderError::Network)?;
+        read_response(response)
     }
+
+    fn post_json(&self, url: &str, headers: &[(&str, &str)], body: &str) -> Result<HttpResponse, ProviderError> {
+        let mut request = self.agent.post(url);
+        for (name, value) in headers {
+            request = request.header(*name, *value);
+        }
+        let response = request.send(body).map_err(|_| ProviderError::Network)?;
+        read_response(response)
+    }
+}
+
+fn read_response(mut response: ureq::http::Response<ureq::Body>) -> Result<HttpResponse, ProviderError> {
+    let status = response.status().as_u16();
+    let retry_after_secs = response
+        .headers()
+        .get("retry-after")
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.trim().parse().ok());
+    let body = response
+        .body_mut()
+        .read_to_string()
+        .map_err(|_| ProviderError::Network)?;
+    Ok(HttpResponse {
+        status,
+        body,
+        retry_after_secs,
+    })
 }

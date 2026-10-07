@@ -3,6 +3,7 @@
 
 mod enrich;
 mod history;
+pub mod settings;
 
 pub use enrich::{TREND_DAYS, enrich};
 pub use history::{HistoryStore, Sample, default_history_path};

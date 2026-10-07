@@ -3,16 +3,14 @@
 mod account_table;
 mod dashboard;
 mod focus_cards;
+mod providers;
 mod status;
 mod theme;
 mod tray;
 
 use std::sync::{Arc, Mutex};
 
-use codexbar_providers::claude::{ClaudeProvider, default_credentials_path};
-use codexbar_providers::codex::{CodexProvider, default_auth_path};
-use codexbar_providers::copilot::CopilotProvider;
-use codexbar_providers::{SystemCommandRunner, UreqClient};
+use codexbar_store::settings::LegacySettings;
 use codexbar_store::{HistoryStore, default_history_path};
 use gpui_kit::component::TitleBar;
 use gpui_kit::{AppContext as _, Bounds, WindowBounds, WindowOptions, px, size};
@@ -30,12 +28,9 @@ fn data_source() -> DataSource {
         return DataSource::Demo;
     }
     let history = HistoryStore::open(default_history_path(), HISTORY_RETENTION, chrono::Utc::now());
+    let settings = LegacySettings::load(&LegacySettings::default_dir());
     DataSource::Live {
-        providers: vec![
-            Arc::new(CodexProvider::new(UreqClient::new(), default_auth_path())),
-            Arc::new(CopilotProvider::new(UreqClient::new(), SystemCommandRunner)),
-            Arc::new(ClaudeProvider::new(UreqClient::new(), default_credentials_path())),
-        ],
+        providers: providers::enabled(&settings),
         history: Arc::new(Mutex::new(history)),
     }
 }

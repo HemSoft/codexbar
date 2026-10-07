@@ -1,12 +1,15 @@
 //! Provider adapters. Each reads the credentials its provider's own client already maintains, fetches usage over
 //! HTTPS, and maps the response onto `codexbar_core` snapshots. Fetches are blocking; callers run them off the UI thread.
 
+pub mod balance;
 pub mod claude;
 pub mod codex;
 mod command;
 pub mod copilot;
+pub mod cursor;
 mod error;
 mod http;
+pub mod opencode;
 mod pace;
 
 pub use command::{CommandError, CommandOutput, CommandRunner, SystemCommandRunner};
