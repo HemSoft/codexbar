@@ -126,10 +126,15 @@ impl HistoryStore {
     /// in the future, as after the system clock is set back.
     pub fn points(&self, account: &str, metric: &str, since: DateTime<Utc>, until: DateTime<Utc>) -> Vec<Point> {
         let (since, until) = (since.timestamp(), until.timestamp());
-        self.series(account, metric)
+        let mut points: Vec<Point> = self
+            .series(account, metric)
             .filter(|sample| (since..=until).contains(&sample.t))
             .map(|sample| Point::new(sample.at(), sample.v))
-            .collect()
+            .collect();
+        // Recording appends, so after the clock is set back samples can be out of time order; summaries and charts
+        // need them oldest first. The sort is stable, so equal times keep their recorded order.
+        points.sort_by_key(|point| point.at);
+        points
     }
 
     /// Reads the file. Ok(true) means lines were skipped or expired and the file should be rewritten.
@@ -495,6 +500,23 @@ mod tests {
         let points = store.points("a", "5-hour-window", now() - Duration::days(1), now());
         let values: Vec<f64> = points.iter().map(|point| point.value).collect();
         assert_eq!(values, vec![0.1]);
+    }
+
+    #[test]
+    fn points_come_back_in_time_order_after_the_clock_is_set_back() {
+        let dir = TempDir::new();
+        let mut store = HistoryStore::open(dir.file(), retention(), now());
+        store.record(&[account("a", 0.5, 3)], now()).unwrap();
+        // The clock moves back two hours; the next readings are recorded after the 12:00 one.
+        store
+            .record(&[account("a", 0.2, 3)], now() - Duration::hours(2))
+            .unwrap();
+        store
+            .record(&[account("a", 0.3, 3)], now() - Duration::hours(1))
+            .unwrap();
+        let points = store.points("a", "5-hour-window", now() - Duration::days(1), now());
+        let values: Vec<f64> = points.iter().map(|point| point.value).collect();
+        assert_eq!(values, vec![0.2, 0.3, 0.5]);
     }
 
     #[test]
