@@ -6,7 +6,8 @@ use std::time::Instant;
 use chrono::{DateTime, Duration, Local, Utc};
 use codexbar_core::{AccountId, AccountSnapshot, Metric, demo::demo_accounts, format, sort_by_urgency};
 use codexbar_providers::ProviderError;
-use codexbar_store::HistoryStore;
+use codexbar_store::summary::{GAP_THRESHOLD, summarize};
+use codexbar_store::{HistoryStore, TREND_DAYS, demo_history};
 
 use crate::settings_hub::SettingsHub;
 use gpui_kit::TestSupportExt as _;
@@ -22,8 +23,9 @@ use gpui_kit::{
     Window, canvas, div, px, rems,
 };
 
-use crate::account_table::AccountTable;
+use crate::account_table::{AccountTable, Compact};
 use crate::focus_cards::focus_cards;
+use crate::history_view::{HistoryView, ValueKind};
 use crate::status::{severity_dot_color, severity_tag};
 
 /// The dashboard views. A tray click restores whichever one was open last.
@@ -72,6 +74,25 @@ pub enum DataSource {
     Demo,
 }
 
+/// Moves history and Show history preferences saved under a single OpenRouter or Moonshot account's legacy id to its
+/// configured id. With unreadable settings (newer schema, invalid accounts) the hub holds defaults rather than the
+/// real accounts, so ownership is unknown and nothing moves until the file is readable.
+pub fn migrate_legacy_ids(history: &Mutex<HistoryStore>, cx: &mut gpui_kit::App) {
+    let hub = SettingsHub::global(cx);
+    if hub.is_read_only() {
+        return;
+    }
+    let renames = crate::providers::legacy_ids(hub);
+    {
+        let mut store = history.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        for (from, to) in &renames {
+            // A failed rewrite keeps the samples in memory under the new id; the next prune retries it.
+            let _ = store.rename_account(from, to);
+        }
+    }
+    crate::history_view::HistoryPrefs::rename_accounts(cx, &renames);
+}
+
 /// A provider whose last fetch failed. Its last good accounts stay on screen.
 struct Failure {
     provider: &'static str,
@@ -80,6 +101,9 @@ struct Failure {
 
 pub struct Dashboard {
     source: DataSource,
+    /// Stored history: the history file for live data, generated in memory for the demo.
+    history: Arc<Mutex<HistoryStore>>,
+    history_view: Entity<HistoryView>,
     accounts: Vec<AccountSnapshot>,
     failures: Vec<Failure>,
     loading: bool,
@@ -91,6 +115,10 @@ pub struct Dashboard {
     deactivated_at: Option<Instant>,
     /// The zoom the table's column widths were last laid out for.
     table_zoom: f64,
+    /// A refresh was requested while one was running; it runs when that one finishes.
+    refresh_queued: bool,
+    /// The minute the table's compact history was computed for; it is recomputed as the 14-day window moves.
+    compact_minute: i64,
     /// One focus handle per view tab. Only the selected tab is a Tab-key stop (a roving tab stop); the arrow keys
     /// move focus between tabs, and Enter or Space activates the focused one.
     view_tab_focus: Vec<FocusHandle>,
@@ -102,7 +130,7 @@ impl Dashboard {
     pub fn new(source: DataSource, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let now = Utc::now();
         let table = cx.new(|cx| {
-            TableState::new(AccountTable::new(Vec::new(), now), window, cx)
+            TableState::new(AccountTable::new(Vec::new(), now, Compact::default()), window, cx)
                 .row_selectable(true)
                 .col_selectable(false)
                 .col_movable(false)
@@ -113,6 +141,9 @@ impl Dashboard {
         let selection = cx.subscribe(&table, |this, table, event: &TableEvent, cx| {
             if let TableEvent::SelectRow(row) = event {
                 this.selected = table.read(cx).delegate().row(*row).map(|account| account.id().clone());
+                let selected = this.selected.clone();
+                this.history_view
+                    .update(cx, |view, cx| view.follow(selected.as_ref(), cx));
                 cx.notify();
             }
         });
@@ -136,6 +167,8 @@ impl Dashboard {
                     };
                     if due && !this.loading {
                         this.refresh(cx);
+                    } else if this.now.timestamp() / 60 != this.compact_minute {
+                        this.update_compact_history(cx);
                     }
                     cx.notify();
                 });
@@ -145,8 +178,19 @@ impl Dashboard {
             }
         });
 
+        let history = match &source {
+            DataSource::Live { history } => {
+                migrate_legacy_ids(history, cx);
+                history.clone()
+            }
+            DataSource::Demo => Arc::new(Mutex::new(demo_history(&demo_accounts(now, &Local), now))),
+        };
+        let history_view = cx.new(|cx| HistoryView::new(history.clone(), cx));
+
         let mut dashboard = Self {
             source,
+            history,
+            history_view,
             accounts: Vec::new(),
             failures: Vec::new(),
             loading: false,
@@ -157,6 +201,8 @@ impl Dashboard {
             now,
             deactivated_at: None,
             table_zoom: crate::zoom::level(cx),
+            refresh_queued: false,
+            compact_minute: 0,
             view_tab_focus: DashboardView::ALL.iter().map(|_| cx.focus_handle()).collect(),
             _clock: clock,
             _subscriptions: vec![selection, activation],
@@ -177,6 +223,24 @@ impl Dashboard {
         self.view
     }
 
+    /// The History view and the shared history store, for the headless UI tests.
+    #[cfg(test)]
+    pub fn history_parts(&self) -> (Entity<HistoryView>, Arc<Mutex<HistoryStore>>) {
+        (self.history_view.clone(), self.history.clone())
+    }
+
+    /// The id of the account in table row `ix`, for the headless UI tests.
+    #[cfg(test)]
+    pub fn account_id(&self, ix: usize) -> Option<String> {
+        self.accounts.get(ix).map(|account| account.id().as_str().to_owned())
+    }
+
+    /// Selects a table row the way a click does (the table emits its selection event), for the headless UI tests.
+    #[cfg(test)]
+    pub fn select_row(&mut self, ix: usize, cx: &mut Context<Self>) {
+        self.table.update(cx, |table, cx| table.set_selected_row(ix, cx));
+    }
+
     /// Switches the visible view (the tray's Settings… item, the `--settings` flag).
     pub fn show_view(&mut self, view: DashboardView, cx: &mut Context<Self>) {
         self.view = view;
@@ -185,15 +249,31 @@ impl Dashboard {
 
     /// Fetches every provider off the UI thread. A failed provider keeps its last good accounts.
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
+        // One refresh at a time: a tray Refresh during a fetch would otherwise race it, and the older result could
+        // land last, replacing newer accounts and recording history out of order. A request made meanwhile runs
+        // right after, with the settings as they are then.
+        if self.loading {
+            self.refresh_queued = true;
+            return;
+        }
         let providers = match &self.source {
             DataSource::Demo => {
                 let now = Utc::now();
                 self.last_refresh = Some(now);
-                self.set_accounts(demo_accounts(now, &Local), cx);
+                let accounts = demo_accounts(now, &Local);
+                // Demo history keeps up with the demo accounts, as live history does.
+                let _ = self
+                    .history
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .record(&accounts, now);
+                self.set_accounts(accounts, cx);
                 return;
             }
             DataSource::Live { history } => history.clone(),
         };
+        // Account settings may have changed since the last refresh (a first configured account added).
+        migrate_legacy_ids(&providers, cx);
         let history = providers;
         let providers = crate::providers::enabled(SettingsHub::global(cx));
         self.loading = true;
@@ -202,11 +282,12 @@ impl Dashboard {
             let results = cx
                 .background_spawn(async move {
                     let now = Utc::now();
-                    let mut history = history.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
                     providers
                         .iter()
                         .map(|provider| {
+                            // Lock only after the network fetch: the History view reads the store on the UI thread.
                             let result = provider.fetch(now).map(|accounts| {
+                                let mut history = history.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
                                 // A history write failure must not hide fresh usage; the next refresh retries.
                                 let _ = history.record(&accounts, now);
                                 accounts
@@ -252,6 +333,9 @@ impl Dashboard {
         self.loading = false;
         self.last_refresh = Some(Utc::now());
         self.set_accounts(accounts, cx);
+        if std::mem::take(&mut self.refresh_queued) {
+            self.refresh(cx);
+        }
     }
 
     fn set_accounts(&mut self, mut accounts: Vec<AccountSnapshot>, cx: &mut Context<Self>) {
@@ -265,8 +349,14 @@ impl Dashboard {
         self.selected = accounts.get(selected_ix).map(|a| a.id().clone());
         self.accounts = accounts.clone();
         let now = self.now;
+        self.compact_minute = now.timestamp() / 60;
+        let compact = self.compact_history(&accounts);
+        let preferred = self.selected.clone();
+        self.history_view.update(cx, |view, cx| {
+            view.set_accounts(accounts.clone(), preferred.as_ref(), cx);
+        });
         self.table.update(cx, |table, cx| {
-            *table.delegate_mut() = AccountTable::new(accounts, now);
+            *table.delegate_mut() = AccountTable::new(accounts, now, compact);
             table.refresh(cx);
             if table.delegate().row(selected_ix).is_some() {
                 table.set_selected_row(selected_ix, cx);
@@ -274,6 +364,31 @@ impl Dashboard {
         });
         crate::tray::set_tooltip(cx, &self.tooltip());
         cx.notify();
+    }
+
+    /// Recomputes the table's compact history for the current minute, keeping its rows and selection.
+    fn update_compact_history(&mut self, cx: &mut Context<Self>) {
+        self.compact_minute = self.now.timestamp() / 60;
+        let compact = self.compact_history(&self.accounts);
+        self.table.update(cx, |table, cx| {
+            table.delegate_mut().set_compact(compact);
+            cx.notify();
+        });
+    }
+
+    /// The compact history for each account's primary metric over the trend's 14 days (#86).
+    fn compact_history(&self, accounts: &[AccountSnapshot]) -> Compact {
+        let since = self.now - Duration::days(TREND_DAYS as i64);
+        let history = self.history.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+        accounts
+            .iter()
+            .filter_map(|account| {
+                let metric = account.primary()?;
+                let points = history.points(account.id().as_str(), &metric.key(), since, self.now);
+                let summary = summarize(&points, self.now, GAP_THRESHOLD)?;
+                Some((account.id().as_str().to_owned(), (summary, ValueKind::of(metric))))
+            })
+            .collect()
     }
 
     /// The tray hover text: the most urgent account, or the reason there is none.
@@ -614,6 +729,7 @@ impl Render for Dashboard {
         let body = match self.view {
             DashboardView::Usage => self.render_usage(cx),
             DashboardView::Settings => crate::settings_view::render(window, cx).into_any_element(),
+            DashboardView::History => self.history_view.clone().into_any_element(),
             _ => self.render_placeholder(cx).into_any_element(),
         };
         v_flex()

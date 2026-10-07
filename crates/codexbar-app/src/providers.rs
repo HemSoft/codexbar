@@ -62,11 +62,16 @@ pub fn enabled(hub: &SettingsHub) -> Vec<Arc<dyn UsageProvider>> {
 
     let openrouter = enabled_accounts(hub, names::OPENROUTER);
     let multiple = openrouter.len() > 1;
+    let configured = hub.settings().accounts_for(names::OPENROUTER).next().is_some();
     for account in openrouter {
         let key = hub.secret_for(&account).0;
         let provider = OpenRouterProvider::new(UreqClient::new(), key);
+        // A configured account always reports under its own id, so history and preferences survive adding or
+        // removing a second one; the implicit account (no records yet) keeps the legacy id until one is configured.
         let provider = if multiple {
             provider.with_account(account.id.clone(), account.label.clone())
+        } else if configured {
+            provider.with_id(account.id.clone())
         } else {
             provider
         };
@@ -79,17 +84,41 @@ pub fn enabled(hub: &SettingsHub) -> Vec<Arc<dyn UsageProvider>> {
 
     let moonshot = enabled_accounts(hub, names::MOONSHOT);
     let multiple = moonshot.len() > 1;
+    let configured = hub.settings().accounts_for(names::MOONSHOT).next().is_some();
     for account in moonshot {
         let key = hub.secret_for(&account).0;
         let provider = MoonshotProvider::new(UreqClient::new(), key);
+        // A configured account always reports under its own id, so history and preferences survive adding or
+        // removing a second one; the implicit account (no records yet) keeps the legacy id until one is configured.
         let provider = if multiple {
             provider.with_account(account.id.clone(), account.label.clone())
+        } else if configured {
+            provider.with_id(account.id.clone())
         } else {
             provider
         };
         providers.push(Arc::new(provider));
     }
     providers
+}
+
+/// Accounts that used to report under their provider's legacy id: a provider's only OpenRouter or Moonshot account
+/// reported as `openrouter`/`moonshot` before it reported under its configured id. Each pair is (legacy, configured)
+/// for moving stored history and preferences. The one configured account counts whether or not it is enabled now (a
+/// disabled account keeps its history for when it is enabled again). With no records the implicit account still
+/// reports under the legacy id, so nothing moves until the first account is configured; with several configured
+/// accounts the legacy history's owner is unknown, so nothing moves.
+pub fn legacy_ids(hub: &SettingsHub) -> Vec<(&'static str, String)> {
+    [("openrouter", names::OPENROUTER), ("moonshot", names::MOONSHOT)]
+        .into_iter()
+        .filter_map(|(legacy, provider)| {
+            let records: Vec<&AccountRecord> = hub.settings().accounts_for(provider).collect();
+            match records.as_slice() {
+                [only] => Some((legacy, only.id.clone())),
+                _ => None,
+            }
+        })
+        .collect()
 }
 
 /// Go and Zen share one dashboard account; either half can be switched off. Zen falls back to Go's cookie.

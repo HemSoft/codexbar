@@ -1,15 +1,22 @@
 //! The urgency-ordered account table on the Usage view.
 
+use std::collections::HashMap;
+
 use chrono::{DateTime, Local, Utc};
 use codexbar_core::{AccountSnapshot, Metric, format};
+use codexbar_store::summary::HistorySummary;
 use gpui_kit::component::chart::AreaChart;
 use gpui_kit::component::progress::Progress;
 use gpui_kit::component::table::{Column, TableDelegate, TableState};
-use gpui_kit::component::{ActiveTheme as _, Sizable as _, h_flex};
+use gpui_kit::component::tooltip::Tooltip;
+use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, h_flex};
 use gpui_kit::{
-    Context, ElementId, IntoElement, ParentElement as _, SharedString, Styled as _, Window, div, linear_color_stop,
-    linear_gradient, rems,
+    Context, ElementId, InteractiveElement as _, IntoElement, ParentElement as _, Role, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Window, div, linear_color_stop, linear_gradient, rems,
 };
+
+use crate::history_view::{HistoryPrefs, ValueKind, describe};
+use gpui_kit::TestSupportExt as _;
 
 use crate::status::{severity_color, severity_dot_color, severity_tag};
 use crate::zoom::scaled;
@@ -35,15 +42,23 @@ const COLUMNS: [Col; 7] = [
     Col::Trend,
 ];
 
+/// Each account's stored history summary for its primary metric, by account id.
+pub type Compact = HashMap<String, (HistorySummary, ValueKind)>;
+
 /// Supplies rows for the gpui-kit `DataTable`. Rows arrive already sorted by urgency.
 pub struct AccountTable {
     rows: Vec<AccountSnapshot>,
     now: DateTime<Utc>,
+    compact: Compact,
 }
 
 impl AccountTable {
-    pub fn new(rows: Vec<AccountSnapshot>, now: DateTime<Utc>) -> Self {
-        Self { rows, now }
+    pub fn new(rows: Vec<AccountSnapshot>, now: DateTime<Utc>, compact: Compact) -> Self {
+        Self { rows, now, compact }
+    }
+
+    pub fn set_compact(&mut self, compact: Compact) {
+        self.compact = compact;
     }
 
     pub fn row(&self, ix: usize) -> Option<&AccountSnapshot> {
@@ -150,8 +165,52 @@ impl TableDelegate for AccountTable {
                         .unwrap_or_else(|| "—".into()),
                 )
                 .into_any_element(),
-            Col::Trend => sparkline(row, cx),
+            Col::Trend => self.trend_cell(row, cx),
         }
+    }
+}
+
+impl AccountTable {
+    /// The 14-day sparkline with the change over it. Hover (or a screen reader) gives the full compact summary:
+    /// latest value, change, range and sample window. Hidden accounts say so instead.
+    fn trend_cell(&self, row: &AccountSnapshot, cx: &Context<TableState<AccountTable>>) -> gpui_kit::AnyElement {
+        let id = row.id().as_str();
+        let muted = cx.theme().muted_foreground;
+        if !HistoryPrefs::shows(cx, id) {
+            return h_flex()
+                .gap_1p5()
+                .items_center()
+                .text_sm()
+                .text_color(muted)
+                .child(Icon::new(IconName::EyeOff).small())
+                .child("Hidden")
+                .into_any_element();
+        }
+        let Some((summary, kind)) = self.compact.get(id) else {
+            return sparkline(row, cx);
+        };
+        let text: SharedString = format!("Last 14 days: {}", describe(summary, *kind)).into();
+        h_flex()
+            .id(ElementId::Name(format!("trend-cell-{id}").into()))
+            .w_full()
+            .gap_2()
+            .items_center()
+            .role(Role::Group)
+            .test_support()
+            .aria_label(format!("{} trend. {text}", row.display_name()))
+            .tooltip({
+                let text = text.clone();
+                move |window, cx| Tooltip::new(text.clone()).build(window, cx)
+            })
+            .child(div().flex_1().min_w_0().child(sparkline(row, cx)))
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .text_xs()
+                    .text_color(muted)
+                    .child(kind.change(summary.change)),
+            )
+            .into_any_element()
     }
 }
 

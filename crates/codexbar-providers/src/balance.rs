@@ -100,7 +100,11 @@ fn relabel(account: AccountSnapshot, configured: &Option<(String, String)>) -> A
                 account.metrics().to_vec(),
                 account.fetched_at(),
             );
-            relabeled.with_label(label.clone())
+            if label.is_empty() {
+                relabeled
+            } else {
+                relabeled.with_label(label.clone())
+            }
         }
         None => account,
     }
@@ -131,6 +135,13 @@ impl<H: HttpClient> OpenRouterProvider<H> {
     /// Reports under a configured account's id and label (for several accounts of one provider).
     pub fn with_account(mut self, id: impl Into<String>, label: impl Into<String>) -> Self {
         self.account = Some((id.into(), label.into()));
+        self
+    }
+
+    /// Reports under a configured account's id without a label (the provider's only account), so its history and
+    /// preferences keep the same id when a second account is added.
+    pub fn with_id(mut self, id: impl Into<String>) -> Self {
+        self.account = Some((id.into(), String::new()));
         self
     }
 }
@@ -174,6 +185,13 @@ impl<H: HttpClient> MoonshotProvider<H> {
     /// Reports under a configured account's id and label (for several accounts of one provider).
     pub fn with_account(mut self, id: impl Into<String>, label: impl Into<String>) -> Self {
         self.account = Some((id.into(), label.into()));
+        self
+    }
+
+    /// Reports under a configured account's id without a label (the provider's only account), so its history and
+    /// preferences keep the same id when a second account is added.
+    pub fn with_id(mut self, id: impl Into<String>) -> Self {
+        self.account = Some((id.into(), String::new()));
         self
     }
 }
@@ -262,6 +280,21 @@ mod tests {
         let account = provider.fetch(now()).unwrap().remove(0);
         assert_eq!(account.id().as_str(), "acct-2");
         assert_eq!(account.display_name(), "OpenRouter · Team");
+    }
+
+    #[test]
+    fn fetch_with_id_keeps_the_provider_name() {
+        let provider = OpenRouterProvider::new(
+            Fixed(HttpResponse::new(
+                200,
+                r#"{"data":{"total_credits":5,"total_usage":1}}"#,
+            )),
+            Some("k".into()),
+        )
+        .with_id("acct-1");
+        let account = provider.fetch(now()).unwrap().remove(0);
+        assert_eq!(account.id().as_str(), "acct-1");
+        assert_eq!(account.display_name(), "OpenRouter");
     }
 
     #[test]

@@ -7,6 +7,8 @@ use chrono::{DateTime, Duration, TimeZone, Utc};
 use codexbar_core::AccountSnapshot;
 use serde::{Deserialize, Serialize};
 
+use crate::summary::Point;
+
 /// Bumped when the line format changes. A file with another version is set aside, never misread.
 const SCHEMA_VERSION: u32 = 1;
 /// A value this close to the previous sample is not a change.
@@ -61,6 +63,8 @@ pub fn default_history_path() -> PathBuf {
 /// Usage history, loaded in memory and appended to disk as refreshes succeed.
 pub struct HistoryStore {
     path: PathBuf,
+    /// False for demo history, which lives in memory and never touches the history file.
+    persist: bool,
     retention: Duration,
     samples: Vec<Sample>,
     last: HashMap<(String, String), usize>,
@@ -73,6 +77,7 @@ impl HistoryStore {
         let path = path.into();
         let mut store = Self {
             path,
+            persist: true,
             retention,
             samples: Vec::new(),
             last: HashMap::new(),
@@ -90,6 +95,46 @@ impl HistoryStore {
         }
         store.reindex();
         store
+    }
+
+    /// History that lives only in memory (the demo dashboard). Recording and pruning work as usual; nothing is written.
+    pub fn in_memory(retention: Duration) -> Self {
+        Self {
+            path: PathBuf::new(),
+            persist: false,
+            retention,
+            samples: Vec::new(),
+            last: HashMap::new(),
+        }
+    }
+
+    /// Adds readings directly, for seeding in-memory demo history. Keeps samples sorted; skips deduplication so a
+    /// generated series is stored exactly as given.
+    pub fn insert_points(&mut self, account: &str, metric: &str, points: &[Point]) {
+        self.samples.extend(points.iter().map(|point| Sample {
+            t: point.at.timestamp(),
+            a: account.to_owned(),
+            m: metric.to_owned(),
+            v: point.value,
+            r: None,
+        }));
+        self.samples.sort_by_key(|sample| sample.t);
+        self.reindex();
+    }
+
+    /// Readings for one metric from `since` through `until`, oldest first. The upper bound keeps out samples dated
+    /// in the future, as after the system clock is set back.
+    pub fn points(&self, account: &str, metric: &str, since: DateTime<Utc>, until: DateTime<Utc>) -> Vec<Point> {
+        let (since, until) = (since.timestamp(), until.timestamp());
+        let mut points: Vec<Point> = self
+            .series(account, metric)
+            .filter(|sample| (since..=until).contains(&sample.t))
+            .map(|sample| Point::new(sample.at(), sample.v))
+            .collect();
+        // Recording appends, so after the clock is set back samples can be out of time order; summaries and charts
+        // need them oldest first. The sort is stable, so equal times keep their recorded order.
+        points.sort_by_key(|point| point.at);
+        points
     }
 
     /// Reads the file. Ok(true) means lines were skipped or expired and the file should be rewritten.
@@ -194,6 +239,21 @@ impl HistoryStore {
         Ok(())
     }
 
+    /// Moves every sample of account `from` to `to`, keeping any `to` already has. For accounts that change id,
+    /// such as a provider's single legacy account gaining its configured id. Returns how many samples moved.
+    pub fn rename_account(&mut self, from: &str, to: &str) -> io::Result<usize> {
+        let mut moved = 0;
+        for sample in self.samples.iter_mut().filter(|sample| sample.a == from) {
+            sample.a = to.to_owned();
+            moved += 1;
+        }
+        if moved > 0 {
+            self.reindex();
+            self.rewrite()?;
+        }
+        Ok(moved)
+    }
+
     /// Samples for one metric, oldest first.
     pub fn series<'a>(&'a self, account: &'a str, metric: &'a str) -> impl Iterator<Item = &'a Sample> + 'a {
         self.samples
@@ -227,7 +287,7 @@ impl HistoryStore {
     }
 
     fn append(&self, samples: &[Sample]) -> io::Result<()> {
-        if samples.is_empty() {
+        if samples.is_empty() || !self.persist {
             return Ok(());
         }
         let is_new = !self.path.exists();
@@ -248,6 +308,9 @@ impl HistoryStore {
 
     /// Writes the whole file to a temp file and swaps it in, so a crash mid-write never leaves a torn history.
     fn rewrite(&self) -> io::Result<()> {
+        if !self.persist {
+            return Ok(());
+        }
         if let Some(dir) = self.path.parent() {
             fs::create_dir_all(dir)?;
         }
@@ -422,6 +485,59 @@ mod tests {
         let reopened = HistoryStore::open(dir.file(), retention(), now());
         assert_eq!(reopened.series("a", "5-hour-window").count(), 0);
         assert_eq!(reopened.series("b", "5-hour-window").count(), 1);
+    }
+
+    #[test]
+    fn points_exclude_samples_dated_after_the_range_end() {
+        let dir = TempDir::new();
+        let mut store = HistoryStore::open(dir.file(), retention(), now());
+        store
+            .record(&[account("a", 0.1, 3)], now() - Duration::hours(1))
+            .unwrap();
+        store
+            .record(&[account("a", 0.9, 3)], now() + Duration::hours(2))
+            .unwrap();
+        let points = store.points("a", "5-hour-window", now() - Duration::days(1), now());
+        let values: Vec<f64> = points.iter().map(|point| point.value).collect();
+        assert_eq!(values, vec![0.1]);
+    }
+
+    #[test]
+    fn points_come_back_in_time_order_after_the_clock_is_set_back() {
+        let dir = TempDir::new();
+        let mut store = HistoryStore::open(dir.file(), retention(), now());
+        store.record(&[account("a", 0.5, 3)], now()).unwrap();
+        // The clock moves back two hours; the next readings are recorded after the 12:00 one.
+        store
+            .record(&[account("a", 0.2, 3)], now() - Duration::hours(2))
+            .unwrap();
+        store
+            .record(&[account("a", 0.3, 3)], now() - Duration::hours(1))
+            .unwrap();
+        let points = store.points("a", "5-hour-window", now() - Duration::days(1), now());
+        let values: Vec<f64> = points.iter().map(|point| point.value).collect();
+        assert_eq!(values, vec![0.2, 0.3, 0.5]);
+    }
+
+    #[test]
+    fn rename_account_moves_samples_and_persists() {
+        let dir = TempDir::new();
+        let mut store = HistoryStore::open(dir.file(), retention(), now());
+        store
+            .record(&[account("openrouter", 0.1, 3)], now() - Duration::hours(1))
+            .unwrap();
+        store.record(&[account("a1b2", 0.2, 3)], now()).unwrap();
+        assert_eq!(store.rename_account("openrouter", "a1b2").unwrap(), 2);
+        assert_eq!(
+            store.rename_account("openrouter", "a1b2").unwrap(),
+            0,
+            "nothing left to move"
+        );
+
+        let reopened = HistoryStore::open(dir.file(), retention(), now());
+        assert_eq!(reopened.series("openrouter", "5-hour-window").count(), 0);
+        let merged: Vec<f64> = reopened.series("a1b2", "5-hour-window").map(Sample::value).collect();
+        assert_eq!(merged, vec![0.1, 0.2], "old and new samples merge in time order");
     }
 
     #[test]

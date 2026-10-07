@@ -14,7 +14,7 @@
 //! the file stay readable until the WPF app is retired, when #74's migration removes them.
 
 use std::collections::HashSet;
-use std::fs::{self, OpenOptions};
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value, json};
@@ -713,25 +713,16 @@ fn write_replacing(path: &Path, contents: &str) -> Result<(), SettingsError> {
     })
 }
 
-/// The exclusive lock every settings writer holds. Opening it with no sharing fails fast while another writer
-/// holds it, so a competing writer reports Busy instead of blocking the UI.
+/// The exclusive lock every settings writer holds; a competing writer reports Busy instead of blocking the UI.
 struct WriteLock {
-    _file: fs::File,
+    _lock: crate::lock::FileLock,
 }
 
 impl WriteLock {
     fn acquire(path: &Path) -> Result<Self, SettingsError> {
-        let mut options = OpenOptions::new();
-        options.read(true).write(true).create(true).truncate(false);
-        #[cfg(windows)]
-        {
-            use std::os::windows::fs::OpenOptionsExt;
-            options.share_mode(0);
-        }
-        match options.open(path) {
-            Ok(file) => Ok(Self { _file: file }),
-            Err(err) if err.raw_os_error() == Some(32) => Err(SettingsError::Busy),
-            Err(err) if err.kind() == std::io::ErrorKind::PermissionDenied => Err(SettingsError::Busy),
+        match crate::lock::FileLock::acquire(path) {
+            Ok(lock) => Ok(Self { _lock: lock }),
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => Err(SettingsError::Busy),
             Err(err) => Err(io(err)),
         }
     }

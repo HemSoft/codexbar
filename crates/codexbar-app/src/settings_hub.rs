@@ -45,6 +45,11 @@ impl SettingsHub {
         cx.global::<Self>()
     }
 
+    /// The folder settings were loaded from; Rust-only preferences live next to them.
+    pub fn dir(&self) -> &std::path::Path {
+        &self.dir
+    }
+
     pub fn settings(&self) -> &Settings {
         &self.settings
     }
