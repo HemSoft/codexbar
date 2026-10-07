@@ -1,0 +1,19 @@
+[package]
+name = "codexbar-app"
+description = "CodexBar for Windows: GPUI dashboard and tray host"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "codexbar"
+path = "src/main.rs"
+
+[dependencies]
+codexbar-core.workspace = true
+gpui-kit.workspace = true
+chrono.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,400 @@
+//! Chart cards for the focused account, in the gpui-kit Chart gallery's anatomy:
+//! title, period, chart, a takeaway sentence, and a quiet caption.
+
+use chrono::{DateTime, Local, Utc};
+use codexbar_core::{AccountSnapshot, Metric, Severity, format};
+use gpui_kit::component::chart::{AreaChart, BarChart, PieChart};
+use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, StyledExt as _, h_flex, v_flex};
+use gpui_kit::{
+    AnyElement, App, Background, Hsla, IntoElement, ParentElement as _, SharedString, Styled as _, div,
+    linear_color_stop, linear_gradient, prelude::FluentBuilder as _,
+};
+
+use crate::status::severity_color;
+
+/// One card. Built fresh each frame; the charts own their own hover state by id.
+struct Card {
+    title: SharedString,
+    period: SharedString,
+    legend: Vec<(Hsla, SharedString)>,
+    chart: AnyElement,
+    takeaway: SharedString,
+    alert: Option<Hsla>,
+    caption: SharedString,
+}
+
+impl Card {
+    fn new(title: impl Into<SharedString>, period: impl Into<SharedString>, chart: impl IntoElement) -> Self {
+        Self {
+            title: title.into(),
+            period: period.into(),
+            legend: Vec::new(),
+            chart: chart.into_any_element(),
+            takeaway: SharedString::default(),
+            alert: None,
+            caption: SharedString::default(),
+        }
+    }
+
+    fn legend(mut self, color: Hsla, label: impl Into<SharedString>) -> Self {
+        self.legend.push((color, label.into()));
+        self
+    }
+
+    fn takeaway(mut self, text: impl Into<SharedString>) -> Self {
+        self.takeaway = text.into();
+        self
+    }
+
+    /// Marks the takeaway as a warning, with an icon so the state is not carried by color alone.
+    fn alert(mut self, color: Hsla) -> Self {
+        self.alert = Some(color);
+        self
+    }
+
+    fn caption(mut self, text: impl Into<SharedString>) -> Self {
+        self.caption = text.into();
+        self
+    }
+
+    fn render(self, cx: &App) -> impl IntoElement {
+        let muted = cx.theme().muted_foreground;
+        v_flex()
+            .flex_1()
+            .min_w_0()
+            .h_full()
+            .p_4()
+            .gap_1()
+            .bg(cx.theme().group_box)
+            .border_1()
+            .border_color(cx.theme().border)
+            .rounded(cx.theme().radius_lg)
+            .child(
+                h_flex()
+                    .items_start()
+                    .justify_between()
+                    .gap_3()
+                    .child(
+                        v_flex()
+                            .flex_shrink_0()
+                            .child(div().font_semibold().child(self.title))
+                            .child(div().text_sm().text_color(muted).child(self.period)),
+                    )
+                    .when(!self.legend.is_empty(), |this| {
+                        this.child(
+                            h_flex()
+                                .flex_wrap()
+                                .justify_end()
+                                .gap_3()
+                                .text_xs()
+                                .text_color(muted)
+                                .children(self.legend.into_iter().map(|(color, label)| {
+                                    h_flex()
+                                        .gap_1p5()
+                                        .items_center()
+                                        .child(div().size_2().rounded_full().bg(color))
+                                        .child(label)
+                                })),
+                        )
+                    }),
+            )
+            .child(div().flex_1().min_h_0().py_3().child(self.chart))
+            .child(
+                h_flex()
+                    .gap_1p5()
+                    .items_center()
+                    .text_sm()
+                    .font_semibold()
+                    .when_some(self.alert, |this, color| {
+                        this.child(Icon::new(IconName::TriangleAlert).small().text_color(color))
+                    })
+                    .child(self.takeaway),
+            )
+            .child(div().text_sm().text_color(muted).child(self.caption))
+    }
+}
+
+fn area_fill(color: Hsla) -> Background {
+    linear_gradient(
+        0.,
+        linear_color_stop(color.opacity(0.4), 1.),
+        linear_color_stop(color.opacity(0.), 0.),
+    )
+}
+
+/// The three cards for `account`, left to right.
+pub fn focus_cards(account: &AccountSnapshot, now: DateTime<Utc>, cx: &App) -> Vec<AnyElement> {
+    vec![
+        usage_card(account, now, cx).render(cx).into_any_element(),
+        share_card(account, now, cx).render(cx).into_any_element(),
+        activity_card(account, cx).render(cx).into_any_element(),
+    ]
+}
+
+/// The wide card: the current window against the previous one, or the 14-day trend when no curve exists.
+fn usage_card(account: &AccountSnapshot, now: DateTime<Utc>, cx: &App) -> Card {
+    let current_color = cx.theme().chart_1;
+    let previous_color = cx.theme().chart_4;
+    let primary = account.primary();
+    let severity = account.assess(now).severity();
+
+    let card = if let Some(curve) = account.detail().window_curve() {
+        let points: Vec<(SharedString, f64, f64)> = curve
+            .labels()
+            .iter()
+            .zip(curve.current())
+            .zip(curve.previous())
+            .map(|((label, current), previous)| (SharedString::from(label.clone()), *current, *previous))
+            .collect();
+        let chart = AreaChart::new(points)
+            .id("focus-window")
+            .x(|(label, _, _)| label.clone())
+            .y(|(_, current, _)| *current)
+            .stroke(current_color)
+            .fill(area_fill(current_color))
+            .name("This window")
+            .y(|(_, _, previous)| *previous)
+            .stroke(previous_color)
+            .fill(area_fill(previous_color.opacity(0.5)))
+            .name("Previous window")
+            .y_domain(0.0, 1.0)
+            .y_axis(true)
+            .y_padding(0., 0.)
+            .y_tick_count(5)
+            .point_count(curve.labels().len())
+            .tick_margin(6)
+            .y_tick_format(|value| format!("{:.0}%", value * 100.0));
+        let title = primary
+            .map(|m| format!("{} usage", m.label()))
+            .unwrap_or_else(|| "Usage".into());
+        let start = curve.labels().first().cloned().unwrap_or_default();
+        Card::new(title, format!("Today, {start} – now"), chart)
+            .legend(current_color, "This window")
+            .legend(previous_color, "Previous window")
+    } else {
+        let points: Vec<(SharedString, f64)> = account
+            .trend()
+            .iter()
+            .enumerate()
+            .map(|(ix, value)| (SharedString::from(day_label(account.trend().len(), ix)), *value))
+            .collect();
+        let chart = AreaChart::new(points)
+            .id("focus-trend")
+            .x(|(label, _)| label.clone())
+            .y(|(_, value)| *value)
+            .stroke(current_color)
+            .fill(area_fill(current_color))
+            .name("Pressure")
+            .y_domain(0.0, 1.0)
+            .tick_margin(3)
+            .y_tick_format(|value| format!("{:.0}%", value * 100.0));
+        Card::new("Daily pressure", "Last 14 days", chart)
+    };
+
+    let card = match primary {
+        Some(metric) => card
+            .takeaway(pace_takeaway(metric, now))
+            .caption(reset_caption(metric, now)),
+        None => card,
+    };
+    if severity >= Severity::AtRisk {
+        card.alert(severity_color(severity, cx))
+    } else {
+        card
+    }
+}
+
+/// A donut for the secondary window (or the primary one), or the balance when there is no limit.
+fn share_card(account: &AccountSnapshot, now: DateTime<Utc>, cx: &App) -> Card {
+    let metric = account.metrics().get(1).or(account.primary());
+    let track = cx.theme().muted;
+    let Some(metric) = metric else {
+        return Card::new("No limits", "", div()).takeaway("This account reports no limits");
+    };
+
+    let Some(used) = metric.used_fraction() else {
+        let amount = match metric {
+            Metric::Balance { remaining, .. } => remaining.display(),
+            _ => "—".into(),
+        };
+        let body = v_flex()
+            .size_full()
+            .items_center()
+            .justify_center()
+            .child(div().text_3xl().font_semibold().child(amount))
+            .child(
+                div()
+                    .text_sm()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(metric.label().to_owned()),
+            );
+        let takeaway = metric
+            .days_of_credit()
+            .map(|days| format!("About {days:.0} days of credit left"))
+            .unwrap_or_else(|| "No spend recorded this week".into());
+        return Card::new(metric.label().to_owned(), "Current balance", body).takeaway(takeaway);
+    };
+
+    let color = severity_color(codexbar_core::assess(metric, now).severity(), cx);
+    let slices = vec![(used, color), ((1.0 - used).max(0.0), track)];
+    let donut = div()
+        .relative()
+        .size_full()
+        .child(
+            PieChart::new(slices)
+                .id("focus-share")
+                .value(|(value, _)| *value as f32)
+                .color(|(_, color)| *color)
+                .inner_radius(62.)
+                .outer_radius(84.)
+                .tooltip_name(|_| "Used".into())
+                .tooltip_value(|(value, _), _, _| format!("{:.0}%", value * 100.0).into()),
+        )
+        .child(
+            v_flex()
+                .absolute()
+                .inset_0()
+                .items_center()
+                .justify_center()
+                .child(div().text_2xl().font_semibold().child(format!("{:.0}%", used * 100.0)))
+                .child(div().text_xs().text_color(cx.theme().muted_foreground).child("used")),
+        );
+    let remaining = 1.0 - used;
+    let takeaway = if remaining >= 0.45 {
+        "About half the pool left".to_owned()
+    } else {
+        format!("{:.0}% of the pool left", remaining * 100.0)
+    };
+    let title = if metric.label().to_lowercase().contains("window") {
+        metric.label().to_owned()
+    } else {
+        format!("{} window", metric.label())
+    };
+    Card::new(title, window_period(metric, now), donut)
+        .takeaway(takeaway)
+        .caption(reset_caption(metric, now))
+}
+
+/// Requests by hour when the provider reports them, otherwise daily pressure as bars.
+fn activity_card(account: &AccountSnapshot, cx: &App) -> Card {
+    let color = cx.theme().chart_1;
+    let bar_fill = move |_: &(SharedString, f64), _, _, _| -> Background {
+        linear_gradient(
+            180.,
+            linear_color_stop(color, 0.),
+            linear_color_stop(color.opacity(0.55), 1.),
+        )
+    };
+    let requests = account.detail().requests_by_hour();
+    if !requests.is_empty() {
+        let bars: Vec<(SharedString, f64)> = requests
+            .iter()
+            .enumerate()
+            .map(|(hour, count)| (SharedString::from(format!("{hour:02}:00")), *count as f64))
+            .collect();
+        let (peak_hour, _) = requests
+            .iter()
+            .enumerate()
+            .max_by_key(|(_, count)| **count)
+            .unwrap_or((0, &0));
+        let total: u32 = requests.iter().sum();
+        let chart = BarChart::new(bars)
+            .id("focus-requests")
+            .band(|(label, _)| label.clone())
+            .value(|(_, value)| *value)
+            .fill(bar_fill)
+            .tick_margin(6)
+            .value_axis(true)
+            .value_tick_count(4)
+            .value_tick_format(|value| format!("{value:.0}"))
+            .name("Requests");
+        return Card::new("Requests by hour", "Last 24 hours", chart)
+            .takeaway(format!("Peak at {peak_hour:02}:00"))
+            .caption(format!(
+                "{} requests today",
+                codexbar_core::group_thousands(u64::from(total))
+            ));
+    }
+
+    let trend = account.trend();
+    let bars: Vec<(SharedString, f64)> = trend
+        .iter()
+        .enumerate()
+        .skip(trend.len().saturating_sub(7))
+        .map(|(ix, value)| (SharedString::from(day_label(trend.len(), ix)), *value))
+        .collect();
+    let chart = BarChart::new(bars)
+        .id("focus-days")
+        .band(|(label, _)| label.clone())
+        .value(|(_, value)| *value)
+        .fill(bar_fill)
+        .value_tick_format(|value| format!("{:.0}%", value * 100.0))
+        .name("Pressure");
+    let change = match trend {
+        [.., before, last] if *before > 0.0 => (last - before) / before * 100.0,
+        _ => 0.0,
+    };
+    let takeaway = if change.abs() < 1.0 {
+        "Flat since yesterday".to_owned()
+    } else {
+        format!(
+            "{} {:.0}% since yesterday",
+            if change > 0.0 { "Up" } else { "Down" },
+            change.abs()
+        )
+    };
+    Card::new("Usage by day", "Last 7 days", chart)
+        .takeaway(takeaway)
+        .caption("Share of the tightest limit")
+}
+
+fn pace_takeaway(metric: &Metric, now: DateTime<Utc>) -> String {
+    if let Some(days) = metric.days_of_credit() {
+        return format!("About {days:.0} days of credit left");
+    }
+    match metric.time_to_limit() {
+        Some(to_limit) if metric.exhausts_before_reset(now) => {
+            format!(
+                "Hits the {} limit in ~{} at this pace",
+                metric.label().to_lowercase(),
+                format::countdown(to_limit)
+            )
+        }
+        Some(_) => "On pace to stay under the limit".to_owned(),
+        None => "Steady".to_owned(),
+    }
+}
+
+fn reset_caption(metric: &Metric, now: DateTime<Utc>) -> String {
+    match metric.resets_at() {
+        Some(at) => {
+            let label = format::reset_label(at, now, &Local);
+            match label.strip_prefix("in ") {
+                Some(rest) => format!("Resets in {rest}"),
+                None => format!("Resets {label}"),
+            }
+        }
+        None => String::new(),
+    }
+}
+
+/// "Oct 2 – Oct 9" for a window that resets within a week; otherwise its reset date.
+fn window_period(metric: &Metric, now: DateTime<Utc>) -> String {
+    match metric.resets_at() {
+        Some(at) if at - now <= chrono::Duration::days(7) => {
+            let start = (at - chrono::Duration::days(7)).with_timezone(&Local);
+            let end = at.with_timezone(&Local);
+            format!("{} – {}", start.format("%b %-d"), end.format("%b %-d"))
+        }
+        Some(at) => format!("Until {}", at.with_timezone(&Local).format("%b %-d")),
+        None => String::new(),
+    }
+}
+
+/// Weekday initials for a trend whose last point is today.
+fn day_label(len: usize, ix: usize) -> String {
+    let days_ago = (len - 1 - ix) as i64;
+    (Local::now() - chrono::Duration::days(days_ago))
+        .format("%a")
+        .to_string()
+}
