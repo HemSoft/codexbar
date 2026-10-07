@@ -10,6 +10,8 @@ mod settings_view;
 mod status;
 mod theme;
 mod tray;
+#[cfg(test)]
+mod ui_tests;
 mod zoom;
 
 use std::sync::{Arc, Mutex};

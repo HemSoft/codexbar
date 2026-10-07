@@ -4,7 +4,12 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
+    branches: [main, feat/rust-gpui-dashboard]
+
+# A newer push to the same pull request cancels the superseded run; pushes to main always finish.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   security-scan:
@@ -37,6 +42,29 @@ jobs:
         with:
           sarif_file: artifacts/security/gitleaks.sarif
           category: gitleaks
+
+  rust:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # rust-toolchain.toml pins the MSVC toolchain with rustfmt and clippy; rustup installs it on first use.
+      - name: Install Rust toolchain
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - name: Cache Cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: Format Check
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      # Includes the headless UI integration tests (in-process gpui test windows; no desktop needed).
+      - name: Test
+        run: cargo test --workspace --locked
 
   build:
     runs-on: windows-latest

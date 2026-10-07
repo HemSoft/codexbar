@@ -10,6 +10,8 @@ use crate::catalog;
 
 pub struct SettingsHub {
     settings: Settings,
+    /// The folder settings were loaded from; a failed save reloads from here, never from `~/.codexbar` directly.
+    dir: std::path::PathBuf,
     /// A schema problem found at load: the screen stays read-only so the file is never overwritten.
     load_error: Option<SettingsError>,
     credentials: Arc<dyn CredentialStore>,
@@ -20,15 +22,21 @@ impl Global for SettingsHub {}
 
 impl SettingsHub {
     pub fn init(cx: &mut App) {
-        let dir = Settings::default_dir();
-        let (settings, load_error) = match Settings::load(&dir) {
+        Self::init_with(cx, &Settings::default_dir(), Arc::new(WindowsCredentialStore::new()));
+    }
+
+    /// Loads settings from `dir` with the given credential store; tests pass a temporary folder and an in-memory
+    /// store, so they never touch `~/.codexbar` or Windows Credential Manager.
+    pub fn init_with(cx: &mut App, dir: &std::path::Path, credentials: Arc<dyn CredentialStore>) {
+        let (settings, load_error) = match Settings::load(dir) {
             Ok(settings) => (settings, None),
-            Err(err) => (Settings::load_or_default(&dir), Some(err)),
+            Err(err) => (Settings::load_or_default(dir), Some(err)),
         };
         cx.set_global(Self {
             settings,
+            dir: dir.to_owned(),
             load_error,
-            credentials: Arc::new(WindowsCredentialStore::new()),
+            credentials,
             error: None,
         });
     }
@@ -80,7 +88,7 @@ impl SettingsHub {
                 }
                 Err(err) => {
                     hub.error = Some(err.to_string().into());
-                    if let Ok(fresh) = Settings::load(&Settings::default_dir()) {
+                    if let Ok(fresh) = Settings::load(&hub.dir) {
                         hub.settings = fresh;
                     }
                 }

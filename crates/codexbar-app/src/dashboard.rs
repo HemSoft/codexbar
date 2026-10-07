@@ -9,6 +9,7 @@ use codexbar_providers::ProviderError;
 use codexbar_store::HistoryStore;
 
 use crate::settings_hub::SettingsHub;
+use gpui_kit::TestSupportExt as _;
 use gpui_kit::component::sidebar::{Sidebar, SidebarMenu, SidebarMenuItem};
 use gpui_kit::component::table::{DataTable, TableEvent, TableState};
 use gpui_kit::component::{
@@ -16,7 +17,7 @@ use gpui_kit::component::{
     button::ButtonVariants as _, h_flex, v_flex,
 };
 use gpui_kit::{
-    AppContext as _, Context, Entity, FocusHandle, InteractiveElement as _, IntoElement, MouseButton,
+    AppContext as _, Context, Entity, FocusHandle, InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton,
     ParentElement as _, Render, Role, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Task,
     Window, canvas, div, px, rems,
 };
@@ -90,7 +91,8 @@ pub struct Dashboard {
     deactivated_at: Option<Instant>,
     /// The zoom the table's column widths were last laid out for.
     table_zoom: f64,
-    /// One focus handle per view tab, so the tabs are Tab-key stops activated by Enter or Space.
+    /// One focus handle per view tab. Only the selected tab is a Tab-key stop (a roving tab stop); the arrow keys
+    /// move focus between tabs, and Enter or Space activates the focused one.
     view_tab_focus: Vec<FocusHandle>,
     _clock: Task<()>,
     _subscriptions: Vec<Subscription>,
@@ -169,13 +171,19 @@ impl Dashboard {
             && (window.is_window_active() || self.deactivated_at.is_some_and(|at| at.elapsed() < TOGGLE_GRACE))
     }
 
-    /// Fetches every provider off the UI thread. A failed provider keeps its last good accounts.
+    /// The visible view, for the headless UI tests.
+    #[cfg(test)]
+    pub fn view(&self) -> DashboardView {
+        self.view
+    }
+
     /// Switches the visible view (the tray's Settings… item, the `--settings` flag).
     pub fn show_view(&mut self, view: DashboardView, cx: &mut Context<Self>) {
         self.view = view;
         cx.notify();
     }
 
+    /// Fetches every provider off the UI thread. A failed provider keeps its last good accounts.
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
         let providers = match &self.source {
             DataSource::Demo => {
@@ -330,11 +338,37 @@ impl Dashboard {
                                             div()
                                                 .id(("view-tab", ix))
                                                 // Same semantics as gpui-kit's Tab: announced as a selected or unselected
-                                                // tab, reachable with Tab, and a focused div turns Enter/Space into a click.
+                                                // tab. Tab reaches the selected tab only (a roving tab stop), arrow keys move
+                                                // between tabs, and a focused div turns Enter/Space into a click.
                                                 .role(Role::Tab)
+                                                // Lets headless UI tests find each tab (inert outside tests).
+                                                .test_support()
                                                 .aria_selected(active)
-                                                .track_focus(&self.view_tab_focus[ix])
-                                                .tab_index(0)
+                                                // A tracked handle carries its own tab stop; the div's `tab_index` and
+                                                // `tab_stop` only apply to handles the div creates itself.
+                                                .track_focus(
+                                                    &self.view_tab_focus[ix].clone().tab_index(0).tab_stop(active),
+                                                )
+                                                .on_key_down(cx.listener(
+                                                    move |this, event: &KeyDownEvent, window, cx| {
+                                                        // Modified arrows (Ctrl, Alt, Shift, Win) keep their own meaning.
+                                                        if event.keystroke.modifiers.modified() {
+                                                            return;
+                                                        }
+                                                        let count = DashboardView::ALL.len();
+                                                        let next = match event.keystroke.key.as_str() {
+                                                            "right" => (ix + 1) % count,
+                                                            "left" => (ix + count - 1) % count,
+                                                            "home" => 0,
+                                                            "end" => count - 1,
+                                                            _ => return,
+                                                        };
+                                                        cx.stop_propagation();
+                                                        this.view = DashboardView::ALL[next];
+                                                        window.focus(&this.view_tab_focus[next], cx);
+                                                        cx.notify();
+                                                    },
+                                                ))
                                                 .focus_visible(move |style| style.text_color(ring).border_color(ring))
                                                 .py(rems(0.125))
                                                 .border_b_2()

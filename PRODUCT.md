@@ -63,7 +63,7 @@ so it shows your whole AI usage across tools, not one vendor's view.
 - Brand colors: HemSoft gold on black, from the HemSoft site tokens (`D:\github\HemSoft\www\src\app\globals.css`):
   gold `#D4AF37`, dark gold `#B8860B`, deep gold `#8B6914`, black `#0A0A0A`, cards `#121212`, raised `#1A1A1A`,
   borders `#1F1F1F`, text `#F5F5F5`, muted text `#A0A0A0`, destructive `#DC2626`. Not the cyan/navy of the app icons.
-- Explicit inspiration from Franz: the gpui-kit gallery's Chart page (https://gpui-kit.com/gallery/ → Chart). Each
+- Explicit inspiration from Franz: the gpui-kit gallery's Chart page (<https://gpui-kit.com/gallery/> → Chart). Each
   card has a title, a period, the chart, a one-line takeaway ("Trending up by 6.6% this month") and a quiet caption.
 
 ## Evidence on Hand

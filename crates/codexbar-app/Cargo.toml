@@ -21,5 +21,10 @@ windows.workspace = true
 gpui-kit.workspace = true
 chrono.workspace = true
 
+[dev-dependencies]
+# Headless UI integration tests: real views in in-process windows, no desktop input or focus changes.
+gpui-kit = { workspace = true, features = ["test-support"] }
+serde_json.workspace = true
+
 [lints]
 workspace = true
