@@ -82,3 +82,4 @@ data/top10*.json
 # Impeccable scratch (prompts, Codex logs); mocks, spec and surface briefs stay tracked
 .impeccable/gen/
 .impeccable/review/diff/
+.impeccable/questions/
