@@ -6,6 +6,11 @@ on:
   pull_request:
     branches: [main, feat/rust-gpui-dashboard]
 
+# A newer push to the same pull request cancels the superseded run; pushes to main always finish.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   security-scan:
     runs-on: windows-latest

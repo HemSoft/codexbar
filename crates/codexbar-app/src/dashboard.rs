@@ -91,7 +91,8 @@ pub struct Dashboard {
     deactivated_at: Option<Instant>,
     /// The zoom the table's column widths were last laid out for.
     table_zoom: f64,
-    /// One focus handle per view tab, so the tabs are Tab-key stops activated by Enter or Space.
+    /// One focus handle per view tab. Only the selected tab is a Tab-key stop (a roving tab stop); the arrow keys
+    /// move focus between tabs, and Enter or Space activates the focused one.
     view_tab_focus: Vec<FocusHandle>,
     _clock: Task<()>,
     _subscriptions: Vec<Subscription>,
@@ -170,18 +171,19 @@ impl Dashboard {
             && (window.is_window_active() || self.deactivated_at.is_some_and(|at| at.elapsed() < TOGGLE_GRACE))
     }
 
-    /// Fetches every provider off the UI thread. A failed provider keeps its last good accounts.
-    /// Switches the visible view (the tray's Settings… item, the `--settings` flag).
+    /// The visible view, for the headless UI tests.
     #[cfg(test)]
     pub fn view(&self) -> DashboardView {
         self.view
     }
 
+    /// Switches the visible view (the tray's Settings… item, the `--settings` flag).
     pub fn show_view(&mut self, view: DashboardView, cx: &mut Context<Self>) {
         self.view = view;
         cx.notify();
     }
 
+    /// Fetches every provider off the UI thread. A failed provider keeps its last good accounts.
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
         let providers = match &self.source {
             DataSource::Demo => {
@@ -349,6 +351,10 @@ impl Dashboard {
                                                 )
                                                 .on_key_down(cx.listener(
                                                     move |this, event: &KeyDownEvent, window, cx| {
+                                                        // Modified arrows (Ctrl, Alt, Shift, Win) keep their own meaning.
+                                                        if event.keystroke.modifiers.modified() {
+                                                            return;
+                                                        }
                                                         let count = DashboardView::ALL.len();
                                                         let next = match event.keystroke.key.as_str() {
                                                             "right" => (ix + 1) % count,

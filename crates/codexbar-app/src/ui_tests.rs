@@ -179,6 +179,8 @@ fn view_tabs_switch_views_by_click_and_keyboard(cx: &mut TestAppContext) {
     assert_eq!(focused(cx, 0), Some(true));
     press(cx, handle, "end");
     assert_eq!(view(cx), DashboardView::History);
+    press(cx, handle, "ctrl-left");
+    assert_eq!(view(cx), DashboardView::History, "modified arrows don't switch views");
 
     // Tab leaves the tab row instead of visiting every tab.
     press(cx, handle, "tab");
