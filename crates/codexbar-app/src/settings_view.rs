@@ -18,7 +18,7 @@ use gpui_kit::component::{
 };
 use gpui_kit::{
     AnyElement, App, AppContext as _, Entity, IntoElement, ParentElement as _, SharedString, Styled as _, Window, div,
-    prelude::FluentBuilder as _, px,
+    prelude::FluentBuilder as _,
 };
 
 use crate::catalog::{self, PROVIDERS};
@@ -52,7 +52,7 @@ pub fn render(_: &mut Window, cx: &mut App) -> impl IntoElement {
         })
         .child(
             SettingsPanel::new("codexbar-settings")
-                .sidebar_width(px(200.))
+                .sidebar_width(crate::zoom::scaled(200., cx))
                 .pages(vec![
                     general_page(cx),
                     accounts_page(cx),
@@ -368,7 +368,7 @@ fn open_account_dialog(provider: &'static str, existing: Option<AccountRecord>, 
         };
         dialog
             .title(title)
-            .w(px(520.))
+            .w(crate::zoom::scaled(520., cx))
             .child(
                 v_flex()
                     .gap_3()

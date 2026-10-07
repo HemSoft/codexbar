@@ -10,7 +10,6 @@ use codexbar_store::HistoryStore;
 
 use crate::settings_hub::SettingsHub;
 use gpui_kit::component::sidebar::{Sidebar, SidebarMenu, SidebarMenuItem};
-use gpui_kit::component::tab::{Tab, TabBar};
 use gpui_kit::component::table::{DataTable, TableEvent, TableState};
 use gpui_kit::component::{
     ActiveTheme as _, Icon, IconName, Sizable as _, Size, StyledExt as _, TitleBar, button::Button,
@@ -313,18 +312,34 @@ impl Dashboard {
                             div()
                                 .pl_6()
                                 .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                                .child(
-                                    TabBar::new("views")
-                                        .underline()
-                                        // Tabs have fixed pixel heights per size; step up with zoom so labels fit.
-                                        .with_size(crate::zoom::control_size(cx))
-                                        .selected_index(selected)
-                                        .on_click(cx.listener(|this, ix: &usize, _, cx| {
-                                            this.view = DashboardView::ALL[*ix];
-                                            cx.notify();
-                                        }))
-                                        .children(DashboardView::ALL.map(|view| Tab::new().label(view.title()))),
-                                ),
+                                // gpui-kit's TabBar heights stop at 44px, which clips labels past ~250% zoom, so these
+                                // underline tabs are sized in rems and follow the zoom continuously (#116).
+                                .child(h_flex().gap(rems(1.25)).text_sm().children(
+                                    DashboardView::ALL.into_iter().enumerate().map(|(ix, view)| {
+                                        let active = ix == selected;
+                                        div()
+                                            .id(("view-tab", ix))
+                                            .py(rems(0.125))
+                                            .border_b_2()
+                                            .border_color(if active {
+                                                cx.theme().primary
+                                            } else {
+                                                cx.theme().transparent
+                                            })
+                                            .text_color(if active {
+                                                cx.theme().tab_active_foreground
+                                            } else {
+                                                cx.theme().tab_foreground
+                                            })
+                                            .cursor_pointer()
+                                            .hover(|style| style.text_color(cx.theme().tab_active_foreground))
+                                            .on_click(cx.listener(move |this, _, _, cx| {
+                                                this.view = view;
+                                                cx.notify();
+                                            }))
+                                            .child(view.title())
+                                    }),
+                                )),
                         )
                     }),
             )
@@ -470,7 +485,7 @@ impl Dashboard {
             .child(
                 v_flex()
                     .flex_1()
-                    .min_h(rems(24.))
+                    .min_h(rems(20.))
                     .gap_3()
                     .p_4()
                     .rounded(cx.theme().radius_lg)

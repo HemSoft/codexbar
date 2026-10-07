@@ -6,7 +6,9 @@ use std::time::Duration;
 
 use codexbar_store::settings::{ZOOM_STEP, clamp_zoom};
 use gpui_kit::component::Theme;
-use gpui_kit::{App, DispatchPhase, Global, KeyBinding, ScrollDelta, ScrollWheelEvent, Window, actions, px};
+use gpui_kit::{
+    App, DispatchPhase, Global, KeyBinding, ScrollDelta, ScrollWheelEvent, TouchPhase, Window, actions, px,
+};
 
 use crate::settings_hub::SettingsHub;
 
@@ -18,9 +20,14 @@ const BASE_FONT_SIZE: f32 = 16.0;
 const PIXELS_PER_STEP: f32 = 50.0;
 /// Saving waits for the wheel to settle so a fast scroll writes the settings file once.
 const SAVE_DELAY: Duration = Duration::from_millis(600);
+/// Another writer (the WPF app, another window) may hold the shared settings lock briefly; retry this often.
+const SAVE_RETRIES: u32 = 5;
+const SAVE_RETRY_DELAY: Duration = Duration::from_millis(500);
 
 struct ZoomState {
     level: f64,
+    /// The level last written to settings; differs from `level` while a save is pending.
+    saved: f64,
     /// Bumped on every change; a pending save only runs if no newer change followed it.
     generation: u64,
     pixel_carry: f32,
@@ -50,15 +57,35 @@ fn wheel_steps(delta: &ScrollDelta, carry: &mut f32) -> i32 {
     }
 }
 
+/// Steps for one event of a gesture: a new or finished touchpad gesture starts from zero, so separate partial
+/// gestures never add up to an unexpected step.
+fn gesture_steps(delta: &ScrollDelta, phase: TouchPhase, carry: &mut f32) -> i32 {
+    if phase == TouchPhase::Started {
+        *carry = 0.0;
+    }
+    let steps = wheel_steps(delta, carry);
+    if phase == TouchPhase::Ended {
+        *carry = 0.0;
+    }
+    steps
+}
+
 /// Applies the saved level and registers the keyboard shortcuts. Call after `SettingsHub::init`.
 pub fn init(cx: &mut App) {
     let level = SettingsHub::global(cx).settings().zoom_level();
     cx.set_global(ZoomState {
         level,
+        saved: level,
         generation: 0,
         pixel_carry: 0.0,
     });
     apply(level, cx);
+    // A change made just before Quit would otherwise be lost with its pending debounce task.
+    cx.on_app_quit(|cx| {
+        flush(cx);
+        async {}
+    })
+    .detach();
 
     cx.bind_keys([
         KeyBinding::new("ctrl-=", ZoomIn, None),
@@ -76,22 +103,6 @@ pub fn init(cx: &mut App) {
 /// that don't follow the rem.
 pub fn scaled(px_at_100: f32, cx: &App) -> gpui_kit::Pixels {
     px(px_at_100 * level(cx) as f32)
-}
-
-/// The gpui-kit size tier that fits text at the current zoom, for components with fixed pixel heights.
-pub fn control_size(cx: &App) -> gpui_kit::component::Size {
-    size_for(level(cx))
-}
-
-fn size_for(level: f64) -> gpui_kit::component::Size {
-    use gpui_kit::component::Size;
-    if level < 1.2 {
-        Size::Small
-    } else if level < 1.6 {
-        Size::Medium
-    } else {
-        Size::Large
-    }
 }
 
 pub fn level(cx: &App) -> f64 {
@@ -117,16 +128,58 @@ pub fn set_level(new_level: f64, cx: &mut App) {
 
     cx.spawn(async move |cx| {
         cx.background_executor().timer(SAVE_DELAY).await;
-        cx.update(|cx| {
-            if cx.global::<ZoomState>().generation == generation {
-                let _ = SettingsHub::update(cx, |settings| {
-                    settings.set_zoom_level(new_level);
-                    Ok(())
-                });
+        for _ in 0..SAVE_RETRIES {
+            let outcome = cx.update(|cx| {
+                if cx.global::<ZoomState>().generation != generation {
+                    return SaveOutcome::Superseded;
+                }
+                save(cx)
+            });
+            if outcome != SaveOutcome::Busy {
+                return;
             }
-        });
+            cx.background_executor().timer(SAVE_RETRY_DELAY).await;
+        }
     })
     .detach();
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SaveOutcome {
+    Saved,
+    /// Another writer holds the settings lock; worth retrying.
+    Busy,
+    /// A newer change will save itself.
+    Superseded,
+    /// The settings file can't be written (newer schema, I/O); Settings shows why.
+    Failed,
+}
+
+/// Writes the current level if it differs from the last saved one.
+fn save(cx: &mut App) -> SaveOutcome {
+    let state = cx.global::<ZoomState>();
+    let level = state.level;
+    if (level - state.saved).abs() < f64::EPSILON {
+        return SaveOutcome::Saved;
+    }
+    match SettingsHub::update(cx, |settings| {
+        settings.set_zoom_level(level);
+        Ok(())
+    }) {
+        Ok(()) => {
+            cx.global_mut::<ZoomState>().saved = level;
+            SaveOutcome::Saved
+        }
+        Err(codexbar_store::settings::SettingsError::Busy) => SaveOutcome::Busy,
+        Err(_) => SaveOutcome::Failed,
+    }
+}
+
+/// Saves a pending change immediately (on quit).
+fn flush(cx: &mut App) {
+    if cx.try_global::<ZoomState>().is_some() {
+        save(cx);
+    }
 }
 
 fn apply(level: f64, cx: &mut App) {
@@ -137,13 +190,18 @@ fn apply(level: f64, cx: &mut App) {
 /// zooms instead of scrolling. Call from a paint callback; a wheel without Ctrl passes through untouched.
 pub fn capture_wheel(window: &mut Window) {
     window.on_mouse_event(|event: &ScrollWheelEvent, phase, _window, cx| {
-        if phase != DispatchPhase::Capture || !event.modifiers.control {
+        if phase != DispatchPhase::Capture {
+            return;
+        }
+        if !event.modifiers.control {
+            // Plain scrolling between Ctrl gestures must not bank toward a later zoom step.
+            cx.global_mut::<ZoomState>().pixel_carry = 0.0;
             return;
         }
         cx.stop_propagation();
         let steps = {
             let state = cx.global_mut::<ZoomState>();
-            wheel_steps(&event.delta, &mut state.pixel_carry)
+            gesture_steps(&event.delta, event.touch_phase, &mut state.pixel_carry)
         };
         if steps != 0 {
             step(steps, cx);
@@ -175,11 +233,14 @@ mod tests {
     }
 
     #[test]
-    fn size_for_steps_up_with_zoom() {
-        use gpui_kit::component::Size;
-        assert!(matches!(size_for(1.0), Size::Small));
-        assert!(matches!(size_for(1.3), Size::Medium));
-        assert!(matches!(size_for(2.0), Size::Large));
+    fn gesture_steps_reset_carry_between_gestures() {
+        let mut carry = 0.0;
+        let delta = |y: f32| ScrollDelta::Pixels(point(px(0.0), px(y)));
+        assert_eq!(gesture_steps(&delta(30.0), TouchPhase::Moved, &mut carry), 0);
+        assert_eq!(gesture_steps(&delta(10.0), TouchPhase::Ended, &mut carry), 0);
+        assert_eq!(carry, 0.0, "a finished gesture leaves nothing behind");
+        assert_eq!(gesture_steps(&delta(30.0), TouchPhase::Started, &mut carry), 0);
+        assert_eq!(gesture_steps(&delta(25.0), TouchPhase::Moved, &mut carry), 1);
     }
 
     #[test]
