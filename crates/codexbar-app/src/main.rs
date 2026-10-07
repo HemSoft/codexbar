@@ -9,8 +9,9 @@ mod tray;
 
 use std::sync::{Arc, Mutex};
 
-use codexbar_providers::UreqClient;
 use codexbar_providers::codex::{CodexProvider, default_auth_path};
+use codexbar_providers::copilot::CopilotProvider;
+use codexbar_providers::{SystemCommandRunner, UreqClient};
 use codexbar_store::{HistoryStore, default_history_path};
 use gpui_kit::component::TitleBar;
 use gpui_kit::{AppContext as _, Bounds, WindowBounds, WindowOptions, px, size};
@@ -29,7 +30,10 @@ fn data_source() -> DataSource {
     }
     let history = HistoryStore::open(default_history_path(), HISTORY_RETENTION, chrono::Utc::now());
     DataSource::Live {
-        providers: vec![Arc::new(CodexProvider::new(UreqClient::new(), default_auth_path()))],
+        providers: vec![
+            Arc::new(CodexProvider::new(UreqClient::new(), default_auth_path())),
+            Arc::new(CopilotProvider::new(UreqClient::new(), SystemCommandRunner)),
+        ],
         history: Arc::new(Mutex::new(history)),
     }
 }

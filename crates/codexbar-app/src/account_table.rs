@@ -155,7 +155,11 @@ impl TableDelegate for AccountTable {
 fn limit_label(metric: &Metric) -> String {
     match metric {
         Metric::Window { label, .. } => label.clone(),
-        Metric::Quota { limit, .. } => format!("{} requests", codexbar_core::group_thousands(*limit)),
+        Metric::Quota { limit, label, .. } => {
+            // The unit is the label's last word: "Premium requests" -> requests, "Chat messages" -> messages.
+            let unit = label.rsplit(' ').next().unwrap_or("requests").to_lowercase();
+            format!("{} {unit}", codexbar_core::group_thousands(*limit))
+        }
         Metric::Balance { label, .. } => format!("$ {}", label.to_lowercase()),
     }
 }

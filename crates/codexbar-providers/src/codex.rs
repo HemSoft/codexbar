@@ -6,15 +6,11 @@ use chrono::{DateTime, Duration, TimeZone, Utc};
 use codexbar_core::{AccountId, AccountSnapshot, Metric, Pace, Provider};
 use serde_json::Value;
 
+use crate::pace::elapsed_pace;
 use crate::{HttpClient, ProviderError, UsageProvider};
 
 const USAGE_ENDPOINT: &str = "https://chatgpt.com/backend-api/wham/usage";
 const SIGN_IN_HINT: &str = "Run `codex` and sign in with ChatGPT.";
-/// Pace is unreliable early in a window: a few minutes of a weekly window extrapolate to a false lockout.
-/// It is only projected once this much time, and this share of the window, has elapsed.
-const MIN_ELAPSED_FOR_PACE_MINUTES: i64 = 10;
-const MIN_ELAPSED_FOR_PACE_FRACTION: f64 = 0.1;
-
 /// The parts of the Codex sign-in this provider uses.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Credentials {
@@ -137,17 +133,13 @@ impl Window {
         }
     }
 
-    /// Usage so far divided by time elapsed in the window.
     fn pace(&self, now: DateTime<Utc>) -> Option<Pace> {
-        let started = self.resets_at - Duration::seconds(self.duration_secs);
-        let elapsed = now - started;
-        let min_elapsed = Duration::minutes(MIN_ELAPSED_FOR_PACE_MINUTES).max(Duration::seconds(
-            (self.duration_secs as f64 * MIN_ELAPSED_FOR_PACE_FRACTION) as i64,
-        ));
-        if elapsed < min_elapsed || now >= self.resets_at {
-            return None;
-        }
-        Some(Pace::per_hour(self.used / (elapsed.num_seconds() as f64 / 3600.0)))
+        elapsed_pace(
+            self.used,
+            self.resets_at - Duration::seconds(self.duration_secs),
+            self.resets_at,
+            now,
+        )
     }
 
     fn to_metric(&self, now: DateTime<Utc>) -> Metric {

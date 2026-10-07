@@ -2,9 +2,13 @@
 //! HTTPS, and maps the response onto `codexbar_core` snapshots. Fetches are blocking; callers run them off the UI thread.
 
 pub mod codex;
+mod command;
+pub mod copilot;
 mod error;
 mod http;
+mod pace;
 
+pub use command::{CommandError, CommandOutput, CommandRunner, SystemCommandRunner};
 pub use error::ProviderError;
 pub use http::{HttpClient, HttpResponse, UreqClient};
 
