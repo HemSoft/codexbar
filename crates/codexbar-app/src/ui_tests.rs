@@ -14,6 +14,7 @@ use gpui_kit::{
 };
 
 use crate::dashboard::{Dashboard, DashboardView, DataSource};
+use crate::notifications::RecordingNotifier;
 use crate::settings_hub::SettingsHub;
 use crate::{theme, zoom};
 
@@ -48,8 +49,11 @@ fn open_dashboard(cx: &mut TestAppContext, settings: &TempSettings) -> (AnyWindo
         gpui_kit::init(cx);
         theme::init(cx);
         SettingsHub::init_with(cx, &settings.0, Arc::new(MemoryCredentialStore::default()));
-        crate::history_view::HistoryPrefs::init(cx, &settings.0);
+        crate::prefs_hub::PrefsHub::init(cx, &settings.0);
         zoom::init(cx);
+        if cx.try_global::<crate::notifications::Notifications>().is_none() {
+            crate::notifications::Notifications::init(cx, Arc::new(RecordingNotifier::default()));
+        }
     });
     let mut dashboard = None;
     let handle = cx.open_window(size(px(1440.), px(960.)), |window, cx| {
@@ -352,7 +356,7 @@ fn history_view_handles_empty_and_single_sample_series(cx: &mut TestAppContext) 
     cx.update(|cx| {
         gpui_kit::init(cx);
         theme::init(cx);
-        crate::history_view::HistoryPrefs::init(cx, &settings.0);
+        crate::prefs_hub::PrefsHub::init(cx, &settings.0);
     });
     let now = chrono::Utc::now();
     let accounts = demo_accounts(now, &chrono::Local);
@@ -444,7 +448,7 @@ fn single_balance_account_preferences_move_to_its_configured_id(cx: &mut TestApp
     .unwrap();
     cx.update(|cx| {
         SettingsHub::init_with(cx, &settings.0, Arc::new(MemoryCredentialStore::default()));
-        crate::history_view::HistoryPrefs::init(cx, &settings.0);
+        crate::prefs_hub::PrefsHub::init(cx, &settings.0);
     });
 
     // One configured OpenRouter account owns the legacy history; Moonshot has no records, so its implicit
@@ -453,8 +457,8 @@ fn single_balance_account_preferences_move_to_its_configured_id(cx: &mut TestApp
     assert_eq!(renames, vec![("openrouter", "or-1".to_owned())]);
     let configured = renames[0].1.clone();
 
-    cx.update(|cx| crate::history_view::HistoryPrefs::rename_accounts(cx, &renames));
-    let shows = |cx: &mut TestAppContext, id: &str| cx.update(|cx| crate::history_view::HistoryPrefs::shows(cx, id));
+    cx.update(|cx| crate::prefs_hub::PrefsHub::rename_accounts(cx, &renames));
+    let shows = |cx: &mut TestAppContext, id: &str| cx.update(|cx| crate::prefs_hub::PrefsHub::shows(cx, id));
     assert!(
         !shows(cx, &configured),
         "the hidden preference follows the account to its configured id"
@@ -490,7 +494,7 @@ fn legacy_history_after_migration(cx: &mut TestAppContext, settings_json: &str, 
     let settings = TempSettings::new(name, settings_json);
     cx.update(|cx| {
         SettingsHub::init_with(cx, &settings.0, Arc::new(MemoryCredentialStore::default()));
-        crate::history_view::HistoryPrefs::init(cx, &settings.0);
+        crate::prefs_hub::PrefsHub::init(cx, &settings.0);
     });
     let mut store = HistoryStore::in_memory(chrono::Duration::days(30));
     store.insert_points("openrouter", "credits", &[Point::new(chrono::Utc::now(), 12.5)]);
@@ -522,4 +526,143 @@ fn legacy_history_stays_put_when_settings_are_from_a_newer_version(cx: &mut Test
     // A newer schema can't be read, so the hub falls back to defaults; nothing may move on their say-so.
     let newer = r#"{ "accountConfigurationVersion": 2, "accounts": [] }"#;
     assert_eq!(legacy_history_after_migration(cx, newer, "migrate-newer"), (1, 0));
+}
+
+const ALERTS_ON: &str = r#"{ "version": 1, "alerts": { "enabled": true, "usageThreshold": 0.8, "balanceThreshold": 10,
+    "warning": true, "critical": true } }"#;
+
+/// Opens the demo dashboard with alert settings in `dashboard.json` and a recording notifier.
+fn open_with_alerts(cx: &mut TestAppContext, settings: &TempSettings) -> (Entity<Dashboard>, Arc<RecordingNotifier>) {
+    let notifier = Arc::new(RecordingNotifier::default());
+    let recorder = notifier.clone();
+    cx.update(|cx| crate::notifications::Notifications::init(cx, recorder));
+    let (_, dashboard) = open_dashboard(cx, settings);
+    (dashboard, notifier)
+}
+
+fn active_on_disk(settings: &TempSettings) -> Vec<String> {
+    let text = std::fs::read_to_string(settings.0.join("dashboard.json")).unwrap();
+    let json: serde_json::Value = serde_json::from_str(&text).unwrap();
+    json["activeAlerts"]
+        .as_array()
+        .map(|keys| keys.iter().filter_map(|key| key.as_str().map(str::to_owned)).collect())
+        .unwrap_or_default()
+}
+
+fn refresh(cx: &mut TestAppContext, dashboard: &Entity<Dashboard>) {
+    cx.update(|cx| dashboard.update(cx, |dashboard, cx| dashboard.refresh(cx)));
+    cx.run_until_parked();
+}
+
+#[gpui_kit::test]
+fn alerts_notify_once_per_condition_and_survive_a_restart(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("alerts", "{}");
+    std::fs::write(settings.0.join("dashboard.json"), ALERTS_ON).unwrap();
+    let (dashboard, notifier) = open_with_alerts(cx, &settings);
+
+    let shown: Vec<String> = notifier
+        .shown
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|alert| alert.title.clone())
+        .collect();
+    // The demo's Codex 5-hour window is at 91% and about to run out; Moonshot has $7.85 left, under $10.
+    let has = |title: &str| shown.iter().any(|shown| shown == title);
+    assert!(has("ChatGPT · Codex (personal): 5-hour window at 91%"), "{shown:?}");
+    assert!(has("ChatGPT · Codex (personal): 5-hour window limit soon"), "{shown:?}");
+    assert!(
+        !has("ChatGPT · Codex (personal): 5-hour window at risk"),
+        "covered by limit soon"
+    );
+    assert!(has("Moonshot (Kimi): $7.85 left"), "{shown:?}");
+    let active = active_on_disk(&settings);
+    assert!(
+        active.len() > shown.len(),
+        "delivered alerts and the conditions they cover are remembered"
+    );
+
+    // Another refresh with the same conditions notifies nothing new.
+    refresh(cx, &dashboard);
+    assert_eq!(notifier.shown.lock().unwrap().len(), shown.len());
+
+    // A restart reads the remembered alerts and stays quiet too.
+    cx.update(|cx| crate::prefs_hub::PrefsHub::init(cx, &settings.0));
+    refresh(cx, &dashboard);
+    assert_eq!(notifier.shown.lock().unwrap().len(), shown.len());
+}
+
+#[gpui_kit::test]
+fn alerts_are_off_until_enabled(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("alerts-off", "{}");
+    let (dashboard, notifier) = open_with_alerts(cx, &settings);
+    assert!(notifier.shown.lock().unwrap().is_empty());
+
+    cx.update(|cx| crate::prefs_hub::PrefsHub::update_alert_settings(cx, |alerts| alerts.enabled = true));
+    refresh(cx, &dashboard);
+    assert!(!notifier.shown.lock().unwrap().is_empty());
+}
+
+#[gpui_kit::test]
+fn blocked_notifications_are_retried_once_allowed(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("alerts-blocked", "{}");
+    std::fs::write(settings.0.join("dashboard.json"), ALERTS_ON).unwrap();
+    let notifier = Arc::new(RecordingNotifier::default());
+    *notifier.blocked.lock().unwrap() = Some("Notifications are off for CodexBar.".into());
+    let recorder = notifier.clone();
+    cx.update(|cx| crate::notifications::Notifications::init(cx, recorder));
+    let (_, dashboard) = open_dashboard(cx, &settings);
+
+    assert!(notifier.shown.lock().unwrap().is_empty());
+    assert!(active_on_disk(&settings).is_empty(), "nothing is marked as delivered");
+    let problem = cx.update(|cx| crate::notifications::Notifications::problem(cx));
+    assert_eq!(problem.as_deref(), Some("Notifications are off for CodexBar."));
+
+    *notifier.blocked.lock().unwrap() = None;
+    refresh(cx, &dashboard);
+    assert!(
+        !notifier.shown.lock().unwrap().is_empty(),
+        "allowed again, the alerts arrive"
+    );
+    assert_eq!(cx.update(|cx| crate::notifications::Notifications::problem(cx)), None);
+}
+
+#[gpui_kit::test]
+fn reset_lets_active_conditions_notify_again(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("alerts-reset", "{}");
+    std::fs::write(settings.0.join("dashboard.json"), ALERTS_ON).unwrap();
+    let (dashboard, notifier) = open_with_alerts(cx, &settings);
+    let first = notifier.shown.lock().unwrap().len();
+    assert!(first > 0);
+
+    cx.update(crate::notifications::Notifications::reset);
+    assert!(active_on_disk(&settings).is_empty());
+    refresh(cx, &dashboard);
+    assert_eq!(notifier.shown.lock().unwrap().len(), first * 2);
+}
+
+#[gpui_kit::test]
+fn alerts_settings_page_shows_status_and_actions(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("alerts-page", "{}");
+    std::fs::write(settings.0.join("dashboard.json"), ALERTS_ON).unwrap();
+    let (dashboard, _) = open_with_alerts(cx, &settings);
+    let handle = cx.windows()[0];
+    cx.update(|cx| dashboard.update(cx, |dashboard, cx| dashboard.show_view(DashboardView::Settings, cx)));
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    // The Alerts page is the third item in the settings sidebar.
+    cx.update_window(handle, |_, window, cx| {
+        window.within("settings-sidebar").click("0-2", cx)
+    })
+    .unwrap();
+    cx.run_until_parked();
+    let status = label(cx, handle, "alerts-status").unwrap();
+    assert!(
+        status.starts_with("Windows notifications are on.") && status.contains("active"),
+        "{status}"
+    );
+
+    click(cx, handle, "alerts-reset");
+    let status = label(cx, handle, "alerts-status").unwrap();
+    assert_eq!(status, "Windows notifications are on. No alerts are active.");
 }

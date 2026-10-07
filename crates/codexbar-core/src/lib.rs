@@ -1,6 +1,7 @@
 //! Provider-independent usage model for CodexBar: accounts, metrics, severity and urgency ordering.
 
 mod account;
+pub mod alerts;
 pub mod demo;
 pub mod format;
 mod metric;

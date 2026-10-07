@@ -90,7 +90,7 @@ pub fn migrate_legacy_ids(history: &Mutex<HistoryStore>, cx: &mut gpui_kit::App)
             let _ = store.rename_account(from, to);
         }
     }
-    crate::history_view::HistoryPrefs::rename_accounts(cx, &renames);
+    crate::prefs_hub::PrefsHub::rename_accounts(cx, &renames);
 }
 
 /// A provider whose last fetch failed. Its last good accounts stay on screen.
@@ -261,6 +261,7 @@ impl Dashboard {
                 let now = Utc::now();
                 self.last_refresh = Some(now);
                 let accounts = demo_accounts(now, &Local);
+                crate::notifications::process(cx, &accounts, now);
                 // Demo history keeps up with the demo accounts, as live history does.
                 let _ = self
                     .history
@@ -311,10 +312,15 @@ impl Dashboard {
         cx: &mut Context<Self>,
     ) {
         let mut accounts = Vec::new();
+        // Only accounts that refreshed are checked for alerts: a failed provider's alerts neither clear nor repeat.
+        let mut refreshed = Vec::new();
         self.failures.clear();
         for (provider, result) in results {
             match result {
-                Ok(fresh) => accounts.extend(fresh),
+                Ok(fresh) => {
+                    refreshed.extend(fresh.iter().cloned());
+                    accounts.extend(fresh);
+                }
                 Err(error) => {
                     // Keep last good snapshots from this provider; their age shows they are stale.
                     accounts.extend(
@@ -332,6 +338,7 @@ impl Dashboard {
         }
         self.loading = false;
         self.last_refresh = Some(Utc::now());
+        crate::notifications::process(cx, &refreshed, Utc::now());
         self.set_accounts(accounts, cx);
         if std::mem::take(&mut self.refresh_queued) {
             self.refresh(cx);

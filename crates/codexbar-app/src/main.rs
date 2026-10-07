@@ -5,6 +5,8 @@ mod catalog;
 mod dashboard;
 mod focus_cards;
 mod history_view;
+mod notifications;
+mod prefs_hub;
 mod providers;
 mod settings_hub;
 mod settings_view;
@@ -27,9 +29,12 @@ use crate::tray::TrayCommand;
 /// How long usage history is kept (#85).
 const HISTORY_RETENTION: chrono::Duration = chrono::Duration::days(30);
 
+fn is_demo() -> bool {
+    std::env::var_os("CODEXBAR_DEMO").is_some_and(|value| value == "1") || std::env::args().any(|arg| arg == "--demo")
+}
+
 fn data_source() -> DataSource {
-    let demo = std::env::var_os("CODEXBAR_DEMO").is_some_and(|value| value == "1")
-        || std::env::args().any(|arg| arg == "--demo");
+    let demo = is_demo();
     if demo {
         return DataSource::Demo;
     }
@@ -45,7 +50,14 @@ fn main() {
         theme::init(cx);
         settings_hub::SettingsHub::init(cx);
         let dir = settings_hub::SettingsHub::global(cx).dir().to_owned();
-        history_view::HistoryPrefs::init(cx, &dir);
+        prefs_hub::PrefsHub::init(cx, &dir);
+        // The demo never pops real notifications; its alerts are kept in memory.
+        let notifier: std::sync::Arc<dyn notifications::Notifier> = if is_demo() {
+            std::sync::Arc::new(notifications::RecordingNotifier::default())
+        } else {
+            std::sync::Arc::new(notifications::WindowsNotifier::new())
+        };
+        notifications::Notifications::init(cx, notifier);
         zoom::init(cx);
 
         let bounds = Bounds::centered(None, size(px(1440.), px(960.)), cx);

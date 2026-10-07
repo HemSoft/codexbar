@@ -1,4 +1,5 @@
-//! Dashboard preferences that only the Rust app uses, such as which accounts show history (#86).
+//! Dashboard preferences that only the Rust app uses: which accounts show history (#86), alert settings and the
+//! alerts currently active (#87).
 //!
 //! They live in `dashboard.json`, not `settings.json`: the WPF app reads `settings.json` into typed settings and writes
 //! them back, so a key it doesn't know would be dropped on its next save. Keys this version doesn't know are kept, and
@@ -8,6 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::path::Path;
 
+use codexbar_core::alerts::AlertSettings;
 use serde_json::{Map, Value, json};
 
 pub const PREFS_FILE: &str = "dashboard.json";
@@ -20,6 +22,11 @@ pub struct DashboardPrefs {
     /// Changes not yet saved, by account: true shows history, false hides it. A save applies only these to the
     /// file's current contents, so another process's changes made meanwhile are kept.
     pending: BTreeMap<String, bool>,
+    alerts: AlertSettings,
+    /// Alert conditions already notified and not yet recovered, so a restart doesn't notify them again.
+    active_alerts: BTreeSet<String>,
+    /// Whole values not yet saved (alert settings, active alerts), by key; a save replaces these keys.
+    pending_values: BTreeMap<&'static str, Value>,
     /// The file came from a newer version: read what we understand, never write it.
     read_only: bool,
 }
@@ -39,8 +46,38 @@ impl DashboardPrefs {
         Self {
             hidden_history,
             pending: BTreeMap::new(),
+            alerts: doc.get("alerts").map(alerts_from_json).unwrap_or_default(),
+            active_alerts: doc
+                .get("activeAlerts")
+                .and_then(Value::as_array)
+                .map(|keys| keys.iter().filter_map(Value::as_str).map(str::to_owned).collect())
+                .unwrap_or_default(),
+            pending_values: BTreeMap::new(),
             read_only: version > VERSION,
         }
+    }
+
+    pub fn alert_settings(&self) -> &AlertSettings {
+        &self.alerts
+    }
+
+    pub fn set_alert_settings(&mut self, alerts: AlertSettings) {
+        self.pending_values.insert("alerts", alerts_to_json(&alerts));
+        self.alerts = alerts;
+    }
+
+    pub fn active_alerts(&self) -> &BTreeSet<String> {
+        &self.active_alerts
+    }
+
+    pub fn set_active_alerts(&mut self, active: BTreeSet<String>) {
+        self.pending_values.insert("activeAlerts", json!(active));
+        self.active_alerts = active;
+    }
+
+    /// True when there are changes to save.
+    pub fn is_dirty(&self) -> bool {
+        !self.pending.is_empty() || !self.pending_values.is_empty()
     }
 
     pub fn shows_history(&self, account: &str) -> bool {
@@ -101,6 +138,9 @@ impl DashboardPrefs {
         }
         doc.insert("version".into(), json!(VERSION));
         doc.insert("hiddenHistory".into(), json!(hidden));
+        for (key, value) in &self.pending_values {
+            doc.insert((*key).into(), value.clone());
+        }
         let text = serde_json::to_string_pretty(&Value::Object(doc)).map_err(io::Error::other)?;
         std::fs::create_dir_all(dir)?;
         let path = dir.join(PREFS_FILE);
@@ -109,8 +149,38 @@ impl DashboardPrefs {
         std::fs::rename(&tmp, &path)?;
         self.hidden_history = hidden;
         self.pending.clear();
+        self.pending_values.clear();
         Ok(())
     }
+}
+
+fn alerts_from_json(value: &Value) -> AlertSettings {
+    let defaults = AlertSettings::default();
+    let flag = |name: &str, default: bool| value.get(name).and_then(Value::as_bool).unwrap_or(default);
+    let number = |name: &str, default: f64| {
+        value
+            .get(name)
+            .and_then(Value::as_f64)
+            .filter(|number| number.is_finite() && *number >= 0.0)
+            .unwrap_or(default)
+    };
+    AlertSettings {
+        enabled: flag("enabled", defaults.enabled),
+        usage_threshold: number("usageThreshold", defaults.usage_threshold).clamp(0.05, 1.0),
+        balance_threshold: number("balanceThreshold", defaults.balance_threshold),
+        warning: flag("warning", defaults.warning),
+        critical: flag("critical", defaults.critical),
+    }
+}
+
+fn alerts_to_json(alerts: &AlertSettings) -> Value {
+    json!({
+        "enabled": alerts.enabled,
+        "usageThreshold": alerts.usage_threshold,
+        "balanceThreshold": alerts.balance_threshold,
+        "warning": alerts.warning,
+        "critical": alerts.critical,
+    })
 }
 
 fn apply(hidden: &mut BTreeSet<String>, account: &str, show: bool) {
@@ -227,6 +297,37 @@ mod tests {
             json!(["cursor"]),
             "the pending change was kept and saved"
         );
+    }
+
+    #[test]
+    fn alert_settings_and_active_alerts_round_trip() {
+        let dir = Dir::new("alerts");
+        let mut prefs = DashboardPrefs::load(&dir.0);
+        assert_eq!(prefs.alert_settings(), &AlertSettings::default());
+        let settings = AlertSettings {
+            enabled: true,
+            usage_threshold: 0.9,
+            balance_threshold: 2.0,
+            warning: false,
+            critical: true,
+        };
+        prefs.set_alert_settings(settings.clone());
+        prefs.set_active_alerts(["a|weekly|usage".to_owned()].into());
+        assert!(prefs.is_dirty());
+        prefs.save(&dir.0).unwrap();
+        assert!(!prefs.is_dirty());
+
+        let loaded = DashboardPrefs::load(&dir.0);
+        assert_eq!(loaded.alert_settings(), &settings);
+        assert!(loaded.active_alerts().contains("a|weekly|usage"));
+        assert_eq!(dir.read()["alerts"]["usageThreshold"], json!(0.9));
+    }
+
+    #[test]
+    fn unreadable_alert_values_fall_back_to_defaults() {
+        let dir = Dir::new("alerts-bad");
+        dir.write(r#"{ "version": 1, "alerts": { "enabled": "yes", "usageThreshold": -3, "balanceThreshold": "x" } }"#);
+        assert_eq!(DashboardPrefs::load(&dir.0).alert_settings(), &AlertSettings::default());
     }
 
     #[test]

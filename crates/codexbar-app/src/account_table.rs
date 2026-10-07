@@ -15,7 +15,8 @@ use gpui_kit::{
     StatefulInteractiveElement as _, Styled as _, Window, div, linear_color_stop, linear_gradient, rems,
 };
 
-use crate::history_view::{HistoryPrefs, ValueKind, describe};
+use crate::history_view::{ValueKind, describe};
+use crate::prefs_hub::PrefsHub;
 use gpui_kit::TestSupportExt as _;
 
 use crate::status::{severity_color, severity_dot_color, severity_tag};
@@ -176,7 +177,7 @@ impl AccountTable {
     fn trend_cell(&self, row: &AccountSnapshot, cx: &Context<TableState<AccountTable>>) -> gpui_kit::AnyElement {
         let id = row.id().as_str();
         let muted = cx.theme().muted_foreground;
-        if !HistoryPrefs::shows(cx, id) {
+        if !PrefsHub::shows(cx, id) {
             return h_flex()
                 .gap_1p5()
                 .items_center()
