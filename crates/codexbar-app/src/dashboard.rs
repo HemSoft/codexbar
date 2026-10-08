@@ -102,11 +102,6 @@ pub fn migrate_legacy_ids(history: &Mutex<HistoryStore>, cx: &mut gpui_kit::App)
 /// Placeholder rows for configured providers that haven't returned anything yet.
 const PLACEHOLDER_PREFIX: &str = "pending:";
 
-/// A row standing in for an account with no usage yet (Loading, or Unavailable after a failed first fetch).
-fn is_placeholder(account: &AccountSnapshot) -> bool {
-    account.metrics().is_empty()
-}
-
 /// One adapter's outcome: its provider name, the configured account it serves (if just one), and the result.
 type FetchResult = (
     &'static str,
@@ -117,6 +112,8 @@ type FetchResult = (
 /// A provider whose last fetch failed. Its last good accounts stay on screen.
 struct Failure {
     provider: &'static str,
+    /// The configured account, when the failed adapter serves just one (one of several OpenRouter accounts).
+    account: Option<String>,
     message: String,
 }
 
@@ -142,6 +139,9 @@ pub struct Dashboard {
     states: States,
     /// The running fetch is a single-provider retry rather than a full refresh.
     fetch_partial: bool,
+    /// Ids of rows standing in for configured accounts with no result yet (Loading, or Unavailable after a failed
+    /// first fetch). Tracked explicitly: a real account can have no metrics too (Copilot with unlimited quotas).
+    placeholders: std::collections::HashSet<String>,
     /// The settings revision the running live fetch started under.
     refresh_revision: u64,
     /// The settings revision the shown accounts were fetched under, or `None` when they came from a fetch that
@@ -248,6 +248,7 @@ impl Dashboard {
             refresh_queued: false,
             states: States::new(),
             fetch_partial: false,
+            placeholders: Default::default(),
             refresh_revision: 0,
             accounts_revision: None,
             compact_minute: 0,
@@ -281,6 +282,12 @@ impl Dashboard {
     #[cfg(test)]
     pub fn state(&self, id: &str) -> AccountState {
         self.states.get(id).cloned().unwrap_or(AccountState::Fresh)
+    }
+
+    /// When the last full refresh finished, for the headless UI tests.
+    #[cfg(test)]
+    pub fn last_refresh_for_test(&self) -> Option<DateTime<Utc>> {
+        self.last_refresh
     }
 
     /// The providers listed as failed, for the headless UI tests.
@@ -325,12 +332,13 @@ impl Dashboard {
         self.fetch(None, cx);
     }
 
-    /// Fetches one provider again after it failed, keeping every other account as it is.
-    pub fn retry(&mut self, provider: &'static str, cx: &mut Context<Self>) {
-        self.fetch(Some(provider), cx);
+    /// Fetches one failed adapter again (a provider, or one configured account of it), keeping every other account
+    /// as it is.
+    pub fn retry(&mut self, provider: &'static str, account: Option<String>, cx: &mut Context<Self>) {
+        self.fetch(Some((provider, account)), cx);
     }
 
-    fn fetch(&mut self, only: Option<&'static str>, cx: &mut Context<Self>) {
+    fn fetch(&mut self, only: Option<(&'static str, Option<String>)>, cx: &mut Context<Self>) {
         // One refresh at a time: a tray Refresh during a fetch would otherwise race it, and the older result could
         // land last, replacing newer accounts and recording history out of order. A request made meanwhile runs
         // right after, with the settings as they are then.
@@ -360,8 +368,10 @@ impl Dashboard {
         // Account settings may have changed since the last refresh (a first configured account added).
         migrate_legacy_ids(&history, cx);
         let mut providers = factory(SettingsHub::global(cx));
-        if let Some(only) = only {
-            providers.retain(|provider| provider.name() == only);
+        if let Some((name, account)) = &only {
+            providers.retain(|provider| {
+                provider.name() == *name && (account.is_none() || provider.account_id() == account.as_deref())
+            });
         }
         self.refresh_revision = SettingsHub::revision(cx);
         self.loading = true;
@@ -419,6 +429,7 @@ impl Dashboard {
                         .map_or_else(|| format!("{PLACEHOLDER_PREFIX}{}", kind.key()), str::to_owned),
                 );
                 self.states.insert(id.as_str().to_owned(), AccountState::Loading);
+                self.placeholders.insert(id.as_str().to_owned());
                 accounts.push(AccountSnapshot::new(id, kind, Vec::new(), Utc::now()));
                 added = true;
             }
@@ -429,20 +440,34 @@ impl Dashboard {
     }
 
     fn apply_results(&mut self, results: Vec<FetchResult>, cx: &mut Context<Self>) {
-        let fetched: Vec<&'static str> = results.iter().map(|(provider, _, _)| *provider).collect();
-        // A retry replaces only its provider's accounts; a full refresh replaces everything, so providers switched
-        // off since disappear.
+        // Which adapters reported: a provider name, narrowed to one account when the adapter serves just one.
+        let adapters: Vec<(&'static str, Option<String>)> = results
+            .iter()
+            .map(|(provider, account, _)| (*provider, account.clone()))
+            .collect();
+        let reported = |account: &AccountSnapshot| {
+            adapters.iter().any(|(name, id)| match id {
+                Some(id) => account.id().as_str() == id,
+                None => account.provider().display_name() == *name,
+            })
+        };
+        // A retry replaces only what it fetched; a full refresh replaces everything, so providers switched off since
+        // disappear.
         let mut accounts: Vec<AccountSnapshot> = if self.fetch_partial {
             self.accounts
                 .iter()
-                .filter(|account| !fetched.contains(&account.provider().display_name()))
+                .filter(|account| !reported(account))
                 .cloned()
                 .collect()
         } else {
             Vec::new()
         };
         if self.fetch_partial {
-            self.failures.retain(|failure| !fetched.contains(&failure.provider));
+            self.failures.retain(|failure| {
+                !adapters
+                    .iter()
+                    .any(|(name, id)| failure.provider == *name && failure.account == *id)
+            });
         } else {
             self.failures.clear();
             self.states
@@ -473,12 +498,22 @@ impl Dashboard {
                             .insert(account.id().as_str().to_owned(), AccountState::Failed(message.clone()));
                         accounts.push(account.clone());
                     }
-                    self.failures.push(Failure { provider, message });
+                    self.failures.push(Failure {
+                        provider,
+                        account: account_id.clone(),
+                        message,
+                    });
                 }
             }
         }
         self.loading = false;
-        self.last_refresh = Some(Utc::now());
+        // A retry of one provider doesn't count as a refresh: the next full refresh keeps its schedule.
+        if !self.fetch_partial {
+            self.last_refresh = Some(Utc::now());
+        }
+        // Placeholders that a result replaced (or that left with their provider) are gone.
+        self.placeholders
+            .retain(|id| accounts.iter().any(|account| account.id().as_str() == id));
         // Settings saved while the fetch ran (an account switched off) make its results stale for alerting; the next
         // refresh judges everything against the current settings.
         if SettingsHub::revision(cx) == self.refresh_revision {
@@ -503,7 +538,12 @@ impl Dashboard {
         if !matches!(self.source, DataSource::Live { .. }) {
             return;
         }
-        let real: Vec<AccountSnapshot> = self.accounts.iter().filter(|a| !is_placeholder(a)).cloned().collect();
+        let real: Vec<AccountSnapshot> = self
+            .accounts
+            .iter()
+            .filter(|account| !self.placeholders.contains(account.id().as_str()))
+            .cloned()
+            .collect();
         let _ = codexbar_store::snapshots::save_snapshots(SettingsHub::global(cx).dir(), &real);
     }
 
@@ -616,7 +656,14 @@ impl Dashboard {
             .and_then(Metric::resets_at)
             .map(|at| format!(", resets {}", format::reset_label(at, self.now, &Local)))
             .unwrap_or_default();
-        format!("CodexBar - {}{used}{reset}", top.display_name())
+        // Restored or stale usage says so, so an old figure isn't read as current.
+        let freshness = match self.states.get(top.id().as_str()) {
+            Some(AccountState::Restored | AccountState::Failed(_)) => {
+                format!(" (last known, {})", format::age_label(top.fetched_at(), self.now))
+            }
+            _ => String::new(),
+        };
+        format!("CodexBar - {}{used}{reset}{freshness}", top.display_name())
     }
 
     fn focused(&self) -> Option<&AccountSnapshot> {
@@ -816,12 +863,16 @@ impl Dashboard {
                 )
                 .child({
                     let provider = failure.provider;
-                    Button::new(SharedString::from(format!("retry-{provider}")))
-                        .label("Retry")
-                        .small()
-                        .outline()
-                        .loading(self.loading)
-                        .on_click(cx.listener(move |this, _, _, cx| this.retry(provider, cx)))
+                    let account = failure.account.clone();
+                    Button::new(SharedString::from(match &account {
+                        Some(account) => format!("retry-{provider}-{account}"),
+                        None => format!("retry-{provider}"),
+                    }))
+                    .label("Retry")
+                    .small()
+                    .outline()
+                    .loading(self.loading)
+                    .on_click(cx.listener(move |this, _, _, cx| this.retry(provider, account.clone(), cx)))
                 })
         });
         if self.accounts.is_empty() {

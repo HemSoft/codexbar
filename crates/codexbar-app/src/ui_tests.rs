@@ -890,6 +890,11 @@ impl FakeProvider {
         *self.next.lock().unwrap() = used;
     }
 
+    /// Makes the next fetch succeed with an account that has no metrics (unlimited quotas).
+    fn set_empty(&self) {
+        *self.next.lock().unwrap() = Some(f64::NAN);
+    }
+
     fn calls(&self) -> usize {
         self.calls.load(Ordering::SeqCst)
     }
@@ -907,6 +912,12 @@ impl UsageProvider for FakeProvider {
     fn fetch(&self, now: chrono::DateTime<chrono::Utc>) -> Result<Vec<AccountSnapshot>, ProviderError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         match *self.next.lock().unwrap() {
+            Some(used) if used.is_nan() => Ok(vec![AccountSnapshot::new(
+                AccountId::new(self.id),
+                self.kind,
+                Vec::new(),
+                now,
+            )]),
             Some(used) => Ok(vec![AccountSnapshot::new(
                 AccountId::new(self.id),
                 self.kind,
@@ -1123,4 +1134,45 @@ fn snapshots_of_accounts_no_longer_enabled_are_not_restored(cx: &mut TestAppCont
         vec![FakeProvider::new(Provider::Claude, "claude-1", Some(0.2))],
     );
     assert_eq!(ids(cx, &dashboard), vec!["claude-1"]);
+}
+
+#[gpui_kit::test]
+fn retrying_one_account_leaves_its_siblings_and_the_schedule_alone(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("lifecycle-retry-account", "{}");
+    let first = FakeProvider::for_account(Provider::OpenRouter, "or-1", Some(0.4));
+    let second = FakeProvider::for_account(Provider::OpenRouter, "or-2", None);
+    let dashboard = open_live(cx, &settings, vec![first.clone(), second.clone()]);
+    cx.run_until_parked();
+    let refreshed_at = cx.update(|cx| dashboard.read(cx).last_refresh_for_test());
+
+    second.set(Some(0.3));
+    let handle = cx.windows()[0];
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    click(cx, handle, "retry-OpenRouter-or-2");
+    assert_eq!(
+        (first.calls(), second.calls()),
+        (1, 2),
+        "only the failed account is fetched again"
+    );
+    assert_eq!(state(cx, &dashboard, "or-2"), AccountState::Fresh);
+    assert_eq!(state(cx, &dashboard, "or-1"), AccountState::Fresh);
+    assert_eq!(
+        cx.update(|cx| dashboard.read(cx).last_refresh_for_test()),
+        refreshed_at,
+        "a retry doesn't push back the next full refresh"
+    );
+}
+
+#[gpui_kit::test]
+fn a_real_account_without_metrics_is_saved_like_any_other(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("lifecycle-empty-account", "{}");
+    // Usage `None` makes the fake fail; an account with no metrics is a success with nothing to show.
+    let copilot = FakeProvider::new(Provider::Copilot, "copilot-octocat", Some(0.0));
+    copilot.set_empty();
+    let _dashboard = open_live(cx, &settings, vec![copilot]);
+    cx.run_until_parked();
+    let saved = codexbar_store::snapshots::load_snapshots(&settings.0);
+    assert_eq!(saved.len(), 1, "it is a real account, not a placeholder");
+    assert_eq!(saved[0].id().as_str(), "copilot-octocat");
 }
