@@ -1395,3 +1395,60 @@ fn the_focused_account_shows_its_alert_and_keeps_it_after_notifying(cx: &mut Tes
         "observed usage, not a projection"
     );
 }
+
+fn shown_ids(cx: &mut TestAppContext, dashboard: &Entity<Dashboard>) -> Vec<String> {
+    cx.update(|cx| dashboard.read(cx).account_ids())
+}
+
+#[gpui_kit::test]
+fn groups_arrange_the_table_and_are_saved(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("groups", "{}");
+    let dashboard = open_live(
+        cx,
+        &settings,
+        vec![
+            FakeProvider::new(Provider::Cursor, "cursor", Some(0.9)),
+            FakeProvider::new(Provider::Claude, "claude-1", Some(0.2)),
+            FakeProvider::new(Provider::Codex, "codex", Some(0.5)),
+        ],
+    );
+    cx.run_until_parked();
+    // Without groups: provider order, not fetch order or urgency.
+    assert_eq!(shown_ids(cx, &dashboard), ["codex", "claude-1", "cursor"]);
+    cx.update(|cx| {
+        crate::prefs_hub::PrefsHub::update_layout(cx, |layout| {
+            let work = layout.create_group("Work")?;
+            layout.assign("cursor", Some(&work))
+        })
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(
+        shown_ids(cx, &dashboard),
+        ["cursor", "codex", "claude-1"],
+        "Work, then Ungrouped"
+    );
+    let saved = codexbar_store::prefs::DashboardPrefs::load(&settings.0);
+    assert_eq!(saved.layout().group_of("cursor").map(|g| g.name.as_str()), Some("Work"));
+}
+
+#[gpui_kit::test]
+fn move_down_reorders_the_focused_account_within_its_group(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("groups-move", "{}");
+    let dashboard = open_live(
+        cx,
+        &settings,
+        vec![
+            FakeProvider::new(Provider::Codex, "codex", Some(0.5)),
+            FakeProvider::new(Provider::Claude, "claude-1", Some(0.2)),
+        ],
+    );
+    cx.run_until_parked();
+    let handle = cx.windows()[0];
+    cx.update(|cx| dashboard.update(cx, |dashboard, cx| dashboard.select_row(0, cx)));
+    cx.run_until_parked();
+    click(cx, handle, "move-down");
+    assert_eq!(shown_ids(cx, &dashboard), ["claude-1", "codex"]);
+    let saved = codexbar_store::prefs::DashboardPrefs::load(&settings.0);
+    assert_eq!(saved.layout().order(), ["claude-1".to_owned(), "codex".to_owned()]);
+}
