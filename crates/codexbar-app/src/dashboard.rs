@@ -1318,6 +1318,7 @@ impl Dashboard {
                     h_flex()
                         .gap_2()
                         .items_center()
+                        .child(crate::brand::badge(account.provider(), "focused", cx))
                         .child(div().text_xl().font_semibold().child(account.display_name()))
                         .child(div().size_2().rounded_full().bg(severity_dot_color(severity, cx)))
                         .children(severity_tag(severity))

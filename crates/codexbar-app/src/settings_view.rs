@@ -219,6 +219,10 @@ fn account_item(record: AccountRecord) -> SettingItem {
                     .child(
                         h_flex()
                             .gap_2()
+                            .children(
+                                crate::brand::from_settings_name(&current.provider)
+                                    .map(|provider| crate::brand::badge(provider, current.id.clone(), cx)),
+                            )
                             .child(div().font_semibold().child(current.label.clone()))
                             .when(!current.enabled, |this| {
                                 this.child(Tag::secondary().small().child("Off"))

@@ -2,6 +2,7 @@
 
 mod account_table;
 mod alert_details;
+mod brand;
 mod catalog;
 mod dashboard;
 mod focus_cards;
