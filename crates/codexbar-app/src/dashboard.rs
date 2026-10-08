@@ -171,6 +171,8 @@ pub struct Dashboard {
     view_tab_focus: Vec<FocusHandle>,
     /// The groups and manual order the table was arranged with (#89); a change rearranges it.
     layout: codexbar_core::layout::Layout,
+    /// The alert settings and held alerts the Smart order was ranked with; a change re-ranks it.
+    ranked_with: (codexbar_core::alerts::AlertSettings, std::collections::BTreeSet<String>),
     _clock: Task<()>,
     _subscriptions: Vec<Subscription>,
 }
@@ -222,6 +224,7 @@ impl Dashboard {
                         this.refresh(cx);
                     } else if this.now.timestamp() / 60 != this.compact_minute {
                         this.update_compact_history(cx);
+                        this.rerank_if_stale(cx);
                     }
                     let now = this.now;
                     this.table.update(cx, |table, _| table.delegate_mut().set_now(now));
@@ -262,14 +265,10 @@ impl Dashboard {
         let history_view = cx.new(|cx| HistoryView::new(history.clone(), cx));
 
         // Groups and the manual order can change in Settings or from the focused account; rearrange the table then.
-        let layout_changes = cx.observe_global::<crate::prefs_hub::PrefsHub>(|this, cx| {
-            let layout = crate::prefs_hub::PrefsHub::layout(cx);
-            if layout != this.layout {
-                this.layout = layout;
-                let accounts = this.accounts.clone();
-                this.set_accounts(accounts, cx);
-            }
-        });
+        // Smart order also follows alert settings and the held alerts, which the demo keeps in `Notifications`.
+        let layout_changes = cx.observe_global::<crate::prefs_hub::PrefsHub>(|this, cx| this.rearrange_if_changed(cx));
+        let alert_changes =
+            cx.observe_global::<crate::notifications::Notifications>(|this, cx| this.rearrange_if_changed(cx));
         let mut dashboard = Self {
             source,
             history,
@@ -294,8 +293,9 @@ impl Dashboard {
             compact_minute: 0,
             view_tab_focus: DashboardView::ALL.iter().map(|_| cx.focus_handle()).collect(),
             layout: crate::prefs_hub::PrefsHub::layout(cx),
+            ranked_with: Default::default(),
             _clock: clock,
-            _subscriptions: vec![selection, activation, layout_changes],
+            _subscriptions: vec![selection, activation, layout_changes, alert_changes],
         };
         if matches!(dashboard.source, DataSource::Live { .. }) {
             dashboard.restore_snapshots(cx);
@@ -308,6 +308,12 @@ impl Dashboard {
     pub fn should_hide_on_toggle(&self, window: &Window) -> bool {
         crate::tray::is_shown(window)
             && (window.is_window_active() || self.deactivated_at.is_some_and(|at| at.elapsed() < TOGGLE_GRACE))
+    }
+
+    /// A shown account, for the headless UI tests.
+    #[cfg(test)]
+    pub fn account(&self, id: &str) -> Option<&AccountSnapshot> {
+        self.accounts.iter().find(|account| account.id().as_str() == id)
     }
 
     /// Shown account ids in table order, for the headless UI tests.
@@ -695,9 +701,91 @@ impl Dashboard {
         self.set_accounts(restored, cx);
     }
 
+    /// What Smart order ranks each account by (#90): the status the heading shows, the strongest alert that holds,
+    /// a projected run-out, and whether its usage is current.
+    fn urgency_of(
+        &self,
+        accounts: &[AccountSnapshot],
+        cx: &gpui_kit::App,
+    ) -> HashMap<String, codexbar_core::layout::Urgency> {
+        use codexbar_core::alerts::AlertKind;
+        use codexbar_core::layout::{Health, Urgency};
+        let settings = crate::prefs_hub::PrefsHub::alert_settings(cx);
+        let active = crate::notifications::Notifications::active(cx);
+        accounts
+            .iter()
+            .map(|account| {
+                let id = account.id().as_str();
+                let assessment = account.assess(self.now);
+                let details = codexbar_core::alerts::account_alerts(&settings, &active, account, self.now);
+                let alert = details.first().map_or(0, |detail| match detail.kind {
+                    AlertKind::Critical => 3,
+                    AlertKind::Warning => 2,
+                    AlertKind::Usage | AlertKind::Balance => 1,
+                });
+                let severity = if details.is_empty() {
+                    assessment.severity()
+                } else {
+                    assessment.severity().max(codexbar_core::Severity::Watch)
+                };
+                let health = match self.states.get(id) {
+                    None | Some(AccountState::Fresh) => Health::Fresh,
+                    Some(AccountState::Restored | AccountState::Failed(_)) => Health::Stale,
+                    Some(AccountState::Loading | AccountState::Unavailable(_)) => Health::Unavailable,
+                };
+                let urgency = Urgency {
+                    severity,
+                    alert,
+                    projected: account
+                        .metrics()
+                        .iter()
+                        .any(|metric| metric.exhausts_before_reset(self.now)),
+                    health,
+                    pressure: assessment.pressure(),
+                };
+                (id.to_owned(), urgency)
+            })
+            .collect()
+    }
+
+    /// Smart order ranks by time-dependent signals (projections, resets), so it is rechecked each minute; the table is
+    /// replaced only when the order actually changed.
+    fn rerank_if_stale(&mut self, cx: &mut Context<Self>) {
+        if self.layout.mode() != codexbar_core::layout::OrderMode::Smart {
+            return;
+        }
+        let urgency = self.urgency_of(&self.accounts, cx);
+        let ranked = arrange(self.accounts.clone(), &self.layout, |id| {
+            urgency.get(id).copied().unwrap_or_default()
+        });
+        if ranked
+            .iter()
+            .map(AccountSnapshot::id)
+            .ne(self.accounts.iter().map(AccountSnapshot::id))
+        {
+            self.set_accounts(ranked, cx);
+        }
+    }
+
+    /// Rearranges the table when the layout changed, or, in Smart order, when what it ranks by changed.
+    fn rearrange_if_changed(&mut self, cx: &mut Context<Self>) {
+        let layout = crate::prefs_hub::PrefsHub::layout(cx);
+        let inputs = alert_inputs(cx);
+        let smart = layout.mode() == codexbar_core::layout::OrderMode::Smart;
+        if layout != self.layout || (smart && inputs != self.ranked_with) {
+            self.layout = layout;
+            let accounts = self.accounts.clone();
+            self.set_accounts(accounts, cx);
+        }
+    }
+
     fn set_accounts(&mut self, mut accounts: Vec<AccountSnapshot>, cx: &mut Context<Self>) {
+        self.ranked_with = alert_inputs(cx);
         self.now = Utc::now();
-        accounts = arrange(accounts, &self.layout);
+        let urgency = self.urgency_of(&accounts, cx);
+        accounts = arrange(accounts, &self.layout, |id| {
+            urgency.get(id).copied().unwrap_or_default()
+        });
         let selected_ix = self
             .selected
             .as_ref()
@@ -980,6 +1068,7 @@ impl Dashboard {
         let read_only = crate::prefs_hub::PrefsHub::is_read_only(cx) || id.starts_with(PLACEHOLDER_PREFIX);
         let error = crate::prefs_hub::PrefsHub::error(cx);
         let menu_id = id.clone();
+        let smart = self.layout.mode() == codexbar_core::layout::OrderMode::Smart;
         let mover = |delta: isize, label: &'static str, disabled: bool| {
             let id = id.clone();
             let ids = ids.clone();
@@ -987,7 +1076,8 @@ impl Dashboard {
                 .small()
                 .ghost()
                 .label(label)
-                .disabled(disabled || read_only)
+                // Smart order ranks by urgency, so a manual move wouldn't show; the manual order waits for Manual.
+                .disabled(disabled || read_only || smart)
                 .on_click(move |_, _, cx| {
                     let _ = crate::prefs_hub::PrefsHub::update_layout(cx, |layout| {
                         Ok::<_, codexbar_core::layout::LayoutError>(layout.move_account(&id, delta, &ids))
@@ -1047,6 +1137,47 @@ impl Dashboard {
                     .text_color(cx.theme().danger)
                     .child(error)
             }))
+    }
+
+    /// Smart or Manual order for the table (#90). Saved with the layout; the manual order is kept either way.
+    fn order_toggle(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        use codexbar_core::layout::OrderMode;
+        use gpui_kit::component::button::ButtonGroup;
+        use gpui_kit::component::{Disableable as _, Selectable as _};
+        const MODES: [OrderMode; 2] = [OrderMode::Smart, OrderMode::Manual];
+        let mode = self.layout.mode();
+        let read_only = crate::prefs_hub::PrefsHub::is_read_only(cx);
+        h_flex()
+            .gap_2()
+            .items_center()
+            .text_sm()
+            .text_color(cx.theme().muted_foreground)
+            .child("Order")
+            .child(
+                ButtonGroup::new("order-mode")
+                    .outline()
+                    .small()
+                    // A newer CodexBar's dashboard.json can't be saved; like the group controls, wait for it.
+                    .children(MODES.iter().enumerate().map(|(ix, option)| {
+                        Button::new(("order-mode", ix))
+                            .label(option.label())
+                            .selected(*option == mode)
+                            .disabled(read_only)
+                    }))
+                    .on_click(cx.listener(|_, clicks: &Vec<usize>, _, cx| {
+                        if let Some(mode) = clicks.first().and_then(|ix| MODES.get(*ix)) {
+                            let mode = *mode;
+                            let _ = crate::prefs_hub::PrefsHub::update_layout(cx, |layout| {
+                                layout.set_mode(mode);
+                                Ok::<_, codexbar_core::layout::LayoutError>(())
+                            });
+                        }
+                    })),
+            )
+            .child(match mode {
+                OrderMode::Smart => "Most urgent first within each group",
+                OrderMode::Manual => "Your order; use Move up and Move down on an account",
+            })
     }
 
     fn render_usage(&self, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
@@ -1162,6 +1293,7 @@ impl Dashboard {
             .min_h_full()
             .gap_4()
             .children(failures)
+            .child(self.order_toggle(cx))
             .child(
                 div()
                     .h(crate::zoom::scaled(TABLE_ROW_HEIGHT * (self.accounts.len() + 1) as f32, cx) + px(2.))
@@ -1302,6 +1434,13 @@ impl Render for Dashboard {
     }
 }
 
+fn alert_inputs(cx: &gpui_kit::App) -> (codexbar_core::alerts::AlertSettings, std::collections::BTreeSet<String>) {
+    (
+        crate::prefs_hub::PrefsHub::alert_settings(cx),
+        crate::notifications::Notifications::active(cx),
+    )
+}
+
 /// The default order: provider order, then account id, so it doesn't depend on which fetch finished first.
 fn default_order(accounts: &mut [AccountSnapshot]) {
     accounts.sort_by_key(|account| {
@@ -1314,7 +1453,11 @@ fn default_order(accounts: &mut [AccountSnapshot]) {
 }
 
 /// Orders accounts by group (#89): each group in its order, then Ungrouped, each in the manual order.
-fn arrange(mut accounts: Vec<AccountSnapshot>, layout: &codexbar_core::layout::Layout) -> Vec<AccountSnapshot> {
+fn arrange(
+    mut accounts: Vec<AccountSnapshot>,
+    layout: &codexbar_core::layout::Layout,
+    urgency: impl Fn(&str) -> codexbar_core::layout::Urgency,
+) -> Vec<AccountSnapshot> {
     default_order(&mut accounts);
     let ids: Vec<String> = accounts
         .iter()
@@ -1325,7 +1468,7 @@ fn arrange(mut accounts: Vec<AccountSnapshot>, layout: &codexbar_core::layout::L
         .map(|account| (account.id().as_str().to_owned(), account))
         .collect();
     layout
-        .arrange(&ids)
+        .arrange_by(&ids, urgency)
         .into_iter()
         .flat_map(|section| section.accounts)
         .filter_map(|id| by_id.remove(&id))

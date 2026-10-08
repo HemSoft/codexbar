@@ -10,7 +10,7 @@ use std::io;
 use std::path::Path;
 
 use codexbar_core::alerts::AlertSettings;
-use codexbar_core::layout::{Group, Layout};
+use codexbar_core::layout::{Group, Layout, OrderMode};
 use serde_json::{Map, Value, json};
 
 pub const PREFS_FILE: &str = "dashboard.json";
@@ -298,7 +298,16 @@ fn layout_from_json(doc: &Map<String, Value>) -> Layout {
         .and_then(Value::as_array)
         .map(|ids| ids.iter().filter_map(Value::as_str).map(str::to_owned).collect())
         .unwrap_or_default();
-    Layout::new(groups, members, order)
+    let mut layout = Layout::new(groups, members, order);
+    // Files from before #90 have no mode and get the default (Smart).
+    if let Some(mode) = doc
+        .get("orderMode")
+        .and_then(Value::as_str)
+        .and_then(OrderMode::from_key)
+    {
+        layout.set_mode(mode);
+    }
+    layout
 }
 
 fn layout_to_json(layout: &Layout, doc: &mut Map<String, Value>) {
@@ -317,6 +326,7 @@ fn layout_to_json(layout: &Layout, doc: &mut Map<String, Value>) {
     doc.insert("groups".into(), Value::Array(groups));
     doc.insert("groupMembers".into(), Value::Object(members));
     doc.insert("manualOrder".into(), json!(layout.order()));
+    doc.insert("orderMode".into(), json!(layout.mode().key()));
 }
 
 fn alerts_to_json(alerts: &AlertSettings) -> Value {
@@ -545,6 +555,23 @@ mod tests {
         let sections = loaded.layout().arrange(&accounts);
         assert_eq!(sections[0].accounts, ["claude", "codex"]);
         assert_eq!(sections[1].accounts, ["cursor"]);
+    }
+
+    #[test]
+    fn the_order_mode_is_saved_and_defaults_to_smart() {
+        let dir = Dir::new("order-mode");
+        let mut prefs = DashboardPrefs::load(&dir.0);
+        assert_eq!(prefs.layout().mode(), OrderMode::Smart);
+        prefs.update_layout(|layout| layout.set_mode(OrderMode::Manual));
+        prefs.save(&dir.0).unwrap();
+        assert_eq!(dir.read()["orderMode"], json!("manual"));
+        assert_eq!(DashboardPrefs::load(&dir.0).layout().mode(), OrderMode::Manual);
+        dir.write(r#"{ "version": 1, "orderMode": "sideways" }"#);
+        assert_eq!(
+            DashboardPrefs::load(&dir.0).layout().mode(),
+            OrderMode::Smart,
+            "unknown modes read as Smart"
+        );
     }
 
     #[test]
