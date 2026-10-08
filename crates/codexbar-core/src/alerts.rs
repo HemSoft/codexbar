@@ -243,9 +243,10 @@ pub struct AlertDetail {
 }
 
 impl AlertDetail {
-    /// True when the projection, not observed usage, raised the severity.
+    /// True when the projection, not observed usage, raised this alert: only At risk and Limit soon depend on the
+    /// pace; threshold alerts come from the observed value.
     pub fn is_projected(&self) -> bool {
-        self.severity > self.observed
+        matches!(self.kind, AlertKind::Warning | AlertKind::Critical) && self.severity > self.observed
     }
 
     /// One line of context: "82% · Alert at 80% · resets in 2d 4h · on pace for 130% by the reset".
@@ -336,13 +337,17 @@ fn detail(
     notified: bool,
     now: DateTime<Utc>,
 ) -> AlertDetail {
+    let severity = assess(metric, now).severity();
+    let observed = crate::observed_severity(metric);
+    // The reason follows what actually raised the severity: the pace, or usage already near the limit.
     let threshold = match kind {
         AlertKind::Usage => format!("Alert at {:.0}%", settings.usage_threshold * 100.0),
         AlertKind::Balance => format!("Alert below ${:.2}", settings.balance_threshold),
         AlertKind::Warning if metric.days_of_credit().is_some() => "Running low".to_owned(),
         AlertKind::Critical if metric.days_of_credit().is_some() => "Running out".to_owned(),
+        _ if observed >= Severity::LimitSoon => "Nearly used up".to_owned(),
         AlertKind::Warning => "At risk: on pace to run out before the reset".to_owned(),
-        AlertKind::Critical => "Limit soon: nearly used up or running out within hours".to_owned(),
+        AlertKind::Critical => "Limit soon: on pace to run out within hours".to_owned(),
     };
     AlertDetail {
         key,
@@ -352,8 +357,8 @@ fn detail(
         threshold,
         resets_at: metric.resets_at(),
         projected_at_reset: metric.projected_at_reset(now),
-        severity: assess(metric, now).severity(),
-        observed: crate::observed_severity(metric),
+        severity,
+        observed,
         notified,
     }
 }
@@ -1062,6 +1067,30 @@ mod detail_tests {
             at_risk.summary(now()),
             "50% · At risk: on pace to run out before the reset · resets in 5d · on pace for 150% by the reset"
         );
+    }
+
+    #[test]
+    fn only_severity_alerts_read_as_projected() {
+        // 82% used and on pace to run out: the usage alert is observed, the At risk alert is projected.
+        let snapshot = account(vec![metric("Weekly", 0.82, Duration::days(5), Some(0.1 / 24.0))]);
+        let details = account_alerts(&all_on(), &BTreeSet::new(), &snapshot, now());
+        let usage = details.iter().find(|d| d.kind == AlertKind::Usage).unwrap();
+        let at_risk = details.iter().find(|d| d.kind == AlertKind::Warning).unwrap();
+        assert!(!usage.is_projected());
+        assert!(at_risk.is_projected());
+    }
+
+    #[test]
+    fn near_exhaustion_without_a_pace_is_not_explained_by_pace() {
+        let settings = AlertSettings {
+            critical: false,
+            ..all_on()
+        };
+        let snapshot = account(vec![metric("Weekly", 0.96, Duration::days(3), None)]);
+        let details = account_alerts(&settings, &BTreeSet::new(), &snapshot, now());
+        let warning = details.iter().find(|d| d.kind == AlertKind::Warning).unwrap();
+        assert_eq!(warning.threshold, "Nearly used up");
+        assert!(!warning.is_projected());
     }
 
     #[test]
