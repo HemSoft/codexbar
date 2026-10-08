@@ -102,21 +102,27 @@ impl Notifications {
 }
 
 /// Evaluates the accounts that refreshed successfully and delivers new alerts. Accounts whose provider failed are
-/// not passed in, so their alerts are neither cleared nor repeated. `retired` are account ids a successful refresh
-/// no longer returns (removed or disabled); their alerts recover.
-pub fn process(cx: &mut App, refreshed: &[AccountSnapshot], retired: &[String], now: DateTime<Utc>) {
+/// not passed in, so their alerts are neither cleared nor repeated. `shown` are all accounts the dashboard now
+/// shows, including a failed provider's last good ones; alerts of any other account (removed, disabled, or its
+/// provider switched off) recover.
+pub fn process(cx: &mut App, refreshed: &[AccountSnapshot], shown: &[String], now: DateTime<Utc>) {
     let Some(notifier) = cx.try_global::<Notifications>().map(|global| global.notifier.clone()) else {
         return;
     };
     let settings = PrefsHub::alert_settings(cx);
     let active = Notifications::active(cx);
     let mut evaluation = evaluate(&settings, &active, refreshed, now);
-    for id in retired {
-        let prefix = format!("{id}|");
-        evaluation
-            .recovered
-            .extend(active.iter().filter(|key| key.starts_with(&prefix)).cloned());
-    }
+    evaluation.recovered.extend(
+        active
+            .iter()
+            .filter(|key| {
+                let account = key.split('|').next().unwrap_or_default();
+                !shown.iter().any(|id| id == account)
+            })
+            .filter(|key| !evaluation.recovered.contains(key))
+            .cloned()
+            .collect::<Vec<_>>(),
+    );
     if evaluation.notify.is_empty() && evaluation.recovered.is_empty() && evaluation.covered.is_empty() {
         // Nothing new; still retry an active-alert save that failed earlier.
         Notifications::set_active(cx, active);

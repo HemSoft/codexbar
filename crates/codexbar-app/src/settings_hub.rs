@@ -16,6 +16,8 @@ pub struct SettingsHub {
     load_error: Option<SettingsError>,
     credentials: Arc<dyn CredentialStore>,
     error: Option<SharedString>,
+    /// Bumped on every saved change, so work started under older settings can tell (an in-flight refresh).
+    revision: u64,
 }
 
 impl Global for SettingsHub {}
@@ -38,7 +40,13 @@ impl SettingsHub {
             load_error,
             credentials,
             error: None,
+            revision: 0,
         });
+    }
+
+    /// Changes whenever settings are saved.
+    pub fn revision(cx: &App) -> u64 {
+        cx.try_global::<Self>().map_or(0, |hub| hub.revision)
     }
 
     pub fn global(cx: &App) -> &Self {
@@ -90,6 +98,7 @@ impl SettingsHub {
                 Ok(()) => {
                     hub.settings = draft;
                     hub.error = None;
+                    hub.revision += 1;
                 }
                 Err(err) => {
                     hub.error = Some(err.to_string().into());

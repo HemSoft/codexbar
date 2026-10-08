@@ -93,8 +93,8 @@ impl Alert {
 pub struct Evaluation {
     /// Conditions that hold and aren't active yet: notify, then mark active.
     pub notify: Vec<Alert>,
-    /// Active keys whose condition cleared on a refreshed account, or whose metric the account no longer reports:
-    /// drop them so they can alert again.
+    /// Active keys whose condition cleared on a refreshed account: drop them so they can alert again. A metric
+    /// missing from a result keeps its keys, since providers can return partial results (one OpenCode half failed).
     pub recovered: Vec<String>,
     /// Conditions that hold but are covered by an active stronger alert (At risk while Limit soon is active): mark
     /// them active without notifying.
@@ -115,19 +115,6 @@ pub fn evaluate(
     let mut out = Evaluation::default();
     for account in refreshed {
         let id = account.id().as_str();
-        // Keys of metrics the account no longer reports recover: the condition can't be held by a missing metric.
-        let prefix = format!("{id}|");
-        let reported: BTreeSet<String> = account
-            .metrics()
-            .iter()
-            .map(|metric| format!("{prefix}{}|", metric.key()))
-            .collect();
-        out.recovered.extend(
-            active
-                .iter()
-                .filter(|key| key.starts_with(&prefix) && !reported.iter().any(|metric| key.starts_with(metric)))
-                .cloned(),
-        );
         for metric in account.metrics() {
             let first_new = out.notify.len();
             for kind in [
@@ -530,22 +517,6 @@ mod tests {
             alert.body.ends_with("lasts about 2 days at the current spend."),
             "{}",
             alert.body
-        );
-    }
-
-    #[test]
-    fn a_metric_the_account_no_longer_reports_recovers() {
-        let active: BTreeSet<String> = [
-            alert_key("c", "weekly", AlertKind::Usage),
-            alert_key("d", "weekly", AlertKind::Usage),
-        ]
-        .into();
-        let without_weekly = AccountSnapshot::new(AccountId::new("c"), Provider::Claude, Vec::new(), now());
-        let evaluation = evaluate(&on(), &active, &[without_weekly], now());
-        assert_eq!(
-            evaluation.recovered,
-            vec!["c|weekly|usage".to_owned()],
-            "only the refreshed account's key"
         );
     }
 

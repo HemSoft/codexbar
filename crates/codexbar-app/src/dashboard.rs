@@ -117,6 +117,8 @@ pub struct Dashboard {
     table_zoom: f64,
     /// A refresh was requested while one was running; it runs when that one finishes.
     refresh_queued: bool,
+    /// The settings revision the running live fetch started under.
+    refresh_revision: u64,
     /// The minute the table's compact history was computed for; it is recomputed as the 14-day window moves.
     compact_minute: i64,
     /// One focus handle per view tab. Only the selected tab is a Tab-key stop (a roving tab stop); the arrow keys
@@ -202,6 +204,7 @@ impl Dashboard {
             deactivated_at: None,
             table_zoom: crate::zoom::level(cx),
             refresh_queued: false,
+            refresh_revision: 0,
             compact_minute: 0,
             view_tab_focus: DashboardView::ALL.iter().map(|_| cx.focus_handle()).collect(),
             _clock: clock,
@@ -261,7 +264,11 @@ impl Dashboard {
                 let now = Utc::now();
                 self.last_refresh = Some(now);
                 let accounts = demo_accounts(now, &Local);
-                crate::notifications::process(cx, &accounts, &[], now);
+                let shown: Vec<String> = accounts
+                    .iter()
+                    .map(|account| account.id().as_str().to_owned())
+                    .collect();
+                crate::notifications::process(cx, &accounts, &shown, now);
                 // Demo history keeps up with the demo accounts, as live history does.
                 let _ = self
                     .history
@@ -277,6 +284,7 @@ impl Dashboard {
         migrate_legacy_ids(&providers, cx);
         let history = providers;
         let providers = crate::providers::enabled(SettingsHub::global(cx));
+        self.refresh_revision = SettingsHub::revision(cx);
         self.loading = true;
         cx.notify();
         cx.spawn(async move |this, cx| {
@@ -314,19 +322,10 @@ impl Dashboard {
         let mut accounts = Vec::new();
         // Only accounts that refreshed are checked for alerts: a failed provider's alerts neither clear nor repeat.
         let mut refreshed = Vec::new();
-        let mut retired = Vec::new();
         self.failures.clear();
         for (provider, result) in results {
             match result {
                 Ok(fresh) => {
-                    // Accounts this provider returned last time but not now were removed or disabled.
-                    retired.extend(
-                        self.accounts
-                            .iter()
-                            .filter(|old| old.provider().display_name() == provider)
-                            .filter(|old| !fresh.iter().any(|new| new.id() == old.id()))
-                            .map(|old| old.id().as_str().to_owned()),
-                    );
                     refreshed.extend(fresh.iter().cloned());
                     accounts.extend(fresh);
                 }
@@ -347,10 +346,15 @@ impl Dashboard {
         }
         self.loading = false;
         self.last_refresh = Some(Utc::now());
-        // A fetch started before an account or provider was switched off must not alert for it.
-        let monitored = crate::providers::monitored(SettingsHub::global(cx));
-        refreshed.retain(|account| monitored.covers(account));
-        crate::notifications::process(cx, &refreshed, &retired, Utc::now());
+        // Settings saved while the fetch ran (an account switched off) make its results stale for alerting; the next
+        // refresh judges everything against the current settings.
+        if SettingsHub::revision(cx) == self.refresh_revision {
+            let shown: Vec<String> = accounts
+                .iter()
+                .map(|account| account.id().as_str().to_owned())
+                .collect();
+            crate::notifications::process(cx, &refreshed, &shown, Utc::now());
+        }
         self.set_accounts(accounts, cx);
         if std::mem::take(&mut self.refresh_queued) {
             self.refresh(cx);

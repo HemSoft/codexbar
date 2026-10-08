@@ -692,3 +692,21 @@ fn demo_alerts_never_touch_dashboard_json(cx: &mut TestAppContext) {
     refresh(cx, &dashboard);
     assert_eq!(notifier.shown.lock().unwrap().len(), shown);
 }
+
+#[gpui_kit::test]
+fn alerts_of_accounts_no_longer_shown_recover(cx: &mut TestAppContext) {
+    use codexbar_core::alerts::{AlertKind, alert_key};
+    let settings = TempSettings::new("alerts-gone", "{}");
+    std::fs::write(settings.0.join("dashboard.json"), ALERTS_ON).unwrap();
+    let (dashboard, _) = open_with_alerts(cx, &settings);
+    // An alert for an account the dashboard doesn't show (removed since) is dropped on the next refresh.
+    let gone = alert_key("removed-account", "weekly", AlertKind::Usage);
+    cx.update(|cx| {
+        let mut active = crate::prefs_hub::PrefsHub::active_alerts(cx);
+        active.insert(gone.clone());
+        crate::prefs_hub::PrefsHub::set_active_alerts(cx, active);
+    });
+    refresh(cx, &dashboard);
+    assert!(!active_on_disk(&settings).contains(&gone));
+    assert!(!active_on_disk(&settings).is_empty(), "shown accounts keep theirs");
+}
