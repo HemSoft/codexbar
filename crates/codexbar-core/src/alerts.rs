@@ -112,17 +112,23 @@ pub fn split_key(key: &str) -> Option<(&str, &str, &str)> {
     Some((account, slot, kind))
 }
 
-/// The metric part of an alert key. Limits that reset carry their window (the reset hour), so a new window can alert
-/// again even when CodexBar never saw usage fall in between; balances don't reset and use the bare metric key.
+/// How finely a window's reset time is recorded in its slot. Windows last an hour or more, so readings this close
+/// belong to the same window.
+const SLOT_SECONDS: i64 = 600;
+
+/// The metric part of an alert key. Limits that reset carry their window (the reset time, to 10 minutes), so a new
+/// window can alert again even when CodexBar never saw usage fall in between; balances don't reset and use the bare
+/// metric key.
 pub fn metric_slot(metric: &Metric) -> String {
     match metric.resets_at() {
-        Some(resets_at) => format!("{}@{}", metric.key(), resets_at.timestamp().div_euclid(3600)),
+        Some(resets_at) => format!("{}@{}", metric.key(), resets_at.timestamp().div_euclid(SLOT_SECONDS)),
         None => metric.key(),
     }
 }
 
 /// True when two slots are the same window of the same metric. Reset times derived from a countdown move with request
-/// latency, so reset hours within an hour of each other are one window; windows last at least five hours.
+/// latency, so slots next to each other (resets within 10-20 minutes) are one window; the shortest windows providers
+/// report last an hour, so neighbouring windows are always several slots apart.
 fn same_window(a: &str, b: &str) -> bool {
     if a == b {
         return true;
@@ -130,7 +136,7 @@ fn same_window(a: &str, b: &str) -> bool {
     match (a.split_once('@'), b.split_once('@')) {
         (Some((metric_a, hour_a)), Some((metric_b, hour_b))) if metric_a == metric_b => {
             match (hour_a.parse::<i64>(), hour_b.parse::<i64>()) {
-                (Ok(hour_a), Ok(hour_b)) => (hour_a - hour_b).abs() <= 1,
+                (Ok(slot_a), Ok(slot_b)) => (slot_a - slot_b).abs() <= 1,
                 _ => false,
             }
         }
@@ -743,7 +749,7 @@ mod window_tests {
                 now(),
             )
         };
-        // The countdown puts the reset a second before the hour, then (one slow request later) a second after.
+        // The countdown puts the reset a second before a slot boundary, then (one slow request later) a second after.
         let boundary = Utc.with_ymd_and_hms(2026, 10, 9, 15, 0, 0).unwrap();
         let mut active = BTreeSet::new();
         let first = evaluate(&settings, &active, &[at(boundary - Duration::seconds(1))], now());
@@ -754,6 +760,35 @@ mod window_tests {
             drifted.notify.is_empty() && drifted.recovered.is_empty(),
             "same window, no repeat"
         );
+    }
+
+    #[test]
+    fn back_to_back_one_hour_windows_are_separate() {
+        let settings = AlertSettings {
+            enabled: true,
+            warning: false,
+            critical: false,
+            ..AlertSettings::default()
+        };
+        let hourly = |resets_at: DateTime<Utc>| {
+            AccountSnapshot::new(
+                AccountId::new("c"),
+                Provider::Codex,
+                vec![Metric::Window {
+                    label: "1-hour window".into(),
+                    used: 0.9,
+                    resets_at,
+                    pace: None,
+                }],
+                now(),
+            )
+        };
+        let mut active = BTreeSet::new();
+        let first = evaluate(&settings, &active, &[hourly(now() + Duration::minutes(30))], now());
+        active.extend(first.notify[0].keys().cloned());
+        // CodexBar missed the low part of the next window; it is over the threshold again an hour later.
+        let next = evaluate(&settings, &active, &[hourly(now() + Duration::minutes(90))], now());
+        assert_eq!(next.notify.len(), 1, "the next one-hour window alerts again");
     }
 
     #[test]
