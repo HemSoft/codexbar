@@ -176,7 +176,9 @@ pub fn process(cx: &mut App, refreshed: &[AccountSnapshot], now: DateTime<Utc>) 
             }
         }
     }
-    let problem = problem.or(reason);
+    // Windows' reason stands when nothing could be sent again (the test notification has no alert to resend);
+    // when the failed alerts were resent successfully it is out of date.
+    let problem = problem.or(if failed.is_empty() { reason } else { None });
     cx.update_global(|global: &mut Notifications, _| global.problem = problem.map(Into::into));
     // If this save fails (lock busy), the change stays pending and is retried on the next refresh; Settings shows
     // the save error meanwhile.

@@ -770,3 +770,21 @@ fn a_test_notification_windows_failed_to_raise_shows_why(cx: &mut TestAppContext
         "no empty key is kept"
     );
 }
+
+#[gpui_kit::test]
+fn a_successful_resend_clears_the_failure_message(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("alerts-resend-clears", "{}");
+    std::fs::write(settings.0.join("dashboard.json"), ALERTS_ON).unwrap();
+    let (_, notifier) = open_with_alerts(cx, &settings);
+    let lost = notifier.shown.lock().unwrap()[0].clone();
+
+    notifier.failed.lock().unwrap().extend(lost.keys().cloned());
+    *notifier.reason.lock().unwrap() = Some("Windows couldn't show a notification: busy".into());
+    cx.executor().advance_clock(std::time::Duration::from_secs(2));
+    cx.run_until_parked();
+    assert_eq!(
+        cx.update(|cx| crate::notifications::Notifications::problem(cx)),
+        None,
+        "the resend went through"
+    );
+}
