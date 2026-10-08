@@ -909,6 +909,10 @@ impl UsageProvider for FakeProvider {
         self.account
     }
 
+    fn account_label(&self) -> Option<&str> {
+        self.account.map(|id| if id == "or-1" { "Personal" } else { "Team" })
+    }
+
     fn fetch(&self, now: chrono::DateTime<chrono::Utc>) -> Result<Vec<AccountSnapshot>, ProviderError> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         match *self.next.lock().unwrap() {
@@ -1190,4 +1194,32 @@ fn configured_accounts_fetched_successfully_are_saved(cx: &mut TestAppContext) {
         vec!["or-1"],
         "its placeholder shared the id, but it is a real account now"
     );
+}
+
+#[gpui_kit::test]
+fn sibling_accounts_are_named_by_their_labels(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("lifecycle-labels", "{}");
+    let first = FakeProvider::for_account(Provider::OpenRouter, "or-1", None);
+    let second = FakeProvider::for_account(Provider::OpenRouter, "or-2", None);
+    let dashboard = open_live(cx, &settings, vec![first, second]);
+    let names = |cx: &mut TestAppContext| {
+        let mut names = cx.update(|cx| dashboard.read(cx).display_names_for_test());
+        names.sort();
+        names
+    };
+    assert_eq!(
+        names(cx),
+        vec!["OpenRouter · Personal", "OpenRouter · Team"],
+        "placeholders carry the labels"
+    );
+    cx.run_until_parked();
+    let handle = cx.windows()[0];
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    let retry = cx
+        .update_window(handle, |_, window, _| {
+            window.find("retry-OpenRouter-or-2").label().map(str::to_owned)
+        })
+        .unwrap();
+    assert_eq!(retry.as_deref(), Some("Retry OpenRouter · Team"));
 }

@@ -102,9 +102,11 @@ pub fn migrate_legacy_ids(history: &Mutex<HistoryStore>, cx: &mut gpui_kit::App)
 /// Placeholder rows for configured providers that haven't returned anything yet.
 const PLACEHOLDER_PREFIX: &str = "pending:";
 
-/// One adapter's outcome: its provider name, the configured account it serves (if just one), and the result.
+/// One adapter's outcome: its provider name, the configured account it serves (if just one) and that account's
+/// label, and the result.
 type FetchResult = (
     &'static str,
+    Option<String>,
     Option<String>,
     Result<Vec<AccountSnapshot>, ProviderError>,
 );
@@ -114,7 +116,19 @@ struct Failure {
     provider: &'static str,
     /// The configured account, when the failed adapter serves just one (one of several OpenRouter accounts).
     account: Option<String>,
+    /// That account's label, to tell sibling failures apart.
+    label: Option<String>,
     message: String,
+}
+
+impl Failure {
+    /// "OpenRouter · Team" for one labelled account of several, else the provider name.
+    fn name(&self) -> String {
+        match &self.label {
+            Some(label) => format!("{} · {label}", self.provider),
+            None => self.provider.to_owned(),
+        }
+    }
 }
 
 pub struct Dashboard {
@@ -289,6 +303,12 @@ impl Dashboard {
         self.states.get(id).cloned().unwrap_or(AccountState::Fresh)
     }
 
+    /// Shown account names, for the headless UI tests.
+    #[cfg(test)]
+    pub fn display_names_for_test(&self) -> Vec<String> {
+        self.accounts.iter().map(AccountSnapshot::display_name).collect()
+    }
+
     /// When the last full refresh finished, for the headless UI tests.
     #[cfg(test)]
     pub fn last_refresh_for_test(&self) -> Option<DateTime<Utc>> {
@@ -400,7 +420,12 @@ impl Dashboard {
                                     .map(|account| codexbar_store::enrich(&history, account, &Local, now))
                                     .collect()
                             });
-                            (provider.name(), provider.account_id().map(str::to_owned), result)
+                            (
+                                provider.name(),
+                                provider.account_id().map(str::to_owned),
+                                provider.account_label().map(str::to_owned),
+                                result,
+                            )
                         })
                         .collect::<Vec<_>>()
                 })
@@ -435,7 +460,12 @@ impl Dashboard {
                 );
                 self.states.insert(id.as_str().to_owned(), AccountState::Loading);
                 self.placeholders.insert(id.as_str().to_owned());
-                accounts.push(AccountSnapshot::new(id, kind, Vec::new(), Utc::now()));
+                let placeholder = AccountSnapshot::new(id, kind, Vec::new(), Utc::now());
+                // Labelled like the account it stands for, so sibling accounts' rows can be told apart.
+                accounts.push(match provider.account_label() {
+                    Some(label) => placeholder.with_label(label),
+                    None => placeholder,
+                });
                 added = true;
             }
         }
@@ -448,7 +478,7 @@ impl Dashboard {
         // Which adapters reported: a provider name, narrowed to one account when the adapter serves just one.
         let adapters: Vec<(&'static str, Option<String>)> = results
             .iter()
-            .map(|(provider, account, _)| (*provider, account.clone()))
+            .map(|(provider, account, _, _)| (*provider, account.clone()))
             .collect();
         let reported = |account: &AccountSnapshot| {
             adapters.iter().any(|(name, id)| match id {
@@ -480,7 +510,7 @@ impl Dashboard {
         }
         // Only accounts that refreshed are checked for alerts: a failed provider's alerts neither clear nor repeat.
         let mut refreshed = Vec::new();
-        for (provider, account_id, result) in results {
+        for (provider, account_id, account_label, result) in results {
             match result {
                 Ok(fresh) => {
                     for account in &fresh {
@@ -513,6 +543,7 @@ impl Dashboard {
                     self.failures.push(Failure {
                         provider,
                         account: account_id.clone(),
+                        label: account_label.clone(),
                         message,
                     });
                 }
@@ -665,7 +696,7 @@ impl Dashboard {
     fn tooltip(&self) -> String {
         let Some(top) = self.accounts.first() else {
             return match self.failures.first() {
-                Some(failure) => format!("CodexBar: {} - {}", failure.provider, failure.message),
+                Some(failure) => format!("CodexBar: {} - {}", failure.name(), failure.message),
                 None => "CodexBar".to_owned(),
             };
         };
@@ -876,7 +907,7 @@ impl Dashboard {
                         .small()
                         .text_color(cx.theme().warning),
                 )
-                .child(div().font_semibold().child(failure.provider))
+                .child(div().font_semibold().child(failure.name()))
                 .child(
                     div()
                         .flex_1()
@@ -892,6 +923,7 @@ impl Dashboard {
                         None => format!("retry-{provider}"),
                     }))
                     .label("Retry")
+                    .accessibility_label(format!("Retry {}", failure.name()))
                     .small()
                     .outline()
                     .loading(self.loading)

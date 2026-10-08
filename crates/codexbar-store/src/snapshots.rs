@@ -32,8 +32,19 @@ pub fn load_snapshots(dir: &Path) -> Vec<AccountSnapshot> {
         .unwrap_or_default()
 }
 
-/// Saves snapshots, replacing the file atomically.
+/// Saves snapshots, replacing the file atomically. A file from a newer CodexBar is left alone, so running an older
+/// build once doesn't destroy the newer one's data.
 pub fn save_snapshots(dir: &Path, accounts: &[AccountSnapshot]) -> io::Result<()> {
+    let existing = std::fs::read_to_string(dir.join(SNAPSHOTS_FILE))
+        .ok()
+        .and_then(|text| serde_json::from_str::<Value>(&text).ok())
+        .and_then(|doc| doc.get("version").and_then(Value::as_u64));
+    if existing.is_some_and(|version| version > VERSION) {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "snapshots.json is from a newer CodexBar and was not changed",
+        ));
+    }
     let doc = json!({
         "version": VERSION,
         "accounts": accounts.iter().map(account_to_json).collect::<Vec<_>>(),
@@ -198,6 +209,16 @@ mod tests {
         assert!(load_snapshots(&dir.0).is_empty());
         std::fs::write(dir.0.join(SNAPSHOTS_FILE), r#"{ "version": 2, "accounts": [] }"#).unwrap();
         assert!(load_snapshots(&dir.0).is_empty());
+    }
+
+    #[test]
+    fn a_newer_file_is_never_overwritten() {
+        let dir = Dir::new("newer");
+        let newer = r#"{ "version": 2, "accounts": [] }"#;
+        std::fs::write(dir.0.join(SNAPSHOTS_FILE), newer).unwrap();
+        let account = AccountSnapshot::new(AccountId::new("c"), Provider::Cursor, Vec::new(), now());
+        assert!(save_snapshots(&dir.0, &[account]).is_err());
+        assert_eq!(std::fs::read_to_string(dir.0.join(SNAPSHOTS_FILE)).unwrap(), newer);
     }
 
     #[test]

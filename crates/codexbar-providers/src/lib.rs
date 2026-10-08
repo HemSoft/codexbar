@@ -32,4 +32,9 @@ pub trait UsageProvider: Send + Sync {
     fn account_id(&self) -> Option<&str> {
         None
     }
+
+    /// The configured account's label, when this adapter serves one labelled account ("Team").
+    fn account_label(&self) -> Option<&str> {
+        None
+    }
 }
