@@ -208,7 +208,7 @@ fn usage_card(account: &AccountSnapshot, now: DateTime<Utc>, cx: &App) -> Card {
 
 /// A donut for the secondary window (or the primary one), or the balance when there is no limit.
 fn share_card(account: &AccountSnapshot, now: DateTime<Utc>, cx: &App) -> Card {
-    let metric = account.metrics().get(1).or(account.primary());
+    let metric = secondary_metric(account, now).or(account.primary());
     let track = cx.theme().muted;
     let Some(metric) = metric else {
         return Card::new("No limits", "", div()).takeaway("This account reports no limits");
@@ -378,6 +378,21 @@ fn no_history(cx: &App) -> impl IntoElement {
         .child("History builds up as CodexBar refreshes")
 }
 
+/// The metric for the second card: the most severe one after the primary, so whatever raises the account's status
+/// (such as Cursor's on-demand spend) is on screen. Ties keep provider order, so it is usually the second metric.
+fn secondary_metric(account: &AccountSnapshot, now: DateTime<Utc>) -> Option<&Metric> {
+    account
+        .metrics()
+        .iter()
+        .skip(1)
+        .enumerate()
+        .max_by(|(a_ix, a), (b_ix, b)| {
+            let severity = |metric: &Metric| codexbar_core::assess(metric, now).severity();
+            severity(a).cmp(&severity(b)).then(b_ix.cmp(a_ix))
+        })
+        .map(|(_, metric)| metric)
+}
+
 fn pace_takeaway(metric: &Metric, now: DateTime<Utc>) -> String {
     if let Some(days) = metric.days_of_credit() {
         return format!("About {days:.0} days of credit left");
@@ -449,6 +464,38 @@ mod tests {
 
     fn now() -> DateTime<Utc> {
         "2026-10-07T02:00:00Z".parse().unwrap()
+    }
+
+    #[test]
+    fn the_second_card_shows_the_metric_that_raises_the_status() {
+        use codexbar_core::{AccountId, Money, Provider};
+        let account = |on_demand_spent: i64| {
+            AccountSnapshot::new(
+                AccountId::new("cursor"),
+                Provider::Cursor,
+                vec![
+                    window(0.3, 0.01),
+                    window(0.2, 0.01),
+                    window(0.1, 0.01),
+                    Metric::Spend {
+                        label: "On-demand".into(),
+                        spent: Money::from_cents(on_demand_spent),
+                        limit: Some(Money::from_cents(2000)),
+                        resets_at: Some(now() + Duration::hours(10)),
+                        pace: None,
+                    },
+                ],
+                now(),
+            )
+        };
+        let calm = account(100);
+        assert_eq!(
+            secondary_metric(&calm, now()),
+            calm.metrics().get(1),
+            "provider order when calm"
+        );
+        let urgent = account(1980);
+        assert_eq!(secondary_metric(&urgent, now()).unwrap().label(), "On-demand");
     }
 
     #[test]
