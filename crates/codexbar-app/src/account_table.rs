@@ -156,6 +156,7 @@ impl TableDelegate for AccountTable {
                         .rounded_full()
                         .bg(severity_dot_color(severity, cx)),
                 )
+                .child(crate::brand::badge(row.provider(), row.id().as_str().to_owned(), cx))
                 .child(div().truncate().child(row.display_name()))
                 .children(self.groups.get(row.id().as_str()).map(|group| {
                     div()

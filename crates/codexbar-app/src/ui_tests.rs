@@ -2209,3 +2209,17 @@ fn changing_themes_keeps_the_zoom_and_follows_a_new_contrast_scheme(cx: &mut Tes
     assert_eq!(cx.update(|cx| cx.theme().primary), gpui_kit::rgb(0x37006E).into());
     assert_eq!(cx.update(|cx| cx.theme().font_size), zoomed);
 }
+
+#[gpui_kit::test]
+fn accounts_carry_a_provider_badge_named_for_screen_readers(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("brand-badges", "{}");
+    let _dashboard = open_live(
+        cx,
+        &settings,
+        vec![FakeProvider::new(Provider::Claude, "claude-1", Some(0.3))],
+    );
+    cx.run_until_parked();
+    // In the table row and the focused account's heading.
+    assert_eq!(label_of(cx, "provider-badge-claude-1").as_deref(), Some("Claude"));
+    assert_eq!(label_of(cx, "provider-badge-focused").as_deref(), Some("Claude"));
+}

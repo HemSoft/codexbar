@@ -126,6 +126,13 @@ pub fn apply_with(cx: &mut App, appearance: Appearance, system_dark: bool, contr
     state.contrast = contrast;
 }
 
+/// True while Windows high contrast decides the colors.
+pub fn is_high_contrast(cx: &App) -> bool {
+    cx.try_global::<State>()
+        .and_then(|state| state.applied.as_ref())
+        .is_some_and(|applied| applied.high_contrast)
+}
+
 /// The theme on screen, for the tests.
 #[cfg(test)]
 pub fn applied(cx: &App) -> Option<Applied> {
