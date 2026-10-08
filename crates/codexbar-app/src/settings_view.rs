@@ -18,8 +18,8 @@ use gpui_kit::component::{
     ActiveTheme as _, IconName, IndexPath, Sizable as _, StyledExt as _, WindowExt as _, h_flex, v_flex,
 };
 use gpui_kit::{
-    AnyElement, App, AppContext as _, Entity, InteractiveElement as _, IntoElement, ParentElement as _, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Window, div, prelude::FluentBuilder as _,
+    AnyElement, App, AppContext as _, Entity, InteractiveElement as _, IntoElement, ParentElement as _, Role,
+    SharedString, StatefulInteractiveElement as _, Styled as _, Window, div, prelude::FluentBuilder as _,
 };
 
 use crate::catalog::{self, PROVIDERS};
@@ -225,7 +225,12 @@ fn account_item(record: AccountRecord) -> SettingItem {
                             }),
                     )
                     .child(
+                        // Method and where the secret comes from (never the secret itself), also for screen readers.
                         div()
+                            .id(SharedString::from(format!("account-detail-{}", current.id)))
+                            .role(Role::Note)
+                            .test_support()
+                            .aria_label(detail.clone())
                             .text_sm()
                             .text_color(cx.theme().muted_foreground)
                             .truncate()
@@ -354,6 +359,7 @@ fn open_account_dialog(provider: &'static str, existing: Option<AccountRecord>, 
     let editing = existing.is_some();
     let title = if editing { "Edit account" } else { "Add account" };
 
+    let name_field = form.label.clone();
     window.open_dialog(cx, move |dialog, _, cx| {
         let form_for_ok = form.clone();
         let existing = existing.clone();
@@ -413,7 +419,16 @@ fn open_account_dialog(provider: &'static str, existing: Option<AccountRecord>, 
                         this.child(field("Workspace id", Input::new(&form.workspace).into_any_element()))
                     })
                     .when_some(error, |this, error| {
-                        this.child(div().text_sm().text_color(cx.theme().danger).child(error))
+                        this.child(
+                            div()
+                                .id("account-error")
+                                .role(Role::Alert)
+                                .test_support()
+                                .aria_label(error.clone())
+                                .text_sm()
+                                .text_color(cx.theme().danger)
+                                .child(error),
+                        )
                     }),
             )
             .footer(
@@ -428,6 +443,15 @@ fn open_account_dialog(provider: &'static str, existing: Option<AccountRecord>, 
                     ),
             )
             .on_ok(move |_, window, cx| save_account(&form_for_ok, existing.clone(), window, cx))
+    });
+    focus_and_select(&name_field, window, cx);
+}
+
+/// Puts the keyboard in a dialog's first text field with its text selected, so typing replaces the default.
+pub fn focus_and_select(field: &Entity<InputState>, window: &mut Window, cx: &mut App) {
+    field.update(cx, |state, cx| {
+        state.focus(window, cx);
+        state.select_all(window, cx);
     });
 }
 
