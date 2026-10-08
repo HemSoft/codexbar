@@ -768,7 +768,10 @@ impl Dashboard {
 
     /// The tray hover text: the most urgent account, or the reason there is none.
     fn tooltip(&self) -> String {
-        let Some(top) = self.accounts.first() else {
+        // The most urgent account, whatever the table's manual order.
+        let mut ranked = self.accounts.clone();
+        codexbar_core::sort_by_urgency(&mut ranked, self.now);
+        let Some(top) = ranked.first() else {
             return match self.failures.first() {
                 Some(failure) => format!("CodexBar: {} - {}", failure.name(), failure.message),
                 None => "CodexBar".to_owned(),
@@ -972,7 +975,10 @@ impl Dashboard {
             .unwrap_or((0, 1));
         let current = self.layout.group_of(&id).map(|group| group.name.clone());
         let groups = self.layout.groups().to_vec();
-        let read_only = crate::prefs_hub::PrefsHub::is_read_only(cx);
+        // A `pending:` placeholder takes the account's real id once its first fetch succeeds, so layout edits made
+        // under it would be lost; they wait for the real account.
+        let read_only = crate::prefs_hub::PrefsHub::is_read_only(cx) || id.starts_with(PLACEHOLDER_PREFIX);
+        let error = crate::prefs_hub::PrefsHub::error(cx);
         let menu_id = id.clone();
         let mover = |delta: isize, label: &'static str, disabled: bool| {
             let id = id.clone();
@@ -998,7 +1004,9 @@ impl Dashboard {
                     .outline()
                     .label(format!(
                         "Group: {}",
-                        current.clone().unwrap_or_else(|| "Ungrouped".into())
+                        current
+                            .clone()
+                            .unwrap_or_else(|| codexbar_core::layout::UNGROUPED.into())
                     ))
                     .disabled(read_only)
                     .dropdown_menu(move |menu, _, _| {
@@ -1011,7 +1019,7 @@ impl Dashboard {
                             }
                         };
                         let mut menu = menu.item(
-                            PopupMenuItem::new("Ungrouped")
+                            PopupMenuItem::new(codexbar_core::layout::UNGROUPED)
                                 .checked(current.is_none())
                                 .on_click(assign(None)),
                         );
@@ -1030,6 +1038,15 @@ impl Dashboard {
             )
             .child(mover(-1, "Move up", ix == 0))
             .child(mover(1, "Move down", ix + 1 >= len))
+            .children(error.map(|error| {
+                div()
+                    .id("layout-error")
+                    .role(Role::Alert)
+                    .test_support()
+                    .aria_label(error.clone())
+                    .text_color(cx.theme().danger)
+                    .child(error)
+            }))
     }
 
     fn render_usage(&self, cx: &mut Context<Self>) -> gpui_kit::AnyElement {

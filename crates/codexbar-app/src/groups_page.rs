@@ -5,13 +5,17 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use codexbar_core::layout::Group;
+use gpui_kit::TestSupportExt as _;
 use gpui_kit::component::Disableable as _;
 use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants as _};
 use gpui_kit::component::dialog::{DialogAction, DialogButtonProps, DialogClose, DialogFooter};
 use gpui_kit::component::input::{Input, InputState};
 use gpui_kit::component::setting::{SettingGroup, SettingItem, SettingPage};
 use gpui_kit::component::{ActiveTheme as _, IconName, Sizable as _, StyledExt as _, WindowExt as _, h_flex, v_flex};
-use gpui_kit::{App, AppContext as _, Entity, ParentElement as _, SharedString, Styled as _, Window, div};
+use gpui_kit::{
+    App, AppContext as _, Entity, InteractiveElement as _, ParentElement as _, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Window, div,
+};
 
 use crate::prefs_hub::PrefsHub;
 
@@ -21,6 +25,19 @@ pub fn groups_page(cx: &App) -> SettingPage {
     let mut list = SettingGroup::new()
         .title("Groups")
         .description("Groups organize the Usage table. Assign an account from its heading on the Usage view.");
+    // A change that couldn't be saved stays in memory; say so here, where it was made.
+    if let Some(error) = PrefsHub::error(cx) {
+        list = list.item(SettingItem::render(move |_, _, cx| {
+            div()
+                .id("groups-error")
+                .role(gpui_kit::Role::Alert)
+                .test_support()
+                .aria_label(error.clone())
+                .text_sm()
+                .text_color(cx.theme().danger)
+                .child(error.clone())
+        }));
+    }
     if groups.is_empty() {
         list = list.item(SettingItem::render(|_, _, cx| {
             div()

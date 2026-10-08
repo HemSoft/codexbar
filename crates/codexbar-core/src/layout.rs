@@ -10,6 +10,8 @@ use std::fmt;
 
 /// The longest group name, in characters.
 pub const MAX_GROUP_NAME: usize = 40;
+/// The name of the section for accounts without a group; no real group may take it.
+pub const UNGROUPED: &str = "Ungrouped";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Group {
@@ -23,6 +25,7 @@ pub enum LayoutError {
     EmptyName,
     NameTooLong,
     DuplicateName,
+    ReservedName,
     UnknownGroup,
 }
 
@@ -32,6 +35,7 @@ impl fmt::Display for LayoutError {
             Self::EmptyName => "Enter a group name.",
             Self::NameTooLong => "Group names can be up to 40 characters.",
             Self::DuplicateName => "A group with that name already exists.",
+            Self::ReservedName => "“Ungrouped” is reserved for accounts without a group.",
             Self::UnknownGroup => "That group no longer exists.",
         })
     }
@@ -64,7 +68,10 @@ impl Layout {
             if group.id.is_empty() || layout.group(&group.id).is_some() {
                 continue;
             }
-            let mut name = clean(&group.name).unwrap_or_else(|_| group.id.clone());
+            let mut name = clean(&group.name)
+                .ok()
+                .filter(|name| !is_reserved(name))
+                .unwrap_or_else(|| group.id.clone());
             let base = name.clone();
             let mut n = 2;
             while layout.name_taken(&name, None) {
@@ -110,10 +117,13 @@ impl Layout {
         if self.name_taken(&name, None) {
             return Err(LayoutError::DuplicateName);
         }
+        // Ids still named by a membership are taken too, so a stale membership never joins a new group.
         let next = self
             .groups
             .iter()
-            .filter_map(|group| group.id.strip_prefix('g')?.parse::<u64>().ok())
+            .map(|group| group.id.as_str())
+            .chain(self.members.values().map(String::as_str))
+            .filter_map(|id| id.strip_prefix('g')?.parse::<u64>().ok())
             .max()
             .unwrap_or(0)
             + 1;
@@ -241,11 +251,19 @@ impl Layout {
             return false;
         };
         section.accounts.swap(ix, target);
-        // The new order: every shown account by section, then remembered accounts that aren't shown right now.
+        // Shown accounts the order didn't know join its end; then the shown accounts take the order's slots that shown
+        // accounts held, in their new sequence. Remembered accounts that aren't shown keep their slots.
         let shown: Vec<String> = sections.into_iter().flat_map(|section| section.accounts).collect();
-        let hidden = self.order.iter().filter(|id| !shown.contains(id)).cloned();
-        let mut order = shown.clone();
-        order.extend(hidden);
+        let mut order = self.order.clone();
+        order.extend(shown.iter().filter(|id| !self.order.contains(id)).cloned());
+        let mut next = shown.iter();
+        for slot in order.iter_mut() {
+            if shown.contains(slot)
+                && let Some(id) = next.next()
+            {
+                slot.clone_from(id);
+            }
+        }
         self.order = order;
         true
     }
@@ -257,6 +275,10 @@ impl Layout {
     }
 }
 
+fn is_reserved(name: &str) -> bool {
+    name.to_lowercase() == UNGROUPED.to_lowercase()
+}
+
 /// A trimmed, valid group name.
 fn clean(name: &str) -> Result<String, LayoutError> {
     let name = name.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -264,6 +286,8 @@ fn clean(name: &str) -> Result<String, LayoutError> {
         Err(LayoutError::EmptyName)
     } else if name.chars().count() > MAX_GROUP_NAME {
         Err(LayoutError::NameTooLong)
+    } else if is_reserved(&name) {
+        Err(LayoutError::ReservedName)
     } else {
         Ok(name)
     }
@@ -392,6 +416,50 @@ mod tests {
         // An account not shown right now keeps its place for when it comes back.
         assert!(layout.move_account("a", 1, &ids(&["a", "b", "c"])));
         assert!(layout.order().contains(&"y".to_owned()));
+    }
+
+    #[test]
+    fn new_groups_never_take_an_id_a_stale_membership_names() {
+        let members = BTreeMap::from([("claude".to_owned(), "g2".to_owned())]);
+        let mut layout = Layout::new(
+            vec![Group {
+                id: "g1".into(),
+                name: "Work".into(),
+            }],
+            members,
+            vec![],
+        );
+        let new = layout.create_group("Home").unwrap();
+        assert_eq!(new, "g3");
+        assert_eq!(layout.group_of("claude"), None, "still Ungrouped");
+    }
+
+    #[test]
+    fn hidden_accounts_keep_their_place_when_others_move() {
+        let mut layout = Layout::new(vec![], BTreeMap::new(), ids(&["b", "a", "c"]));
+        // b is hidden (say switched off); c moves above a.
+        assert!(layout.move_account("c", -1, &ids(&["a", "c"])));
+        assert_eq!(layout.order(), ids(&["b", "c", "a"]).as_slice());
+    }
+
+    #[test]
+    fn ungrouped_is_a_reserved_name() {
+        let mut layout = Layout::default();
+        assert_eq!(layout.create_group("ungrouped"), Err(LayoutError::ReservedName));
+        let work = layout.create_group("Work").unwrap();
+        assert_eq!(
+            layout.rename_group(&work, " Ungrouped "),
+            Err(LayoutError::ReservedName)
+        );
+        let stored = Layout::new(
+            vec![Group {
+                id: "g4".into(),
+                name: "Ungrouped".into(),
+            }],
+            BTreeMap::new(),
+            vec![],
+        );
+        assert_eq!(names(&stored), vec!["g4"], "a stored group can't take it either");
     }
 
     #[test]
