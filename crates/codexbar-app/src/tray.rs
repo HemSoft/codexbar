@@ -98,6 +98,11 @@ fn drain_commands(cx: &App) -> Vec<TrayCommand> {
     commands
 }
 
+/// True once the tray icon exists, so a tooltip set now is shown.
+pub fn has_tooltip_target(cx: &App) -> bool {
+    cx.try_global::<TrayState>().is_some()
+}
+
 /// Replaces the hover text, e.g. "CodexBar — ChatGPT · Codex 91%, resets in 38m".
 pub fn set_tooltip(cx: &App, text: &str) {
     if let Some(state) = cx.try_global::<TrayState>() {

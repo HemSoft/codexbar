@@ -142,6 +142,8 @@ pub struct Dashboard {
     /// Ids of rows standing in for configured accounts with no result yet (Loading, or Unavailable after a failed
     /// first fetch). Tracked explicitly: a real account can have no metrics too (Copilot with unlimited quotas).
     placeholders: std::collections::HashSet<String>,
+    /// The tray text last sent, so the once-a-second clock only republishes changes.
+    published_tooltip: Option<String>,
     /// The settings revision the running live fetch started under.
     refresh_revision: u64,
     /// The settings revision the shown accounts were fetched under, or `None` when they came from a fetch that
@@ -206,6 +208,8 @@ impl Dashboard {
                     }
                     let now = this.now;
                     this.table.update(cx, |table, _| table.delegate_mut().set_now(now));
+                    // The tooltip's "last known" age advances too; it is only republished when its text changes.
+                    this.publish_tooltip(cx);
                     // Resend against the last refresh's accounts while settings still match it; otherwise refresh,
                     // so the failed alert is judged under the current settings rather than dropped.
                     if this.accounts_revision == Some(SettingsHub::revision(cx)) {
@@ -249,6 +253,7 @@ impl Dashboard {
             states: States::new(),
             fetch_partial: false,
             placeholders: Default::default(),
+            published_tooltip: None,
             refresh_revision: 0,
             accounts_revision: None,
             compact_minute: 0,
@@ -481,6 +486,7 @@ impl Dashboard {
                     for account in &fresh {
                         self.states
                             .insert(account.id().as_str().to_owned(), AccountState::Fresh);
+                        self.placeholders.remove(account.id().as_str());
                     }
                     refreshed.extend(fresh.iter().cloned());
                     accounts.extend(fresh);
@@ -494,8 +500,14 @@ impl Dashboard {
                         None => a.provider().display_name() == provider,
                     };
                     for account in self.accounts.iter().filter(belongs) {
-                        self.states
-                            .insert(account.id().as_str().to_owned(), AccountState::Failed(message.clone()));
+                        self.states.insert(
+                            account.id().as_str().to_owned(),
+                            if self.placeholders.contains(account.id().as_str()) {
+                                AccountState::Unavailable(message.clone())
+                            } else {
+                                AccountState::Failed(message.clone())
+                            },
+                        );
                         accounts.push(account.clone());
                     }
                     self.failures.push(Failure {
@@ -610,7 +622,7 @@ impl Dashboard {
                 table.set_selected_row(selected_ix, cx);
             }
         });
-        crate::tray::set_tooltip(cx, &self.tooltip());
+        self.publish_tooltip(cx);
         cx.notify();
     }
 
@@ -639,6 +651,16 @@ impl Dashboard {
             .collect()
     }
 
+    /// Sends the tray hover text when it changed. Also called once the tray icon exists, since restored accounts are
+    /// shown before it is created.
+    pub fn publish_tooltip(&mut self, cx: &mut Context<Self>) {
+        let text = self.tooltip();
+        if self.published_tooltip.as_deref() != Some(text.as_str()) || !crate::tray::has_tooltip_target(cx) {
+            crate::tray::set_tooltip(cx, &text);
+            self.published_tooltip = crate::tray::has_tooltip_target(cx).then_some(text);
+        }
+    }
+
     /// The tray hover text: the most urgent account, or the reason there is none.
     fn tooltip(&self) -> String {
         let Some(top) = self.accounts.first() else {
@@ -661,6 +683,7 @@ impl Dashboard {
             Some(AccountState::Restored | AccountState::Failed(_)) => {
                 format!(" (last known, {})", format::age_label(top.fetched_at(), self.now))
             }
+            Some(AccountState::Unavailable(_)) => " (unavailable)".to_owned(),
             _ => String::new(),
         };
         format!("CodexBar - {}{used}{reset}{freshness}", top.display_name())

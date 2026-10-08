@@ -1109,7 +1109,7 @@ fn each_configured_account_of_one_provider_loads_and_fails_on_its_own(cx: &mut T
         AccountState::Fresh,
         "a sibling's failure doesn't touch it"
     );
-    assert!(matches!(state(cx, &dashboard, "or-2"), AccountState::Failed(_)));
+    assert!(matches!(state(cx, &dashboard, "or-2"), AccountState::Unavailable(_)));
     let handle = cx.windows()[0];
     cx.update_window(handle, |_, window, cx| window.render_frame(cx))
         .unwrap();
@@ -1175,4 +1175,19 @@ fn a_real_account_without_metrics_is_saved_like_any_other(cx: &mut TestAppContex
     let saved = codexbar_store::snapshots::load_snapshots(&settings.0);
     assert_eq!(saved.len(), 1, "it is a real account, not a placeholder");
     assert_eq!(saved[0].id().as_str(), "copilot-octocat");
+}
+
+#[gpui_kit::test]
+fn configured_accounts_fetched_successfully_are_saved(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("lifecycle-save-configured", "{}");
+    let first = FakeProvider::for_account(Provider::OpenRouter, "or-1", Some(0.4));
+    let _dashboard = open_live(cx, &settings, vec![first]);
+    cx.run_until_parked();
+    let saved = codexbar_store::snapshots::load_snapshots(&settings.0);
+    let ids: Vec<&str> = saved.iter().map(|account| account.id().as_str()).collect();
+    assert_eq!(
+        ids,
+        vec!["or-1"],
+        "its placeholder shared the id, but it is a real account now"
+    );
 }

@@ -58,6 +58,8 @@ pub enum AccountState {
     Fresh,
     /// The latest fetch failed; the usage shown is the last good one. Holds the error.
     Failed(String),
+    /// The first fetch failed: there is no usage to show yet. Holds the error.
+    Unavailable(String),
 }
 
 /// Refresh state by account id; accounts not listed are fresh.
@@ -221,7 +223,7 @@ impl AccountTable {
                 ),
             ),
             // A failed first fetch has no usage to be stale; say it is unavailable instead.
-            AccountState::Failed(error) if row.metrics().is_empty() => {
+            AccountState::Unavailable(error) => {
                 (Tag::danger(), "Unavailable", format!("Couldn't fetch usage: {error}."))
             }
             AccountState::Failed(error) => (
