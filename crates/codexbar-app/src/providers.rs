@@ -125,12 +125,13 @@ pub fn owned_account_ids(hub: &SettingsHub) -> HashMap<String, String> {
         .collect()
 }
 
-/// True when Copilot shows every account the GitHub CLI is signed in to: no Copilot records, or one without a
-/// username. A Copilot account then keeps showing after a username record for it is removed, so it isn't forgotten.
+/// True when Copilot shows every account the GitHub CLI is signed in to: an enabled Copilot account without a username,
+/// including the implicit one when there are no records. A Copilot account then keeps showing after a username record
+/// for it is removed, so it isn't forgotten. Disabled records and a switched-off provider show nothing.
 pub fn copilot_discovers_all(hub: &SettingsHub) -> bool {
-    let mut records = hub.settings().accounts_for(names::COPILOT).peekable();
-    records.peek().is_none()
-        || records.any(|record| record.external_id.as_deref().is_none_or(|user| user.trim().is_empty()))
+    enabled_accounts(hub, names::COPILOT)
+        .iter()
+        .any(|record| record.external_id.as_deref().is_none_or(|user| user.trim().is_empty()))
 }
 
 /// Accounts that used to report under their provider's legacy id: a provider's only OpenRouter or Moonshot account
