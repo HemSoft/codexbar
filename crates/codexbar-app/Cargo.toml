@@ -20,6 +20,7 @@ anyhow.workspace = true
 windows.workspace = true
 gpui-kit.workspace = true
 chrono.workspace = true
+serde_json.workspace = true
 
 [dev-dependencies]
 # Headless UI integration tests: real views in in-process windows, no desktop input or focus changes.

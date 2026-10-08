@@ -67,6 +67,21 @@ impl PrefsHub {
         });
     }
 
+    /// System, Light or Dark (#92); System until chosen or when the stored value is unknown.
+    pub fn appearance(cx: &App) -> crate::theme::Appearance {
+        cx.try_global::<Self>()
+            .and_then(|hub| hub.prefs.appearance())
+            .and_then(crate::theme::Appearance::from_key)
+            .unwrap_or_default()
+    }
+
+    /// Saves the appearance and applies it at once.
+    pub fn set_appearance(cx: &mut App, appearance: crate::theme::Appearance) {
+        Self::edit(cx, |prefs| prefs.set_appearance(appearance.key()));
+        crate::theme::apply(cx, appearance);
+        cx.refresh_windows();
+    }
+
     pub fn alert_settings(cx: &App) -> AlertSettings {
         cx.try_global::<Self>()
             .map(|hub| hub.prefs.alert_settings().clone())

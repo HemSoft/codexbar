@@ -29,6 +29,10 @@ pub struct DashboardPrefs {
     /// Alert-setting fields changed and not yet saved, by JSON name. A save merges these into the file's `alerts`,
     /// so two processes editing different fields don't undo each other.
     pending_alert_fields: BTreeMap<&'static str, Value>,
+    /// System, Light or Dark (#92), as its key; `None` until chosen, which means System.
+    appearance: Option<String>,
+    /// The appearance changed and isn't saved yet.
+    appearance_dirty: bool,
     /// Active-alert changes not yet saved: true adds a key, false removes it. Merged like `pending`.
     pending_active: BTreeMap<String, bool>,
     /// Account groups and the manual order (#89).
@@ -62,6 +66,8 @@ impl DashboardPrefs {
                 .map(|keys| keys.iter().filter_map(Value::as_str).map(str::to_owned).collect())
                 .unwrap_or_default(),
             pending_alert_fields: BTreeMap::new(),
+            appearance: doc.get("appearance").and_then(Value::as_str).map(str::to_owned),
+            appearance_dirty: false,
             pending_active: BTreeMap::new(),
             layout: layout_from_json(&doc),
             layout_dirty: false,
@@ -81,6 +87,18 @@ impl DashboardPrefs {
             self.layout_dirty = true;
         }
         result
+    }
+
+    /// The appearance choice's key ("system", "light", "dark"), when one was made.
+    pub fn appearance(&self) -> Option<&str> {
+        self.appearance.as_deref()
+    }
+
+    pub fn set_appearance(&mut self, key: &str) {
+        if self.appearance.as_deref() != Some(key) {
+            self.appearance = Some(key.to_owned());
+            self.appearance_dirty = true;
+        }
     }
 
     pub fn alert_settings(&self) -> &AlertSettings {
@@ -117,6 +135,7 @@ impl DashboardPrefs {
             || !self.pending_alert_fields.is_empty()
             || !self.pending_active.is_empty()
             || self.layout_dirty
+            || self.appearance_dirty
     }
 
     pub fn shows_history(&self, account: &str) -> bool {
@@ -244,7 +263,13 @@ impl DashboardPrefs {
         if self.layout_dirty {
             layout_to_json(&self.layout, &mut doc);
         }
+        if self.appearance_dirty
+            && let Some(appearance) = &self.appearance
+        {
+            doc.insert("appearance".into(), json!(appearance));
+        }
         let layout = layout_from_json(&doc);
+        let doc_appearance = doc.get("appearance").and_then(Value::as_str).map(str::to_owned);
         let text = serde_json::to_string_pretty(&Value::Object(doc)).map_err(io::Error::other)?;
         std::fs::create_dir_all(dir)?;
         let path = dir.join(PREFS_FILE);
@@ -257,6 +282,8 @@ impl DashboardPrefs {
         self.active_alerts = active;
         self.layout = layout;
         self.layout_dirty = false;
+        self.appearance_dirty = false;
+        self.appearance = doc_appearance;
         self.pending.clear();
         self.pending_alert_fields.clear();
         self.pending_active.clear();
@@ -647,6 +674,19 @@ mod tests {
         );
         assert_eq!(loaded.layout().group_of("gone"), None);
         assert!(!prefs.forget_account("gone"));
+    }
+
+    #[test]
+    fn the_appearance_choice_is_saved() {
+        let dir = Dir::new("appearance");
+        let mut prefs = DashboardPrefs::load(&dir.0);
+        assert_eq!(prefs.appearance(), None, "System until chosen");
+        prefs.set_appearance("light");
+        assert!(prefs.is_dirty());
+        prefs.save(&dir.0).unwrap();
+        assert_eq!(DashboardPrefs::load(&dir.0).appearance(), Some("light"));
+        prefs.set_appearance("light");
+        assert!(!prefs.is_dirty(), "the same choice again changes nothing");
     }
 
     #[test]
