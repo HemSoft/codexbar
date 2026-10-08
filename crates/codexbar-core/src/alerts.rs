@@ -105,6 +105,45 @@ pub fn alert_key(account: &str, metric: &str, kind: AlertKind) -> String {
     format!("{account}|{metric}|{}", kind.slug())
 }
 
+/// Splits `account|slot|kind` from the right, so account ids that contain `|` stay whole.
+pub fn split_key(key: &str) -> Option<(&str, &str, &str)> {
+    let mut parts = key.rsplitn(3, '|');
+    let (kind, slot, account) = (parts.next()?, parts.next()?, parts.next()?);
+    Some((account, slot, kind))
+}
+
+/// How finely a window's reset time is recorded in its slot. Windows last an hour or more, so readings this close
+/// belong to the same window.
+const SLOT_SECONDS: i64 = 600;
+
+/// The metric part of an alert key. Limits that reset carry their window (the reset time, to 10 minutes), so a new
+/// window can alert again even when CodexBar never saw usage fall in between; balances don't reset and use the bare
+/// metric key.
+pub fn metric_slot(metric: &Metric) -> String {
+    match metric.resets_at() {
+        Some(resets_at) => format!("{}@{}", metric.key(), resets_at.timestamp().div_euclid(SLOT_SECONDS)),
+        None => metric.key(),
+    }
+}
+
+/// True when two slots are the same window of the same metric. Reset times derived from a countdown move with request
+/// latency, so slots next to each other (resets within 10-20 minutes) are one window; the shortest windows providers
+/// report last an hour, so neighbouring windows are always several slots apart.
+fn same_window(a: &str, b: &str) -> bool {
+    if a == b {
+        return true;
+    }
+    match (a.split_once('@'), b.split_once('@')) {
+        (Some((metric_a, hour_a)), Some((metric_b, hour_b))) if metric_a == metric_b => {
+            match (hour_a.parse::<i64>(), hour_b.parse::<i64>()) {
+                (Ok(slot_a), Ok(slot_b)) => (slot_a - slot_b).abs() <= 1,
+                _ => false,
+            }
+        }
+        _ => false,
+    }
+}
+
 /// Evaluates the accounts that refreshed successfully against the settings and the active keys.
 pub fn evaluate(
     settings: &AlertSettings,
@@ -117,13 +156,37 @@ pub fn evaluate(
         let id = account.id().as_str();
         for metric in account.metrics() {
             let first_new = out.notify.len();
+            let current = metric_slot(metric);
+            // An alert already held for this window keeps its slot, so a reset estimate that drifts by a few seconds
+            // across an hour boundary doesn't look like a new window.
+            let slot = active
+                .iter()
+                .filter_map(|key| split_key(key))
+                .find(|(account, key_slot, _)| *account == id && same_window(key_slot, &current))
+                .map_or(current, |(_, key_slot, _)| key_slot.to_owned());
+            // Keys from an earlier window of this metric (or from before windows were part of the key) recover: that
+            // window is over.
+            let base = metric.key();
+            out.recovered.extend(
+                active
+                    .iter()
+                    .filter(|key| {
+                        // Compared by parts, not prefixes: account ids may contain `|` or `@`.
+                        let Some((account, key_slot, _)) = split_key(key) else {
+                            return false;
+                        };
+                        let key_metric = key_slot.split_once('@').map_or(key_slot, |(metric, _)| metric);
+                        account == id && key_metric == base && !same_window(key_slot, &slot)
+                    })
+                    .cloned(),
+            );
             for kind in [
                 AlertKind::Usage,
                 AlertKind::Balance,
                 AlertKind::Warning,
                 AlertKind::Critical,
             ] {
-                let key = alert_key(id, &metric.key(), kind);
+                let key = alert_key(id, &slot, kind);
                 let is_active = active.contains(&key);
                 match condition(settings, metric, kind, now) {
                     Condition::Triggered if settings.enabled && !is_active => {
@@ -138,7 +201,7 @@ pub fn evaluate(
             // holds whether Limit soon is new now or already active (say At risk was just switched on).
             let new = &mut out.notify[first_new..];
             if let Some(warning) = new.iter().position(|alert| alert.kind == AlertKind::Warning) {
-                let critical_key = alert_key(id, &metric.key(), AlertKind::Critical);
+                let critical_key = alert_key(id, &slot, AlertKind::Critical);
                 let critical_held = matches!(
                     condition(settings, metric, AlertKind::Critical, now),
                     Condition::Triggered | Condition::Holding
@@ -316,6 +379,11 @@ mod tests {
         )
     }
 
+    /// The slot of the `window()` helper's Weekly metric.
+    fn weekly_slot() -> String {
+        metric_slot(&window("c", 0.5).metrics()[0])
+    }
+
     fn on() -> AlertSettings {
         AlertSettings {
             enabled: true,
@@ -403,23 +471,26 @@ mod tests {
             alert.body,
             "OpenRouter · Credits: $3.10 left. Credits is below your $5.00 alert."
         );
-        assert_eq!(alert.key, "o|credits|balance");
+        assert_eq!(alert.key, "o|credits|balance", "balances have no window");
     }
 
     #[test]
     fn disabled_alerts_send_nothing_but_still_recover() {
         let settings = AlertSettings::default();
-        let active: BTreeSet<String> = [alert_key("c", "weekly", AlertKind::Usage)].into();
+        let active: BTreeSet<String> = [alert_key("c", &weekly_slot(), AlertKind::Usage)].into();
         let evaluation = evaluate(&settings, &active, &[window("c", 0.95)], now());
         assert!(evaluation.notify.is_empty());
         let evaluation = evaluate(&settings, &active, &[window("c", 0.1)], now());
-        assert_eq!(evaluation.recovered, vec!["c|weekly|usage".to_owned()]);
+        assert_eq!(
+            evaluation.recovered,
+            vec![alert_key("c", &weekly_slot(), AlertKind::Usage)]
+        );
     }
 
     #[test]
     fn accounts_missing_from_a_refresh_keep_their_alerts() {
         // A failed provider's accounts aren't passed in: their active keys are neither recovered nor repeated.
-        let active: BTreeSet<String> = [alert_key("c", "weekly", AlertKind::Usage)].into();
+        let active: BTreeSet<String> = [alert_key("c", &weekly_slot(), AlertKind::Usage)].into();
         let evaluation = evaluate(&on(), &active, &[balance("o", 900)], now());
         assert_eq!(evaluation, Evaluation::default());
     }
@@ -458,7 +529,11 @@ mod tests {
             "one notification, not two"
         );
         assert!(sent[1].is_empty(), "At risk was marked handled too");
-        assert!(active.contains("x|5-hour-window|warning"));
+        assert!(
+            active
+                .iter()
+                .any(|key| key.starts_with("x|5-hour-window@") && key.ends_with("|warning"))
+        );
     }
 
     #[test]
@@ -484,7 +559,12 @@ mod tests {
         };
         let sent = run(&both, &mut active, &[vec![account]]);
         assert!(sent[0].is_empty(), "no downgrade to At risk while Limit soon is active");
-        assert!(active.contains("x|5-hour-window|warning"), "At risk is marked handled");
+        assert!(
+            active
+                .iter()
+                .any(|key| key.starts_with("x|5-hour-window@") && key.ends_with("|warning")),
+            "At risk is marked handled"
+        );
     }
 
     #[test]
@@ -576,5 +656,151 @@ mod tests {
         assert!(!kinds(&only_critical, fast).contains(&AlertKind::Warning));
         // A slow pace triggers neither.
         assert!(kinds(&only_warning, 0.01).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod window_tests {
+    use super::*;
+    use crate::{AccountId, Provider};
+    use chrono::{Duration, TimeZone};
+
+    fn now() -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(2026, 10, 7, 12, 0, 0).unwrap()
+    }
+
+    fn weekly(used: f64, resets_in_days: i64) -> AccountSnapshot {
+        AccountSnapshot::new(
+            AccountId::new("c"),
+            Provider::Claude,
+            vec![Metric::Window {
+                label: "Weekly".into(),
+                used,
+                resets_at: now() + Duration::days(resets_in_days),
+                pace: None,
+            }],
+            now(),
+        )
+    }
+
+    #[test]
+    fn a_new_window_alerts_again_without_seeing_usage_fall() {
+        let settings = AlertSettings {
+            enabled: true,
+            warning: false,
+            critical: false,
+            ..AlertSettings::default()
+        };
+        let mut active = BTreeSet::new();
+        // Over the threshold in this window...
+        let first = evaluate(&settings, &active, &[weekly(0.9, 3)], now());
+        assert_eq!(first.notify.len(), 1);
+        active.extend(first.notify[0].keys().cloned());
+        // ...and over again in the next one, with no refresh in between that saw it reset.
+        let next = evaluate(&settings, &active, &[weekly(0.85, 10)], now());
+        assert_eq!(next.notify.len(), 1, "the new window notifies");
+        assert_eq!(
+            next.recovered,
+            vec![first.notify[0].key.clone()],
+            "the old window's key ends"
+        );
+    }
+
+    #[test]
+    fn another_accounts_key_is_never_taken_for_an_old_window() {
+        let settings = AlertSettings {
+            enabled: true,
+            ..AlertSettings::default()
+        };
+        // `team|weekly@west` is a different account whose key starts like `team`'s weekly window.
+        let other: BTreeSet<String> = ["team|weekly@west|weekly|usage".to_owned()].into();
+        let account = AccountSnapshot::new(
+            AccountId::new("team"),
+            Provider::Claude,
+            vec![Metric::Window {
+                label: "Weekly".into(),
+                used: 0.1,
+                resets_at: now() + Duration::days(3),
+                pace: None,
+            }],
+            now(),
+        );
+        assert!(evaluate(&settings, &other, &[account], now()).recovered.is_empty());
+    }
+
+    #[test]
+    fn a_reset_estimate_drifting_across_an_hour_stays_one_window() {
+        let settings = AlertSettings {
+            enabled: true,
+            warning: false,
+            critical: false,
+            ..AlertSettings::default()
+        };
+        let at = |resets_at: DateTime<Utc>| {
+            AccountSnapshot::new(
+                AccountId::new("c"),
+                Provider::OpenCode,
+                vec![Metric::Window {
+                    label: "Go usage".into(),
+                    used: 0.9,
+                    resets_at,
+                    pace: None,
+                }],
+                now(),
+            )
+        };
+        // The countdown puts the reset a second before a slot boundary, then (one slow request later) a second after.
+        let boundary = Utc.with_ymd_and_hms(2026, 10, 9, 15, 0, 0).unwrap();
+        let mut active = BTreeSet::new();
+        let first = evaluate(&settings, &active, &[at(boundary - Duration::seconds(1))], now());
+        assert_eq!(first.notify.len(), 1);
+        active.extend(first.notify[0].keys().cloned());
+        let drifted = evaluate(&settings, &active, &[at(boundary + Duration::seconds(1))], now());
+        assert!(
+            drifted.notify.is_empty() && drifted.recovered.is_empty(),
+            "same window, no repeat"
+        );
+    }
+
+    #[test]
+    fn back_to_back_one_hour_windows_are_separate() {
+        let settings = AlertSettings {
+            enabled: true,
+            warning: false,
+            critical: false,
+            ..AlertSettings::default()
+        };
+        let hourly = |resets_at: DateTime<Utc>| {
+            AccountSnapshot::new(
+                AccountId::new("c"),
+                Provider::Codex,
+                vec![Metric::Window {
+                    label: "1-hour window".into(),
+                    used: 0.9,
+                    resets_at,
+                    pace: None,
+                }],
+                now(),
+            )
+        };
+        let mut active = BTreeSet::new();
+        let first = evaluate(&settings, &active, &[hourly(now() + Duration::minutes(30))], now());
+        active.extend(first.notify[0].keys().cloned());
+        // CodexBar missed the low part of the next window; it is over the threshold again an hour later.
+        let next = evaluate(&settings, &active, &[hourly(now() + Duration::minutes(90))], now());
+        assert_eq!(next.notify.len(), 1, "the next one-hour window alerts again");
+    }
+
+    #[test]
+    fn keys_from_before_windows_were_keyed_recover_once() {
+        let settings = AlertSettings {
+            enabled: true,
+            warning: false,
+            critical: false,
+            ..AlertSettings::default()
+        };
+        let legacy: BTreeSet<String> = ["c|weekly|usage".to_owned()].into();
+        let evaluation = evaluate(&settings, &legacy, &[weekly(0.9, 3)], now());
+        assert_eq!(evaluation.recovered, vec!["c|weekly|usage".to_owned()]);
     }
 }

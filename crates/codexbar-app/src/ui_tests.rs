@@ -694,21 +694,153 @@ fn demo_alerts_never_touch_dashboard_json(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn alerts_of_accounts_no_longer_shown_recover(cx: &mut TestAppContext) {
-    use codexbar_core::alerts::{AlertKind, alert_key};
-    let settings = TempSettings::new("alerts-gone", "{}");
+fn a_notification_windows_failed_to_raise_is_sent_again(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("alerts-failed", "{}");
     std::fs::write(settings.0.join("dashboard.json"), ALERTS_ON).unwrap();
-    let (dashboard, _) = open_with_alerts(cx, &settings);
-    // An alert for an account the dashboard doesn't show (removed since) is dropped on the next refresh.
-    let gone = alert_key("removed-account", "weekly", AlertKind::Usage);
-    cx.update(|cx| {
-        let mut active = crate::prefs_hub::PrefsHub::active_alerts(cx);
-        active.insert(gone.clone());
-        crate::prefs_hub::PrefsHub::set_active_alerts(cx, active);
+    let (dashboard, notifier) = open_with_alerts(cx, &settings);
+    let first = notifier.shown.lock().unwrap().len();
+    let lost = notifier.shown.lock().unwrap()[0].clone();
+
+    // Windows accepted the first toast but later raised `Failed` for it; the clock resends it without a refresh.
+    notifier.failed.lock().unwrap().extend(lost.keys().cloned());
+    cx.executor().advance_clock(std::time::Duration::from_secs(2));
+    cx.run_until_parked();
+    let shown = notifier.shown.lock().unwrap();
+    assert_eq!(shown.len(), first + 1, "only the failed one is sent again");
+    assert_eq!(shown.last().unwrap().title, lost.title);
+    let _ = dashboard;
+}
+
+#[gpui_kit::test]
+fn changing_a_threshold_judges_held_alerts_afresh(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("alerts-threshold", "{}");
+    std::fs::write(settings.0.join("dashboard.json"), ALERTS_ON).unwrap();
+    let (_, _) = open_with_alerts(cx, &settings);
+    let has_usage = |keys: &[String]| keys.iter().any(|key| key.ends_with("|usage"));
+    assert!(has_usage(&active_on_disk(&settings)));
+
+    cx.update(|cx| crate::prefs_hub::PrefsHub::update_alert_settings(cx, |alerts| alerts.usage_threshold = 0.95));
+    let active = active_on_disk(&settings);
+    assert!(!has_usage(&active), "usage alerts are re-judged against 95%");
+    assert!(
+        active.iter().any(|key| key.ends_with("|balance")),
+        "other kinds keep theirs"
+    );
+}
+
+#[gpui_kit::test]
+fn alerts_of_an_account_that_disappears_stay_until_reset(cx: &mut TestAppContext) {
+    use codexbar_core::alerts::{AlertKind, alert_key};
+    let key = alert_key("removed-account", "weekly", AlertKind::Usage);
+    let kept = cx.update(|cx| {
+        crate::notifications::Notifications::init(cx, Arc::new(RecordingNotifier::default()), false);
+        crate::notifications::Notifications::seed_for_test(cx, [key.clone()].into());
+        // A refresh without that account (removed, disabled or its provider failed) leaves its key alone.
+        crate::notifications::process(cx, &[], chrono::Utc::now());
+        crate::notifications::Notifications::active(cx)
     });
+    assert!(kept.contains(&key));
+    cx.update(crate::notifications::Notifications::reset);
+    assert!(
+        cx.update(|cx| crate::notifications::Notifications::active(cx))
+            .is_empty()
+    );
+}
+
+#[gpui_kit::test]
+fn a_test_notification_windows_failed_to_raise_shows_why(cx: &mut TestAppContext) {
+    let notifier = Arc::new(RecordingNotifier::default());
+    let recorder = notifier.clone();
+    let problem = cx.update(|cx| {
+        crate::notifications::Notifications::init(cx, recorder, false);
+        crate::notifications::Notifications::send_test(cx);
+        // Windows accepted the sample, then raised `Failed` for it (it has no alert key).
+        notifier.failed.lock().unwrap().push(String::new());
+        *notifier.reason.lock().unwrap() = Some("Windows couldn't show a notification: access denied".into());
+        crate::notifications::retry_failed(cx, &[], chrono::Utc::now());
+        crate::notifications::Notifications::problem(cx)
+    });
+    assert_eq!(
+        problem.as_deref(),
+        Some("Windows couldn't show a notification: access denied")
+    );
+    assert!(
+        cx.update(|cx| crate::notifications::Notifications::active(cx))
+            .is_empty(),
+        "no empty key is kept"
+    );
+}
+
+#[gpui_kit::test]
+fn a_successful_resend_clears_the_failure_message(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("alerts-resend-clears", "{}");
+    std::fs::write(settings.0.join("dashboard.json"), ALERTS_ON).unwrap();
+    let (_, notifier) = open_with_alerts(cx, &settings);
+    let lost = notifier.shown.lock().unwrap()[0].clone();
+
+    notifier.failed.lock().unwrap().extend(lost.keys().cloned());
+    *notifier.reason.lock().unwrap() = Some("Windows couldn't show a notification: busy".into());
+    cx.executor().advance_clock(std::time::Duration::from_secs(2));
+    cx.run_until_parked();
+    assert_eq!(
+        cx.update(|cx| crate::notifications::Notifications::problem(cx)),
+        None,
+        "the resend went through"
+    );
+}
+
+#[gpui_kit::test]
+fn a_blocked_message_clears_once_notifications_are_on_again(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("alerts-unblock", "{}");
+    std::fs::write(settings.0.join("dashboard.json"), ALERTS_ON).unwrap();
+    let notifier = Arc::new(RecordingNotifier::default());
+    *notifier.blocked.lock().unwrap() = Some("Notifications are off for CodexBar.".into());
+    let recorder = notifier.clone();
+    cx.update(|cx| crate::notifications::Notifications::init(cx, recorder, true));
+    let (_, dashboard) = open_dashboard(cx, &settings);
+    assert!(
+        cx.update(|cx| crate::notifications::Notifications::problem(cx))
+            .is_some()
+    );
+
+    // The user turns alerts off, then notifications back on: nothing to send, but the message is out of date.
+    cx.update(|cx| crate::prefs_hub::PrefsHub::update_alert_settings(cx, |alerts| alerts.enabled = false));
+    *notifier.blocked.lock().unwrap() = None;
     refresh(cx, &dashboard);
-    assert!(!active_on_disk(&settings).contains(&gone));
-    assert!(!active_on_disk(&settings).is_empty(), "shown accounts keep theirs");
+    assert_eq!(cx.update(|cx| crate::notifications::Notifications::problem(cx)), None);
+}
+
+#[gpui_kit::test]
+fn demo_preferences_stay_in_memory(cx: &mut TestAppContext) {
+    let dir = TempSettings::new("prefs-demo", "{}");
+    cx.update(|cx| {
+        crate::prefs_hub::PrefsHub::init_in_memory(cx);
+        crate::prefs_hub::PrefsHub::update_alert_settings(cx, |alerts| alerts.enabled = true);
+    });
+    assert!(
+        cx.update(|cx| crate::prefs_hub::PrefsHub::alert_settings(cx)).enabled,
+        "applies in memory"
+    );
+    assert!(!dir.0.join("dashboard.json").exists(), "nothing is written");
+}
+
+#[gpui_kit::test]
+fn alerts_pause_while_preferences_cannot_be_saved(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("alerts-readonly", "{}");
+    std::fs::write(
+        settings.0.join("dashboard.json"),
+        r#"{ "version": 2, "alerts": { "enabled": true, "usageThreshold": 0.8, "balanceThreshold": 10 } }"#,
+    )
+    .unwrap();
+    let (_, notifier) = open_with_alerts(cx, &settings);
+    assert!(
+        notifier.shown.lock().unwrap().is_empty(),
+        "nothing is sent that couldn't be remembered"
+    );
+    let problem = cx
+        .update(|cx| crate::notifications::Notifications::problem(cx))
+        .unwrap();
+    assert!(problem.starts_with("Alerts are paused"), "{problem}");
 }
 
 // --- Refresh lifecycle (#76): a live dashboard over fake providers.

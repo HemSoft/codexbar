@@ -10,7 +10,9 @@ use gpui_kit::{App, BorrowAppContext as _, Global, SharedString};
 
 pub struct PrefsHub {
     prefs: DashboardPrefs,
-    dir: PathBuf,
+    /// Where `dashboard.json` lives; `None` keeps everything in memory (the demo, so trying alert settings there never
+    /// changes the real app's).
+    dir: Option<PathBuf>,
     error: Option<SharedString>,
 }
 
@@ -20,7 +22,16 @@ impl PrefsHub {
     pub fn init(cx: &mut App, dir: &Path) {
         cx.set_global(Self {
             prefs: DashboardPrefs::load(dir),
-            dir: dir.to_owned(),
+            dir: Some(dir.to_owned()),
+            error: None,
+        });
+    }
+
+    /// Preferences that are never saved, starting from the defaults (the demo).
+    pub fn init_in_memory(cx: &mut App) {
+        cx.set_global(Self {
+            prefs: DashboardPrefs::default(),
+            dir: None,
             error: None,
         });
     }
@@ -52,10 +63,29 @@ impl PrefsHub {
     }
 
     /// Changes alert settings with `change` and saves.
+    /// Changes alert settings and saves. A changed usage or balance threshold clears that kind's active alerts, so
+    /// they are judged against the new threshold rather than held by the old one.
     pub fn update_alert_settings(cx: &mut App, change: impl FnOnce(&mut AlertSettings)) {
         Self::edit(cx, |prefs| {
-            let mut settings = prefs.alert_settings().clone();
+            let old = prefs.alert_settings().clone();
+            let mut settings = old.clone();
             change(&mut settings);
+            let mut stale = Vec::new();
+            if settings.usage_threshold != old.usage_threshold {
+                stale.push("|usage");
+            }
+            if settings.balance_threshold != old.balance_threshold {
+                stale.push("|balance");
+            }
+            if !stale.is_empty() {
+                let active = prefs
+                    .active_alerts()
+                    .iter()
+                    .filter(|key| !stale.iter().any(|kind| key.ends_with(kind)))
+                    .cloned()
+                    .collect();
+                prefs.set_active_alerts(active);
+            }
             prefs.set_alert_settings(settings);
         });
         cx.refresh_windows();
@@ -76,6 +106,12 @@ impl PrefsHub {
         }
     }
 
+    /// True when `dashboard.json` is from a newer CodexBar: settings are read, but nothing can be saved.
+    pub fn is_read_only(cx: &App) -> bool {
+        cx.try_global::<Self>()
+            .is_some_and(|hub| hub.dir.is_some() && hub.prefs.is_read_only())
+    }
+
     /// The last save problem, for the Settings and History views.
     pub fn error(cx: &App) -> Option<SharedString> {
         cx.try_global::<Self>().and_then(|hub| hub.error.clone())
@@ -91,9 +127,12 @@ impl PrefsHub {
             if !hub.prefs.is_dirty() {
                 return;
             }
+            let Some(dir) = hub.dir.clone() else {
+                return;
+            };
             hub.error = hub
                 .prefs
-                .save(&hub.dir)
+                .save(&dir)
                 .err()
                 .map(|err| format!("Setting not saved: {err}").into());
         });

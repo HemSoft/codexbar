@@ -113,13 +113,18 @@ impl DashboardPrefs {
         }
         // Active alerts are keyed `account|metric|kind`; they follow the account so a held condition doesn't
         // notify again under the new id.
-        let prefix = format!("{from}|");
+        // The account is everything before the last two parts, so ids containing `|` are compared whole and a key
+        // already under `to` (whose id may start with `from|`) is never rewritten again.
         let moved: BTreeSet<String> = self
             .active_alerts
             .iter()
-            .map(|key| match key.strip_prefix(&prefix) {
-                Some(rest) => format!("{to}|{rest}"),
-                None => key.clone(),
+            .map(|key| {
+                let mut parts = key.rsplitn(3, '|');
+                let (kind, metric, account) = (parts.next(), parts.next(), parts.next());
+                match (account, metric, kind) {
+                    (Some(account), Some(metric), Some(kind)) if account == from => format!("{to}|{metric}|{kind}"),
+                    _ => key.clone(),
+                }
             })
             .collect();
         if moved != self.active_alerts {
@@ -404,6 +409,17 @@ mod tests {
             "the saver holds the merged result"
         );
         assert_eq!(second.active_alerts(), merged.active_alerts());
+    }
+
+    #[test]
+    fn rename_account_compares_whole_ids_and_runs_once() {
+        let mut prefs = DashboardPrefs::default();
+        prefs.set_active_alerts(["openrouter|credits|balance".to_owned()].into());
+        assert!(prefs.rename_account("openrouter", "openrouter|team"));
+        // The migrated key starts with `openrouter|`, but its account is `openrouter|team`: leave it alone.
+        assert!(!prefs.rename_account("openrouter", "openrouter|team"));
+        let keys: Vec<&str> = prefs.active_alerts().iter().map(String::as_str).collect();
+        assert_eq!(keys, vec!["openrouter|team|credits|balance"]);
     }
 
     #[test]

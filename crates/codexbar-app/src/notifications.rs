@@ -22,6 +22,20 @@ pub enum NotifierStatus {
 pub trait Notifier: Send + Sync {
     fn status(&self) -> NotifierStatus;
     fn show(&self, alert: &Alert) -> Result<(), String>;
+    /// Alert keys whose notification Windows accepted but then failed to raise, since the last call.
+    fn take_failed(&self) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// True when `take_failed` has keys waiting.
+    fn has_failed(&self) -> bool {
+        false
+    }
+
+    /// Why Windows failed to raise the last notification that failed after `Show`, if one did since the last call.
+    fn take_failure_reason(&self) -> Option<String> {
+        None
+    }
 }
 
 /// The notifier in use and the last delivery problem.
@@ -43,6 +57,12 @@ impl Notifications {
             problem: None,
             memory: (!persist).then(BTreeSet::new),
         });
+    }
+
+    /// Replaces the in-memory active set, for the headless UI tests.
+    #[cfg(test)]
+    pub fn seed_for_test(cx: &mut App, active: BTreeSet<String>) {
+        Self::set_active(cx, active);
     }
 
     /// The alerts already notified and not yet recovered.
@@ -102,34 +122,59 @@ impl Notifications {
 }
 
 /// Evaluates the accounts that refreshed successfully and delivers new alerts. Accounts whose provider failed are
-/// not passed in, so their alerts are neither cleared nor repeated. `shown` are all accounts the dashboard now
-/// shows, including a failed provider's last good ones; alerts of any other account (removed, disabled, or its
-/// provider switched off) recover.
-pub fn process(cx: &mut App, refreshed: &[AccountSnapshot], shown: &[String], now: DateTime<Utc>) {
+/// not passed in, so their alerts are neither cleared nor repeated. Alerts end when their condition recovers or on
+/// Reset; an account that disappears keeps its keys, which can't notify (re-added accounts get new ids).
+pub fn process(cx: &mut App, refreshed: &[AccountSnapshot], now: DateTime<Utc>) {
     let Some(notifier) = cx.try_global::<Notifications>().map(|global| global.notifier.clone()) else {
         return;
     };
+    // Which alerts were sent must be saved, or every restart would send them again. A `dashboard.json` from a newer
+    // CodexBar can't be written, so alerts pause until that version (or a fixed file) takes over.
+    let persists = cx
+        .try_global::<Notifications>()
+        .is_some_and(|global| global.memory.is_none());
+    if persists && PrefsHub::is_read_only(cx) && PrefsHub::alert_settings(cx).enabled {
+        cx.update_global(|global: &mut Notifications, _| {
+            global.problem = Some(
+                "Alerts are paused: dashboard.json is from a newer CodexBar, so sent alerts can't be remembered."
+                    .into(),
+            );
+        });
+        return;
+    }
     let settings = PrefsHub::alert_settings(cx);
-    let active = Notifications::active(cx);
-    let mut evaluation = evaluate(&settings, &active, refreshed, now);
-    evaluation.recovered.extend(
-        active
-            .iter()
-            .filter(|key| {
-                let account = key.split('|').next().unwrap_or_default();
-                !shown.iter().any(|id| id == account)
-            })
-            .filter(|key| !evaluation.recovered.contains(key))
-            .cloned()
-            .collect::<Vec<_>>(),
-    );
-    if evaluation.notify.is_empty() && evaluation.recovered.is_empty() && evaluation.covered.is_empty() {
+    // A notification Windows failed to raise after accepting it wasn't delivered: forget it, so it is sent again.
+    let failed: Vec<String> = notifier
+        .take_failed()
+        .into_iter()
+        .filter(|key| !key.is_empty())
+        .collect();
+    let reason = notifier.take_failure_reason();
+    let mut active = Notifications::active(cx);
+    for key in &failed {
+        active.remove(key);
+    }
+    let evaluation = evaluate(&settings, &active, refreshed, now);
+    if evaluation.notify.is_empty()
+        && evaluation.recovered.is_empty()
+        && evaluation.covered.is_empty()
+        && failed.is_empty()
+    {
+        if let Some(reason) = reason {
+            cx.update_global(|global: &mut Notifications, _| global.problem = Some(reason.into()));
+        } else if notifier.status() == NotifierStatus::Ready {
+            // Notifications were turned back on: an old "blocked" message no longer applies.
+            cx.update_global(|global: &mut Notifications, _| global.problem = None);
+        }
         // Nothing new; still retry an active-alert save that failed earlier.
         Notifications::set_active(cx, active);
         return;
     }
 
     let mut next = active;
+    for key in &failed {
+        next.remove(key);
+    }
     for key in &evaluation.recovered {
         next.remove(key);
     }
@@ -148,10 +193,32 @@ pub fn process(cx: &mut App, refreshed: &[AccountSnapshot], shown: &[String], no
             }
         }
     }
+    // Windows' reason stands when nothing could be sent again (the test notification has no alert to resend);
+    // when the failed alerts were resent successfully it is out of date.
+    let problem = problem.or(if failed.is_empty() { reason } else { None });
     cx.update_global(|global: &mut Notifications, _| global.problem = problem.map(Into::into));
     // If this save fails (lock busy), the change stays pending and is retried on the next refresh; Settings shows
     // the save error meanwhile.
     Notifications::set_active(cx, next);
+}
+
+/// True when Windows reported notifications it failed to raise that haven't been handled yet.
+pub fn has_failed(cx: &App) -> bool {
+    cx.try_global::<Notifications>()
+        .is_some_and(|global| global.notifier.has_failed())
+}
+
+/// Handles notifications Windows failed to raise, right away rather than at the next refresh (which may never come
+/// with automatic refresh off). Called from the dashboard's clock with the accounts of the last refresh when settings
+/// haven't changed since, so they are sent again now; otherwise with none, which only forgets them, and the next
+/// refresh judges them under the current settings.
+pub fn retry_failed(cx: &mut App, accounts: &[AccountSnapshot], now: DateTime<Utc>) {
+    let waiting = cx
+        .try_global::<Notifications>()
+        .is_some_and(|global| global.notifier.has_failed());
+    if waiting {
+        process(cx, accounts, now);
+    }
 }
 
 /// Keeps notifications in memory: the demo dashboard (so design work never pops real notifications) and tests.
@@ -159,6 +226,10 @@ pub fn process(cx: &mut App, refreshed: &[AccountSnapshot], shown: &[String], no
 pub struct RecordingNotifier {
     pub shown: Mutex<Vec<Alert>>,
     pub blocked: Mutex<Option<String>>,
+    /// Keys to report as failed after delivery, as Windows' `Failed` event would.
+    pub failed: Mutex<Vec<String>>,
+    /// The reason to report with them.
+    pub reason: Mutex<Option<String>>,
 }
 
 impl Notifier for RecordingNotifier {
@@ -173,6 +244,18 @@ impl Notifier for RecordingNotifier {
         self.shown.lock().unwrap().push(alert.clone());
         Ok(())
     }
+
+    fn take_failed(&self) -> Vec<String> {
+        std::mem::take(&mut *self.failed.lock().unwrap())
+    }
+
+    fn has_failed(&self) -> bool {
+        !self.failed.lock().unwrap().is_empty()
+    }
+
+    fn take_failure_reason(&self) -> Option<String> {
+        self.reason.lock().unwrap().take()
+    }
 }
 
 /// Windows toast notifications for the unpackaged app, under a per-user AppUserModelID registered in
@@ -180,6 +263,10 @@ impl Notifier for RecordingNotifier {
 pub struct WindowsNotifier {
     /// Why the app id couldn't be registered; without it Windows may drop notifications silently.
     registration: Option<String>,
+    /// Keys of notifications Windows reported as failed after `Show` (its `Failed` event).
+    failed: Arc<Mutex<Vec<String>>>,
+    /// The error Windows gave for the last such failure.
+    reason: Arc<Mutex<Option<String>>>,
 }
 
 /// The AppUserModelID notifications are sent under.
@@ -195,6 +282,8 @@ impl WindowsNotifier {
                     err.message()
                 )
             }),
+            failed: Arc::default(),
+            reason: Arc::default(),
         }
     }
 }
@@ -232,9 +321,48 @@ impl Notifier for WindowsNotifier {
             let document = XmlDocument::new()?;
             document.LoadXml(&HSTRING::from(xml))?;
             let toast = ToastNotification::CreateToastNotification(&document)?;
+            // `Show` can succeed and the toast still fail to appear; Windows reports that through `Failed`.
+            let failed = self.failed.clone();
+            let reason = self.reason.clone();
+            let keys: Vec<String> = alert.keys().cloned().collect();
+            toast.Failed(&windows::Foundation::TypedEventHandler::new(
+                move |_, args: windows::core::Ref<windows::UI::Notifications::ToastFailedEventArgs>| {
+                    let code = args.as_ref().and_then(|args| args.ErrorCode().ok());
+                    let message = code.map_or_else(
+                        || "Windows didn't say why".to_owned(),
+                        |code| windows::core::Error::from_hresult(code).message(),
+                    );
+                    *reason.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) =
+                        Some(format!("Windows couldn't show a notification: {message}"));
+                    failed
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .extend(keys.iter().cloned());
+                    Ok(())
+                },
+            ))?;
             ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from(APP_ID))?.Show(&toast)
         })();
         result.map_err(|err| format!("Notification not shown: {}", err.message()))
+    }
+
+    fn take_failed(&self) -> Vec<String> {
+        std::mem::take(&mut *self.failed.lock().unwrap_or_else(|poisoned| poisoned.into_inner()))
+    }
+
+    fn has_failed(&self) -> bool {
+        !self
+            .failed
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .is_empty()
+    }
+
+    fn take_failure_reason(&self) -> Option<String> {
+        self.reason
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
     }
 }
 
