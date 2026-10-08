@@ -1396,6 +1396,8 @@ fn the_focused_account_shows_its_alert_and_keeps_it_after_notifying(cx: &mut Tes
     );
 }
 
+const MANUAL_ORDER: &str = r#"{ "version": 1, "orderMode": "manual" }"#;
+
 fn shown_ids(cx: &mut TestAppContext, dashboard: &Entity<Dashboard>) -> Vec<String> {
     cx.update(|cx| dashboard.read(cx).account_ids())
 }
@@ -1403,6 +1405,7 @@ fn shown_ids(cx: &mut TestAppContext, dashboard: &Entity<Dashboard>) -> Vec<Stri
 #[gpui_kit::test]
 fn groups_arrange_the_table_and_are_saved(cx: &mut TestAppContext) {
     let settings = TempSettings::new("groups", "{}");
+    std::fs::write(settings.0.join("dashboard.json"), MANUAL_ORDER).unwrap();
     let dashboard = open_live(
         cx,
         &settings,
@@ -1435,6 +1438,7 @@ fn groups_arrange_the_table_and_are_saved(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn move_down_reorders_the_focused_account_within_its_group(cx: &mut TestAppContext) {
     let settings = TempSettings::new("groups-move", "{}");
+    std::fs::write(settings.0.join("dashboard.json"), MANUAL_ORDER).unwrap();
     let dashboard = open_live(
         cx,
         &settings,
@@ -1451,4 +1455,44 @@ fn move_down_reorders_the_focused_account_within_its_group(cx: &mut TestAppConte
     assert_eq!(shown_ids(cx, &dashboard), ["claude-1", "codex"]);
     let saved = codexbar_store::prefs::DashboardPrefs::load(&settings.0);
     assert_eq!(saved.layout().order(), ["claude-1".to_owned(), "codex".to_owned()]);
+}
+
+#[gpui_kit::test]
+fn smart_order_puts_urgent_accounts_first_and_manual_comes_back(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("smart-order", "{}");
+    let dashboard = open_live(
+        cx,
+        &settings,
+        vec![
+            FakeProvider::new(Provider::Codex, "codex", Some(0.2)),
+            FakeProvider::new(Provider::Claude, "claude-1", Some(0.97)),
+            FakeProvider::new(Provider::Cursor, "cursor", Some(0.85)),
+        ],
+    );
+    cx.run_until_parked();
+    // Smart by default: Limit soon, then Watch, then calm.
+    assert_eq!(shown_ids(cx, &dashboard), ["claude-1", "cursor", "codex"]);
+    // Manual shows the default order; Smart never wrote to it.
+    let handle = cx.windows()[0];
+    click(cx, handle, ("order-mode", 1usize));
+    assert_eq!(shown_ids(cx, &dashboard), ["codex", "claude-1", "cursor"]);
+    let saved = codexbar_store::prefs::DashboardPrefs::load(&settings.0);
+    assert_eq!(saved.layout().mode(), codexbar_core::layout::OrderMode::Manual);
+    assert!(saved.layout().order().is_empty());
+    click(cx, handle, ("order-mode", 0usize));
+    assert_eq!(shown_ids(cx, &dashboard), ["claude-1", "cursor", "codex"]);
+}
+
+#[gpui_kit::test]
+fn smart_order_keeps_failed_accounts_visible_after_current_ones(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("smart-failed", "{}");
+    let codex = FakeProvider::new(Provider::Codex, "codex", Some(0.1));
+    let claude = FakeProvider::new(Provider::Claude, "claude-1", Some(0.1));
+    let dashboard = open_live(cx, &settings, vec![codex.clone(), claude.clone()]);
+    cx.run_until_parked();
+    assert_eq!(shown_ids(cx, &dashboard), ["codex", "claude-1"]);
+    // Codex fails: its last known usage stays visible, below the account whose usage is current.
+    codex.set(None);
+    refresh(cx, &dashboard);
+    assert_eq!(shown_ids(cx, &dashboard), ["claude-1", "codex"]);
 }

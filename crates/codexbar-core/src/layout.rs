@@ -5,8 +5,11 @@
 //! accounts the order doesn't know yet follow in the order they are given (provider order), so new accounts land
 //! deterministically. Memberships that point at a group that no longer exists read as Ungrouped.
 
+use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::fmt;
+
+use crate::Severity;
 
 /// The longest group name, in characters.
 pub const MAX_GROUP_NAME: usize = 40;
@@ -57,6 +60,75 @@ pub struct Layout {
     members: BTreeMap<String, String>,
     /// The manual order, account ids first to last.
     order: Vec<String>,
+    mode: OrderMode,
+}
+
+/// How accounts are ordered within each group (#90). Groups keep their own order either way.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum OrderMode {
+    /// Most urgent first, with the manual order breaking ties.
+    #[default]
+    Smart,
+    /// The user's manual order.
+    Manual,
+}
+
+impl OrderMode {
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Smart => "smart",
+            Self::Manual => "manual",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<Self> {
+        [Self::Smart, Self::Manual].into_iter().find(|mode| mode.key() == key)
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Smart => "Smart",
+            Self::Manual => "Manual",
+        }
+    }
+}
+
+/// Whether an account's shown usage is current (#76).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Health {
+    #[default]
+    Fresh,
+    /// Last known usage: restored at startup, or kept after a failed refresh.
+    Stale,
+    /// No usage to show: loading, or the first fetch failed.
+    Unavailable,
+}
+
+/// What Smart order ranks an account by, most important first: effective severity, the strongest alert that holds,
+/// projected exhaustion, then health (current usage before last known, last known before none), then pressure.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Urgency {
+    pub severity: Severity,
+    /// 0 for none, 1 for a threshold alert, 2 for At risk, 3 for Limit soon.
+    pub alert: u8,
+    /// A limit is on pace to run out before it resets.
+    pub projected: bool,
+    pub health: Health,
+    /// 0..=1, how close the account is to blocking.
+    pub pressure: f64,
+}
+
+impl Urgency {
+    /// `Less` when `self` is more urgent, so sorting ascending puts the most urgent first.
+    pub fn rank(&self, other: &Self) -> Ordering {
+        other
+            .severity
+            .cmp(&self.severity)
+            .then(other.alert.cmp(&self.alert))
+            .then(other.projected.cmp(&self.projected))
+            .then(self.health.cmp(&other.health))
+            .then(other.pressure.total_cmp(&self.pressure))
+    }
 }
 
 impl Layout {
@@ -100,6 +172,30 @@ impl Layout {
 
     pub fn order(&self) -> &[String] {
         &self.order
+    }
+
+    pub fn mode(&self) -> OrderMode {
+        self.mode
+    }
+
+    /// Switches between Smart and Manual. The manual order is kept either way, so switching back restores it.
+    pub fn set_mode(&mut self, mode: OrderMode) {
+        self.mode = mode;
+    }
+
+    /// Like `arrange`, but in Smart mode each section is ranked by `urgency`, most urgent first. The sort is stable,
+    /// so accounts that rank the same keep their manual order.
+    pub fn arrange_by(&self, accounts: &[String], urgency: impl Fn(&str) -> Urgency) -> Vec<Section> {
+        let mut sections = self.arrange(accounts);
+        if self.mode == OrderMode::Smart {
+            for section in &mut sections {
+                let mut ranked: Vec<(Urgency, String)> =
+                    section.accounts.drain(..).map(|id| (urgency(&id), id)).collect();
+                ranked.sort_by(|(a, _), (b, _)| a.rank(b));
+                section.accounts = ranked.into_iter().map(|(_, id)| id).collect();
+            }
+        }
+        sections
     }
 
     pub fn group(&self, id: &str) -> Option<&Group> {
@@ -512,6 +608,91 @@ mod tests {
             vec![],
         );
         assert_eq!(names(&by_id), vec!["Unnamed group"]);
+    }
+
+    fn urgency(severity: Severity) -> Urgency {
+        Urgency {
+            severity,
+            ..Urgency::default()
+        }
+    }
+
+    #[test]
+    fn smart_order_ranks_within_groups_and_keeps_the_manual_order() {
+        let mut layout = Layout::default();
+        let work = layout.create_group("Work").unwrap();
+        for id in ["calm", "critical"] {
+            layout.assign(id, Some(&work)).unwrap();
+        }
+        let accounts = ids(&["calm", "critical", "watch", "normal"]);
+        let signals = |id: &str| match id {
+            "critical" => urgency(Severity::LimitSoon),
+            "watch" => urgency(Severity::Watch),
+            _ => urgency(Severity::Normal),
+        };
+        assert_eq!(layout.mode(), OrderMode::Smart, "Smart by default");
+        assert_eq!(
+            shape(&layout.arrange_by(&accounts, signals)),
+            vec![
+                (Some("Work"), vec!["critical", "calm"]),
+                (None, vec!["watch", "normal"])
+            ],
+            "groups stay intact"
+        );
+        layout.set_mode(OrderMode::Manual);
+        assert_eq!(
+            shape(&layout.arrange_by(&accounts, signals)),
+            vec![
+                (Some("Work"), vec!["calm", "critical"]),
+                (None, vec!["watch", "normal"])
+            ],
+            "Manual ignores urgency"
+        );
+        assert!(layout.order().is_empty(), "Smart never rewrote the manual order");
+    }
+
+    #[test]
+    fn alerts_projection_and_health_break_severity_ties_in_order() {
+        let at = |alert: u8, projected: bool, health: Health, pressure: f64| Urgency {
+            severity: Severity::Watch,
+            alert,
+            projected,
+            health,
+            pressure,
+        };
+        let layout = Layout::default();
+        let accounts = ids(&[
+            "plain",
+            "stale",
+            "failed",
+            "projected",
+            "alerted",
+            "busier",
+            "tie-a",
+            "tie-b",
+        ]);
+        let signals = |id: &str| match id {
+            "alerted" => at(2, false, Health::Fresh, 0.5),
+            "projected" => at(1, true, Health::Fresh, 0.5),
+            "busier" => at(1, false, Health::Fresh, 0.9),
+            "stale" => at(1, false, Health::Stale, 0.9),
+            "failed" => at(1, false, Health::Unavailable, 0.9),
+            _ => at(1, false, Health::Fresh, 0.5),
+        };
+        let sections = layout.arrange_by(&accounts, signals);
+        assert_eq!(
+            sections[0].accounts,
+            ids(&[
+                "alerted",
+                "projected",
+                "busier",
+                "plain",
+                "tie-a",
+                "tie-b",
+                "stale",
+                "failed"
+            ]),
+        );
     }
 
     #[test]
