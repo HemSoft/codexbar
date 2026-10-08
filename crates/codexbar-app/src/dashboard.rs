@@ -224,6 +224,7 @@ impl Dashboard {
                         this.refresh(cx);
                     } else if this.now.timestamp() / 60 != this.compact_minute {
                         this.update_compact_history(cx);
+                        this.rerank_if_stale(cx);
                     }
                     let now = this.now;
                     this.table.update(cx, |table, _| table.delegate_mut().set_now(now));
@@ -745,6 +746,25 @@ impl Dashboard {
                 (id.to_owned(), urgency)
             })
             .collect()
+    }
+
+    /// Smart order ranks by time-dependent signals (projections, resets), so it is rechecked each minute; the table is
+    /// replaced only when the order actually changed.
+    fn rerank_if_stale(&mut self, cx: &mut Context<Self>) {
+        if self.layout.mode() != codexbar_core::layout::OrderMode::Smart {
+            return;
+        }
+        let urgency = self.urgency_of(&self.accounts, cx);
+        let ranked = arrange(self.accounts.clone(), &self.layout, |id| {
+            urgency.get(id).copied().unwrap_or_default()
+        });
+        if ranked
+            .iter()
+            .map(AccountSnapshot::id)
+            .ne(self.accounts.iter().map(AccountSnapshot::id))
+        {
+            self.set_accounts(ranked, cx);
+        }
     }
 
     /// Rearranges the table when the layout changed, or, in Smart order, when what it ranks by changed.
