@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 
 use chrono::{DateTime, Months, Utc};
-use codexbar_core::{AccountId, AccountSnapshot, Metric, Money, Pace, Provider};
+use codexbar_core::{AccountId, AccountSnapshot, Metric, Money, Provider};
 use serde_json::Value;
 
 use crate::pace::elapsed_pace;
@@ -34,7 +34,7 @@ pub fn read_access_token(path: &Path) -> Result<String, ProviderError> {
 
 /// Maps `GetCurrentPeriodUsage`: `planUsage.*PercentUsed` are percentages, `billingCycleEnd` (and
 /// `billingCycleStart` when sent) are Unix milliseconds as a string or number, and `spendLimitUsage` carries the
-/// on-demand limit and what is left of it in US cents.
+/// on-demand caps (per user, and the team pool on team plans) in US cents.
 ///
 /// Projections (#83) use the real billing period: its start when Cursor sends one, otherwise one month before the
 /// end (Cursor bills monthly, also on annual plans). A start that can't be read or isn't before the end gives no
@@ -78,9 +78,7 @@ pub fn parse_usage(payload: &str, now: DateTime<Utc>) -> Result<AccountSnapshot,
             detail: "no usage percentages",
         });
     }
-    if let Some(on_demand) = on_demand(&json, resets_at, pace) {
-        metrics.push(on_demand);
-    }
+    metrics.extend(on_demand(&json, resets_at));
     Ok(AccountSnapshot::new(
         AccountId::new("cursor"),
         Provider::Cursor,
@@ -97,22 +95,34 @@ fn millis(value: &Value) -> Option<DateTime<Utc>> {
         .and_then(DateTime::from_timestamp_millis)
 }
 
-/// On-demand spend against its limit, when an individual limit is set.
-fn on_demand(json: &Value, resets_at: DateTime<Utc>, pace: impl Fn(f64) -> Option<Pace>) -> Option<Metric> {
-    let usage = json.get("spendLimitUsage")?;
-    let limit = usage.get("individualLimit")?.as_f64()?.round();
-    let remaining = usage.get("individualRemaining")?.as_f64()?.round();
-    if !(limit.is_finite() && remaining.is_finite()) || limit <= 0.0 {
-        return None;
-    }
-    let spent = (limit - remaining).max(0.0);
-    Some(Metric::Spend {
-        label: "On-demand".to_owned(),
-        spent: Money::from_cents(spent as i64),
-        limit: Some(Money::from_cents(limit as i64)),
-        resets_at: Some(resets_at),
-        pace: pace((spent / limit).clamp(0.0, 1.0)),
-    })
+/// On-demand spend against each cap that can block it: the per-user limit and, on team plans, the team pool. Both
+/// are US cents. Neither gets a pace: on-demand charges start only once included usage runs out, so an average from
+/// the cycle start would understate a recent burst, and there is no onset time to project from.
+fn on_demand(json: &Value, resets_at: DateTime<Utc>) -> Vec<Metric> {
+    let Some(usage) = json.get("spendLimitUsage") else {
+        return Vec::new();
+    };
+    [("individual", "On-demand"), ("pooled", "Team on-demand")]
+        .iter()
+        .filter_map(|(prefix, label)| {
+            let amount = |field: &str| {
+                usage
+                    .get(format!("{prefix}{field}"))
+                    .and_then(Value::as_f64)
+                    .filter(|value| value.is_finite())
+                    .map(f64::round)
+            };
+            let limit = amount("Limit").filter(|limit| *limit > 0.0)?;
+            let spent = amount("Used").or_else(|| Some(limit - amount("Remaining")?))?.max(0.0);
+            Some(Metric::Spend {
+                label: (*label).to_owned(),
+                spent: Money::from_cents(spent as i64),
+                limit: Some(Money::from_cents(limit as i64)),
+                resets_at: Some(resets_at),
+                pace: None,
+            })
+        })
+        .collect()
 }
 
 pub struct CursorProvider<H: HttpClient> {
@@ -219,15 +229,33 @@ mod tests {
     }
 
     #[test]
-    fn parse_usage_maps_on_demand_spend_with_its_projection() {
+    fn parse_usage_maps_on_demand_spend_without_a_projection() {
         let account = parse_usage(FULL, now()).unwrap();
         let on_demand = account.metrics().last().unwrap();
         assert_eq!(on_demand.key(), "on-demand");
         assert_eq!(on_demand.used_display(), "$5.00 of $20.00");
         assert_eq!(on_demand.headroom(), Some(Money::from_cents(1500)));
-        let projected = on_demand.projected_at_reset(now()).unwrap();
-        assert!((projected - (0.25 + 0.25 / 218.0 * 334.0)).abs() < 1e-6, "{projected}");
-        assert!(!on_demand.exhausts_before_reset(now()));
+        // On-demand starts only after included usage runs out, so a cycle average would understate it.
+        assert_eq!(on_demand.projected_at_reset(now()), None);
+    }
+
+    #[test]
+    fn team_plans_report_the_team_pool_as_its_own_cap() {
+        // Shaped like Cursor's team response: the pool is nearly spent while the per-user cap has room.
+        let team = r#"{"billingCycleEnd":"1792540800000","planUsage":{"totalPercentUsed":100},
+            "spendLimitUsage":{"totalSpend":49000,"pooledLimit":50000,"pooledUsed":49000,"pooledRemaining":1000,
+                "individualLimit":10000,"individualUsed":1200,"individualRemaining":8800,"limitType":"team"}}"#;
+        let account = parse_usage(team, now()).unwrap();
+        let keys: Vec<String> = account.metrics().iter().map(Metric::key).collect();
+        assert_eq!(keys, ["included-usage", "on-demand", "team-on-demand"]);
+        assert_eq!(account.metrics()[1].used_display(), "$12.00 of $100.00");
+        assert_eq!(account.metrics()[2].used_display(), "$490.00 of $500.00");
+        assert_eq!(account.assess(now()).severity(), Severity::LimitSoon);
+        // A team response with only the pool still shows it.
+        let pooled = r#"{"billingCycleEnd":"1792540800000","planUsage":{"totalPercentUsed":10},
+            "spendLimitUsage":{"pooledLimit":50000,"pooledRemaining":20000,"limitType":"team"}}"#;
+        let account = parse_usage(pooled, now()).unwrap();
+        assert_eq!(account.metrics()[1].used_display(), "$300.00 of $500.00");
     }
 
     #[test]
