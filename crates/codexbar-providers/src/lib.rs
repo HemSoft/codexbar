@@ -17,7 +17,20 @@ pub use error::ProviderError;
 pub use http::{HttpClient, HttpResponse, UreqClient};
 
 use chrono::{DateTime, Utc};
-use codexbar_core::AccountSnapshot;
+use codexbar_core::{AccountId, AccountSnapshot};
+
+/// The result for one account of a provider (#75). An adapter that serves several accounts reports each one, so a
+/// failure for one doesn't hide it among the others' successes.
+#[derive(Debug)]
+pub enum AccountOutcome {
+    Fresh(AccountSnapshot),
+    Failed {
+        /// The account's stable id, as a successful snapshot of it would carry.
+        account: AccountId,
+        label: Option<String>,
+        error: ProviderError,
+    },
+}
 
 /// One source of accounts.
 pub trait UsageProvider: Send + Sync {
@@ -26,6 +39,14 @@ pub trait UsageProvider: Send + Sync {
 
     /// Fetches every account this provider can see at `now`.
     fn fetch(&self, now: DateTime<Utc>) -> Result<Vec<AccountSnapshot>, ProviderError>;
+
+    /// Fetches every account with a result per account. `Err` means the provider as a whole failed (no sign-in,
+    /// network). Adapters for several accounts override this to report each account's failure; the default wraps
+    /// `fetch`.
+    fn fetch_outcomes(&self, now: DateTime<Utc>) -> Result<Vec<AccountOutcome>, ProviderError> {
+        self.fetch(now)
+            .map(|accounts| accounts.into_iter().map(AccountOutcome::Fresh).collect())
+    }
 
     /// The configured account this adapter reports, when it serves exactly one (several OpenRouter or Moonshot
     /// accounts each get their own adapter under the same name). Lets the dashboard tell their results apart.

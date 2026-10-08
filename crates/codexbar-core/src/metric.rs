@@ -1,25 +1,112 @@
 use chrono::{DateTime, Duration, Utc};
 
-/// An amount of money in minor units (cents) so totals never pick up floating-point drift.
+/// The currency a provider bills in (#75). Every current provider bills in US dollars.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Currency {
+    #[default]
+    Usd,
+    Eur,
+    Gbp,
+    Cny,
+    Jpy,
+}
+
+impl Currency {
+    pub const ALL: [Self; 5] = [Self::Usd, Self::Eur, Self::Gbp, Self::Cny, Self::Jpy];
+
+    /// The ISO 4217 code ("USD").
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::Usd => "USD",
+            Self::Eur => "EUR",
+            Self::Gbp => "GBP",
+            Self::Cny => "CNY",
+            Self::Jpy => "JPY",
+        }
+    }
+
+    pub fn from_code(code: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|currency| currency.code().eq_ignore_ascii_case(code))
+    }
+
+    fn symbol(self) -> &'static str {
+        match self {
+            Self::Usd => "$",
+            Self::Eur => "€",
+            Self::Gbp => "£",
+            Self::Cny => "CN¥",
+            Self::Jpy => "¥",
+        }
+    }
+
+    /// Digits after the decimal point in its minor unit (yen has none).
+    pub fn minor_digits(self) -> u32 {
+        match self {
+            Self::Jpy => 0,
+            _ => 2,
+        }
+    }
+}
+
+/// An amount of money in its currency's minor units (cents) so totals never pick up floating-point drift.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Money {
     cents: i64,
+    currency: Currency,
 }
 
 impl Money {
+    /// US dollars and cents.
     pub const fn from_cents(cents: i64) -> Self {
-        Self { cents }
+        Self {
+            cents,
+            currency: Currency::Usd,
+        }
     }
 
+    /// An amount in `currency`'s minor units.
+    pub const fn new(minor: i64, currency: Currency) -> Self {
+        Self { cents: minor, currency }
+    }
+
+    /// The amount in minor units (cents for dollars).
     pub const fn cents(self) -> i64 {
         self.cents
     }
 
-    /// US-dollar display ("$18.42"). Locale-aware currency formatting arrives with issue #84.
+    pub const fn currency(self) -> Currency {
+        self.currency
+    }
+
+    /// The amount in major units (dollars), for history and charts.
+    pub fn major(self) -> f64 {
+        self.cents as f64 / 10f64.powi(self.currency.minor_digits() as i32)
+    }
+
+    /// `self - other` in the same currency; `None` across currencies.
+    pub fn minus(self, other: Self) -> Option<Self> {
+        (self.currency == other.currency).then(|| Self::new(self.cents - other.cents, self.currency))
+    }
+
+    /// "$18.42", "€3.10", "¥1200". Locale-aware formatting arrives with issue #84.
     pub fn display(self) -> String {
         let sign = if self.cents < 0 { "-" } else { "" };
         let abs = self.cents.unsigned_abs();
-        format!("{sign}${}.{:02}", abs / 100, abs % 100)
+        let symbol = self.currency.symbol();
+        match self.currency.minor_digits() {
+            0 => format!("{sign}{symbol}{abs}"),
+            digits => {
+                let scale = 10u64.pow(digits);
+                format!(
+                    "{sign}{symbol}{}.{:0width$}",
+                    abs / scale,
+                    abs % scale,
+                    width = digits as usize
+                )
+            }
+        }
     }
 }
 
@@ -63,6 +150,14 @@ pub enum Metric {
         resets_at: DateTime<Utc>,
         pace: Option<Pace>,
     },
+    /// Money spent in a period, optionally against a spend limit (#75): a budget or a monthly cap.
+    Spend {
+        label: String,
+        spent: Money,
+        limit: Option<Money>,
+        /// When the period starts over, if it does.
+        resets_at: Option<DateTime<Utc>>,
+    },
     /// Prepaid credit that runs down with spend.
     Balance {
         label: String,
@@ -74,7 +169,10 @@ pub enum Metric {
 impl Metric {
     pub fn label(&self) -> &str {
         match self {
-            Self::Window { label, .. } | Self::Quota { label, .. } | Self::Balance { label, .. } => label,
+            Self::Window { label, .. }
+            | Self::Quota { label, .. }
+            | Self::Spend { label, .. }
+            | Self::Balance { label, .. } => label,
         }
     }
 
@@ -91,11 +189,24 @@ impl Metric {
         key.trim_end_matches('-').to_owned()
     }
 
-    /// The value history stores: fraction used for limits, dollars for balances.
+    /// The value history stores: fraction used for limits, money in major units for balances and uncapped spend.
     pub fn history_value(&self) -> Option<f64> {
         match self {
-            Self::Balance { remaining, .. } => Some(remaining.cents() as f64 / 100.0),
+            Self::Balance { remaining, .. } => Some(remaining.major()),
+            Self::Spend { spent, limit: None, .. } => Some(spent.major()),
             _ => self.used_fraction(),
+        }
+    }
+
+    /// What is left under a spend limit, in its currency.
+    pub fn headroom(&self) -> Option<Money> {
+        match self {
+            Self::Spend {
+                spent,
+                limit: Some(limit),
+                ..
+            } => limit.minus(*spent),
+            _ => None,
         }
     }
 
@@ -104,13 +215,21 @@ impl Metric {
         match self {
             Self::Window { used, .. } => Some(used.clamp(0.0, 1.0)),
             Self::Quota { used, limit, .. } if *limit > 0 => Some((*used as f64 / *limit as f64).clamp(0.0, 1.0)),
-            Self::Quota { .. } | Self::Balance { .. } => None,
+            Self::Spend {
+                spent,
+                limit: Some(limit),
+                ..
+            } if limit.cents() > 0 && limit.currency() == spent.currency() => {
+                Some((spent.cents() as f64 / limit.cents() as f64).clamp(0.0, 1.0))
+            }
+            Self::Quota { .. } | Self::Spend { .. } | Self::Balance { .. } => None,
         }
     }
 
     pub fn resets_at(&self) -> Option<DateTime<Utc>> {
         match self {
             Self::Window { resets_at, .. } | Self::Quota { resets_at, .. } => Some(*resets_at),
+            Self::Spend { resets_at, .. } => *resets_at,
             Self::Balance { .. } => None,
         }
     }
@@ -155,6 +274,12 @@ impl Metric {
         match self {
             Self::Window { .. } => format!("{:.0}%", self.used_fraction().unwrap_or_default() * 100.0),
             Self::Quota { used, .. } => group_thousands(*used),
+            Self::Spend {
+                spent,
+                limit: Some(limit),
+                ..
+            } => format!("{} of {}", spent.display(), limit.display()),
+            Self::Spend { spent, limit: None, .. } => format!("{} spent", spent.display()),
             Self::Balance { remaining, .. } => format!("{} left", remaining.display()),
         }
     }
@@ -264,5 +389,51 @@ mod tests {
         };
         assert!((metric.days_of_credit().unwrap() - 5.94).abs() < 0.01);
         assert_eq!(metric.used_display(), "$18.42 left");
+    }
+}
+
+#[cfg(test)]
+mod money_tests {
+    use super::*;
+
+    #[test]
+    fn money_displays_in_its_currency() {
+        assert_eq!(Money::from_cents(1842).display(), "$18.42");
+        assert_eq!(Money::new(-310, Currency::Eur).display(), "-€3.10");
+        assert_eq!(Money::new(1200, Currency::Jpy).display(), "¥1200");
+        assert_eq!(Money::new(5, Currency::Cny).display(), "CN¥0.05");
+        assert_eq!(Money::new(1200, Currency::Jpy).major(), 1200.0);
+        assert_eq!(Currency::from_code("eur"), Some(Currency::Eur));
+    }
+
+    #[test]
+    fn spend_reports_fraction_headroom_and_display() {
+        let capped = Metric::Spend {
+            label: "Monthly spend".into(),
+            spent: Money::from_cents(1240),
+            limit: Some(Money::from_cents(5000)),
+            resets_at: None,
+        };
+        assert!((capped.used_fraction().unwrap() - 0.248).abs() < 1e-9);
+        assert_eq!(capped.headroom(), Some(Money::from_cents(3760)));
+        assert_eq!(capped.used_display(), "$12.40 of $50.00");
+        assert_eq!(capped.key(), "monthly-spend");
+        let open = Metric::Spend {
+            label: "Spend".into(),
+            spent: Money::new(990, Currency::Eur),
+            limit: None,
+            resets_at: None,
+        };
+        assert_eq!(open.used_fraction(), None);
+        assert_eq!(open.history_value(), Some(9.9));
+        assert_eq!(open.used_display(), "€9.90 spent");
+        // Different currencies never mix.
+        let mixed = Metric::Spend {
+            label: "Spend".into(),
+            spent: Money::new(100, Currency::Eur),
+            limit: Some(Money::from_cents(500)),
+            resets_at: None,
+        };
+        assert_eq!((mixed.used_fraction(), mixed.headroom()), (None, None));
     }
 }

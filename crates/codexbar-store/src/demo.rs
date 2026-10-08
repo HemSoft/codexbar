@@ -68,7 +68,8 @@ fn series(metric: &Metric, current: f64, seed: u64, now: DateTime<Utc>) -> Vec<P
                 })
                 .collect()
         }
-        Metric::Quota { .. } => {
+        // Spend and quotas climb steadily through the period, with a short burst three days ago.
+        Metric::Quota { .. } | Metric::Spend { .. } => {
             let spike = steps - 3 * 24 * 60 / STEP_MINUTES;
             (0..=steps)
                 .map(|step| {

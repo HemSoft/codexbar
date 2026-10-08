@@ -6,6 +6,7 @@ use chrono::{DateTime, Months, NaiveDate, Utc};
 use codexbar_core::{AccountId, AccountSnapshot, Metric, Provider};
 use serde_json::Value;
 
+use crate::AccountOutcome;
 use crate::pace::elapsed_pace;
 use crate::{CommandError, CommandRunner, HttpClient, ProviderError, UsageProvider};
 
@@ -38,6 +39,11 @@ pub fn parse_gh_accounts(status: &str) -> Vec<String> {
 
 /// Maps a `copilot_internal/user` response to one account. Unlimited and absent quotas are not limits, so they
 /// produce no metric rather than a false 0%.
+/// A Copilot account's stable id: its GitHub username, lowercased.
+pub fn account_id(username: &str) -> AccountId {
+    AccountId::new(format!("copilot-{}", username.to_lowercase()))
+}
+
 pub fn parse_user(payload: &str, username: &str, now: DateTime<Utc>) -> Result<AccountSnapshot, ProviderError> {
     let json: Value = serde_json::from_str(payload).map_err(|_| ProviderError::Unexpected { detail: "not JSON" })?;
     let resets_at = reset_date(&json);
@@ -53,13 +59,7 @@ pub fn parse_user(payload: &str, username: &str, now: DateTime<Utc>) -> Result<A
         }
     }
 
-    Ok(AccountSnapshot::new(
-        AccountId::new(format!("copilot-{}", username.to_lowercase())),
-        Provider::Copilot,
-        metrics,
-        now,
-    )
-    .with_label(username))
+    Ok(AccountSnapshot::new(account_id(username), Provider::Copilot, metrics, now).with_label(username))
 }
 
 /// Quotas in display order. Paid plans meter premium requests; Copilot Free meters chat and completions.
@@ -181,20 +181,13 @@ impl<H: HttpClient, C: CommandRunner> UsageProvider for CopilotProvider<H, C> {
 
     /// Every signed-in account. One failing account doesn't hide the others; the call fails only if all do.
     fn fetch(&self, now: DateTime<Utc>) -> Result<Vec<AccountSnapshot>, ProviderError> {
-        let mut accounts = parse_gh_accounts(&self.gh(&["auth", "status", "--hostname", HOST])?);
-        if let Some(only) = &self.only {
-            accounts.retain(|name| only.iter().any(|wanted| wanted.eq_ignore_ascii_case(name)));
-        }
-        if accounts.is_empty() {
-            return Err(ProviderError::NotSignedIn { hint: GH_MISSING });
-        }
         let mut first_error = None;
         let mut snapshots = Vec::new();
-        for username in &accounts {
-            match self.fetch_account(username, now) {
-                Ok(snapshot) => snapshots.push(snapshot),
-                Err(err) => {
-                    first_error.get_or_insert(err);
+        for outcome in self.fetch_outcomes(now)? {
+            match outcome {
+                AccountOutcome::Fresh(snapshot) => snapshots.push(snapshot),
+                AccountOutcome::Failed { error, .. } => {
+                    first_error.get_or_insert(error);
                 }
             }
         }
@@ -202,6 +195,28 @@ impl<H: HttpClient, C: CommandRunner> UsageProvider for CopilotProvider<H, C> {
             (true, Some(err)) => Err(err),
             _ => Ok(snapshots),
         }
+    }
+
+    /// One outcome per signed-in user, so one user's failure keeps that user's last good usage on the dashboard.
+    fn fetch_outcomes(&self, now: DateTime<Utc>) -> Result<Vec<AccountOutcome>, ProviderError> {
+        let mut accounts = parse_gh_accounts(&self.gh(&["auth", "status", "--hostname", HOST])?);
+        if let Some(only) = &self.only {
+            accounts.retain(|name| only.iter().any(|wanted| wanted.eq_ignore_ascii_case(name)));
+        }
+        if accounts.is_empty() {
+            return Err(ProviderError::NotSignedIn { hint: GH_MISSING });
+        }
+        Ok(accounts
+            .iter()
+            .map(|username| match self.fetch_account(username, now) {
+                Ok(snapshot) => AccountOutcome::Fresh(snapshot),
+                Err(error) => AccountOutcome::Failed {
+                    account: account_id(username),
+                    label: Some(username.clone()),
+                    error,
+                },
+            })
+            .collect())
     }
 }
 

@@ -164,6 +164,35 @@ mod tests {
     }
 
     #[test]
+    fn projected_exhaustion_raises_severity_without_changing_usage() {
+        // The same 50% used: safe without a pace, at risk when the pace runs out days before the reset.
+        let steady = window(0.5, Duration::days(5), None);
+        let fast = window(0.5, Duration::days(5), Some(Pace::per_day(0.2)));
+        assert_eq!(assess(&steady, now()).severity(), Severity::Normal);
+        assert_eq!(assess(&fast, now()).severity(), Severity::AtRisk);
+        assert_eq!(
+            steady.used_fraction(),
+            fast.used_fraction(),
+            "observed usage is unchanged"
+        );
+    }
+
+    #[test]
+    fn spend_against_a_limit_is_assessed_like_usage() {
+        let spend = Metric::Spend {
+            label: "Budget".into(),
+            spent: Money::from_cents(4800),
+            limit: Some(Money::from_cents(5000)),
+            resets_at: None,
+        };
+        assert_eq!(
+            assess(&spend, now()).severity(),
+            Severity::LimitSoon,
+            "96% of the budget"
+        );
+    }
+
+    #[test]
     fn assess_moderate_usage_returns_normal() {
         assert_eq!(
             assess(&window(0.41, Duration::days(3), None), now()).severity(),

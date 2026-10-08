@@ -5,7 +5,7 @@ use std::time::Instant;
 
 use chrono::{DateTime, Duration, Local, Utc};
 use codexbar_core::{AccountId, AccountSnapshot, Metric, Provider, demo::demo_accounts, format, sort_by_urgency};
-use codexbar_providers::{ProviderError, UsageProvider};
+use codexbar_providers::{AccountOutcome, ProviderError, UsageProvider};
 use codexbar_store::summary::{GAP_THRESHOLD, summarize};
 use codexbar_store::{HistoryStore, TREND_DAYS, demo_history};
 
@@ -108,7 +108,7 @@ type FetchResult = (
     &'static str,
     Option<String>,
     Option<String>,
-    Result<Vec<AccountSnapshot>, ProviderError>,
+    Result<Vec<AccountOutcome>, ProviderError>,
 );
 
 /// A provider whose last fetch failed. Its last good accounts stay on screen.
@@ -411,13 +411,25 @@ impl Dashboard {
                         .iter()
                         .map(|provider| {
                             // Lock only after the network fetch: the History view reads the store on the UI thread.
-                            let result = provider.fetch(now).map(|accounts| {
+                            let result = provider.fetch_outcomes(now).map(|outcomes| {
                                 let mut history = history.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                                let fresh: Vec<AccountSnapshot> = outcomes
+                                    .iter()
+                                    .filter_map(|outcome| match outcome {
+                                        AccountOutcome::Fresh(account) => Some(account.clone()),
+                                        AccountOutcome::Failed { .. } => None,
+                                    })
+                                    .collect();
                                 // A history write failure must not hide fresh usage; the next refresh retries.
-                                let _ = history.record(&accounts, now);
-                                accounts
+                                let _ = history.record(&fresh, now);
+                                outcomes
                                     .into_iter()
-                                    .map(|account| codexbar_store::enrich(&history, account, &Local, now))
+                                    .map(|outcome| match outcome {
+                                        AccountOutcome::Fresh(account) => AccountOutcome::Fresh(
+                                            codexbar_store::enrich(&history, account, &Local, now),
+                                        ),
+                                        failed => failed,
+                                    })
                                     .collect()
                             });
                             (
@@ -512,14 +524,47 @@ impl Dashboard {
         let mut refreshed = Vec::new();
         for (provider, account_id, account_label, result) in results {
             match result {
-                Ok(fresh) => {
-                    for account in &fresh {
-                        self.states
-                            .insert(account.id().as_str().to_owned(), AccountState::Fresh);
-                        self.placeholders.remove(account.id().as_str());
+                Ok(outcomes) => {
+                    for outcome in outcomes {
+                        match outcome {
+                            AccountOutcome::Fresh(account) => {
+                                self.states
+                                    .insert(account.id().as_str().to_owned(), AccountState::Fresh);
+                                self.placeholders.remove(account.id().as_str());
+                                refreshed.push(account.clone());
+                                accounts.push(account);
+                            }
+                            // One account of the provider failed while others succeeded: keep its last good usage
+                            // (or show it unavailable) and list it as its own failure.
+                            AccountOutcome::Failed { account, label, error } => {
+                                let message = error.to_string();
+                                let known = self.accounts.iter().find(|shown| shown.id() == &account).cloned();
+                                let row = known.unwrap_or_else(|| {
+                                    self.placeholders.insert(account.as_str().to_owned());
+                                    let kind = Provider::from_display_name(provider).unwrap_or(Provider::Copilot);
+                                    let placeholder =
+                                        AccountSnapshot::new(account.clone(), kind, Vec::new(), Utc::now());
+                                    match &label {
+                                        Some(label) => placeholder.with_label(label.clone()),
+                                        None => placeholder,
+                                    }
+                                });
+                                let state = if self.placeholders.contains(account.as_str()) {
+                                    AccountState::Unavailable(message.clone())
+                                } else {
+                                    AccountState::Failed(message.clone())
+                                };
+                                self.states.insert(account.as_str().to_owned(), state);
+                                accounts.push(row);
+                                self.failures.push(Failure {
+                                    provider,
+                                    account: account_id.clone(),
+                                    label,
+                                    message,
+                                });
+                            }
+                        }
                     }
-                    refreshed.extend(fresh.iter().cloned());
-                    accounts.extend(fresh);
                 }
                 Err(error) => {
                     // Keep the failed adapter's last good snapshots (or its placeholder) visible, marked stale. An
@@ -884,12 +929,27 @@ impl Dashboard {
             .unwrap_or_default();
         let heading = focused.map(|account| {
             let severity = account.assess(self.now).severity();
-            h_flex()
-                .gap_2()
-                .items_center()
-                .child(div().text_xl().font_semibold().child(account.display_name()))
-                .child(div().size_2().rounded_full().bg(severity_dot_color(severity, cx)))
-                .children(severity_tag(severity))
+            v_flex()
+                .gap_1()
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .items_center()
+                        .child(div().text_xl().font_semibold().child(account.display_name()))
+                        .child(div().size_2().rounded_full().bg(severity_dot_color(severity, cx)))
+                        .children(severity_tag(severity)),
+                )
+                // What the provider said besides numbers (#75), kept with last-good usage.
+                .children(account.messages().iter().enumerate().map(|(ix, message)| {
+                    div()
+                        .id(("provider-message", ix))
+                        .role(Role::Note)
+                        .test_support()
+                        .aria_label(message.clone())
+                        .text_sm()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(message.clone())
+                }))
         });
 
         let failures = self.failures.iter().map(|failure| {
@@ -918,9 +978,11 @@ impl Dashboard {
                 .child({
                     let provider = failure.provider;
                     let account = failure.account.clone();
-                    Button::new(SharedString::from(match &account {
-                        Some(account) => format!("retry-{provider}-{account}"),
-                        None => format!("retry-{provider}"),
+                    // Unique per failure row: several users of one provider can fail in the same refresh.
+                    Button::new(SharedString::from(match (&account, &failure.label) {
+                        (Some(account), _) => format!("retry-{provider}-{account}"),
+                        (None, Some(label)) => format!("retry-{provider}-{label}"),
+                        (None, None) => format!("retry-{provider}"),
                     }))
                     .label("Retry")
                     .accessibility_label(format!("Retry {}", failure.name()))

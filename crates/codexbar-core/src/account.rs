@@ -144,6 +144,8 @@ pub struct AccountSnapshot {
     trend: Vec<f64>,
     detail: AccountDetail,
     fetched_at: DateTime<Utc>,
+    /// What the provider said about the account besides numbers ("Usage is delayed by up to an hour").
+    messages: Vec<String>,
 }
 
 impl AccountSnapshot {
@@ -157,7 +159,18 @@ impl AccountSnapshot {
             trend: Vec::new(),
             detail: AccountDetail::default(),
             fetched_at,
+            messages: Vec::new(),
         }
+    }
+
+    /// Adds a provider message, shown with the account and kept with its last-good snapshot.
+    pub fn with_message(mut self, message: impl Into<String>) -> Self {
+        self.messages.push(message.into());
+        self
+    }
+
+    pub fn messages(&self) -> &[String] {
+        &self.messages
     }
 
     pub fn with_label(mut self, label: impl Into<String>) -> Self {

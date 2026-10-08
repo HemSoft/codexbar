@@ -302,6 +302,8 @@ fn limit_label(metric: &Metric) -> String {
             let unit = label.rsplit(' ').next().unwrap_or("requests").to_lowercase();
             format!("{} {unit}", codexbar_core::group_thousands(*limit))
         }
+        Metric::Spend { limit: Some(limit), .. } => format!("{} limit", limit.display()),
+        Metric::Spend { label, .. } => label.clone(),
         Metric::Balance { label, .. } => format!("$ {}", label.to_lowercase()),
     }
 }
