@@ -708,6 +708,7 @@ mod tests {
         let mut layout = Layout::default();
         let work = layout.create_group("Work").unwrap();
         layout.assign("gone", Some(&work)).unwrap();
+        layout.assign("kept", Some(&work)).unwrap();
         assert!(layout.move_account("gone", 1, &ids(&["gone", "kept"])));
         assert!(layout.forget_account("gone"));
         assert_eq!(layout.group_of("gone"), None);
