@@ -105,6 +105,13 @@ pub fn alert_key(account: &str, metric: &str, kind: AlertKind) -> String {
     format!("{account}|{metric}|{}", kind.slug())
 }
 
+/// Splits `account|slot|kind` from the right, so account ids that contain `|` stay whole.
+pub fn split_key(key: &str) -> Option<(&str, &str, &str)> {
+    let mut parts = key.rsplitn(3, '|');
+    let (kind, slot, account) = (parts.next()?, parts.next()?, parts.next()?);
+    Some((account, slot, kind))
+}
+
 /// The metric part of an alert key. Limits that reset carry their window (the reset hour), so a new window can alert
 /// again even when CodexBar never saw usage fall in between; balances don't reset and use the bare metric key.
 pub fn metric_slot(metric: &Metric) -> String {
@@ -129,13 +136,18 @@ pub fn evaluate(
             let slot = metric_slot(metric);
             // Keys from an earlier window of this metric (or from before windows were part of the key) recover: that
             // window is over.
-            let bare = format!("{id}|{}|", metric.key());
-            let windowed = format!("{id}|{}@", metric.key());
-            let current = format!("{id}|{slot}|");
+            let base = metric.key();
             out.recovered.extend(
                 active
                     .iter()
-                    .filter(|key| (key.starts_with(&bare) || key.starts_with(&windowed)) && !key.starts_with(&current))
+                    .filter(|key| {
+                        // Compared by parts, not prefixes: account ids may contain `|` or `@`.
+                        let Some((account, key_slot, _)) = split_key(key) else {
+                            return false;
+                        };
+                        let key_metric = key_slot.split_once('@').map_or(key_slot, |(metric, _)| metric);
+                        account == id && key_metric == base && key_slot != slot
+                    })
                     .cloned(),
             );
             for kind in [
@@ -662,6 +674,28 @@ mod window_tests {
             vec![first.notify[0].key.clone()],
             "the old window's key ends"
         );
+    }
+
+    #[test]
+    fn another_accounts_key_is_never_taken_for_an_old_window() {
+        let settings = AlertSettings {
+            enabled: true,
+            ..AlertSettings::default()
+        };
+        // `team|weekly@west` is a different account whose key starts like `team`'s weekly window.
+        let other: BTreeSet<String> = ["team|weekly@west|weekly|usage".to_owned()].into();
+        let account = AccountSnapshot::new(
+            AccountId::new("team"),
+            Provider::Claude,
+            vec![Metric::Window {
+                label: "Weekly".into(),
+                used: 0.1,
+                resets_at: now() + Duration::days(3),
+                pace: None,
+            }],
+            now(),
+        );
+        assert!(evaluate(&settings, &other, &[account], now()).recovered.is_empty());
     }
 
     #[test]

@@ -188,6 +188,12 @@ pub fn process(cx: &mut App, refreshed: &[AccountSnapshot], now: DateTime<Utc>) 
     Notifications::set_active(cx, next);
 }
 
+/// True when Windows reported notifications it failed to raise that haven't been handled yet.
+pub fn has_failed(cx: &App) -> bool {
+    cx.try_global::<Notifications>()
+        .is_some_and(|global| global.notifier.has_failed())
+}
+
 /// Handles notifications Windows failed to raise, right away rather than at the next refresh (which may never come
 /// with automatic refresh off). Called from the dashboard's clock with the accounts of the last refresh when settings
 /// haven't changed since, so they are sent again now; otherwise with none, which only forgets them, and the next

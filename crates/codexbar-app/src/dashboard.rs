@@ -175,13 +175,14 @@ impl Dashboard {
                     } else if this.now.timestamp() / 60 != this.compact_minute {
                         this.update_compact_history(cx);
                     }
-                    // Resend against the last refresh's accounts only while settings still match it.
-                    let accounts = if this.accounts_revision == Some(SettingsHub::revision(cx)) {
-                        this.accounts.clone()
-                    } else {
-                        Vec::new()
-                    };
-                    crate::notifications::retry_failed(cx, &accounts, this.now);
+                    // Resend against the last refresh's accounts while settings still match it; otherwise refresh,
+                    // so the failed alert is judged under the current settings rather than dropped.
+                    if this.accounts_revision == Some(SettingsHub::revision(cx)) {
+                        let accounts = this.accounts.clone();
+                        crate::notifications::retry_failed(cx, &accounts, this.now);
+                    } else if crate::notifications::has_failed(cx) {
+                        this.refresh(cx);
+                    }
                     cx.notify();
                 });
                 if alive.is_err() {

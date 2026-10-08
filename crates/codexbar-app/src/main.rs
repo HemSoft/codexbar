@@ -44,17 +44,26 @@ fn data_source() -> DataSource {
     }
 }
 
-/// One CodexBar per Windows session, so two instances never send the same alert twice or write history and
-/// preferences over each other. The demo has its own name, so design work can run beside the real app. A second
-/// launch exits; the first one is already in the notification area.
+/// One CodexBar per Windows user, across sessions (two Remote Desktop sessions share one profile), so two instances
+/// never send the same alert twice or write history and preferences over each other. The mutex is in the global
+/// namespace and named per user, so other users on the machine run their own. The demo has its own name, so design
+/// work can run beside the real app. A second launch exits; the first one is already in the notification area.
 fn already_running() -> bool {
     use windows::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError};
     use windows::Win32::System::Threading::CreateMutexW;
     use windows::core::HSTRING;
+    let user: String = format!(
+        "{}.{}",
+        std::env::var("USERDOMAIN").unwrap_or_default(),
+        std::env::var("USERNAME").unwrap_or_default()
+    )
+    .chars()
+    .filter(|ch| *ch != '\\')
+    .collect();
     let name = if is_demo() {
-        r"Local\HemSoft.CodexBar.Demo"
+        format!(r"Global\HemSoft.CodexBar.Demo.{user}")
     } else {
-        r"Local\HemSoft.CodexBar"
+        format!(r"Global\HemSoft.CodexBar.{user}")
     };
     // SAFETY: a named mutex with default security; the handle is kept open for the life of the process.
     match unsafe { CreateMutexW(None, false, &HSTRING::from(name)) } {
