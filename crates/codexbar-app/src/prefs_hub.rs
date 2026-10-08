@@ -58,6 +58,15 @@ impl PrefsHub {
         });
     }
 
+    /// Forgets removed accounts' preferences, held alerts and layout (#85), saving once if anything changed.
+    pub fn forget_accounts(cx: &mut App, accounts: &[String]) {
+        Self::edit(cx, |prefs| {
+            for account in accounts {
+                prefs.forget_account(account);
+            }
+        });
+    }
+
     pub fn alert_settings(cx: &App) -> AlertSettings {
         cx.try_global::<Self>()
             .map(|hub| hub.prefs.alert_settings().clone())

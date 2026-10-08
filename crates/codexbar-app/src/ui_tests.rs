@@ -1854,3 +1854,64 @@ fn every_claude_limit_and_credit_shows_on_the_dashboard(cx: &mut TestAppContext)
         "{strongest}"
     );
 }
+
+#[gpui_kit::test]
+fn removing_an_account_deletes_its_history_and_preferences(cx: &mut TestAppContext) {
+    use codexbar_store::summary::Point;
+    let settings = TempSettings::new("remove-history", "{}");
+    let dashboard = open_live_with(cx, &settings, vec![], MemoryCredentialStore::default());
+    cx.run_until_parked();
+    let handle = cx.windows()[0];
+    cx.update(|cx| dashboard.update(cx, |dashboard, cx| dashboard.show_view(DashboardView::Settings, cx)));
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    cx.update_window(handle, |_, window, cx| {
+        window.within("settings-sidebar").click("0-1", cx)
+    })
+    .unwrap();
+    cx.run_until_parked();
+    add_openrouter(cx, handle, "Work", "sk-or-test");
+    let id = saved_settings(&settings).accounts()[0].id.clone();
+
+    // The account has history, a hidden-history choice and a group; another account (Codex, which keeps showing
+    // through its own sign-in) has history too.
+    let now = chrono::Utc::now();
+    let history = cx.update(|cx| dashboard.read(cx).history());
+    {
+        let mut store = history.lock().unwrap();
+        store.insert_points(&id, "credits", &[Point::new(now - chrono::Duration::hours(1), 12.0)]);
+        store.insert_points(
+            "codex-chatgpt",
+            "weekly",
+            &[Point::new(now - chrono::Duration::hours(1), 0.4)],
+        );
+    }
+    cx.update(|cx| {
+        crate::prefs_hub::PrefsHub::set(cx, &id, false);
+        crate::prefs_hub::PrefsHub::update_layout(cx, |layout| {
+            let work = layout.create_group("Work")?;
+            layout.assign(&id, Some(&work))
+        })
+        .unwrap();
+    });
+
+    click(cx, handle, format!("remove-{id}"));
+    press(cx, handle, "enter");
+    assert!(saved_settings(&settings).accounts().is_empty());
+
+    let since = now - chrono::Duration::days(1);
+    let store = history.lock().unwrap();
+    assert!(
+        store.points(&id, "credits", since, now).is_empty(),
+        "its history is deleted"
+    );
+    assert_eq!(
+        store.points("codex-chatgpt", "weekly", since, now).len(),
+        1,
+        "others are kept"
+    );
+    drop(store);
+    let prefs = codexbar_store::prefs::DashboardPrefs::load(&settings.0);
+    assert!(prefs.shows_history(&id));
+    assert_eq!(prefs.layout().group_of(&id), None);
+}

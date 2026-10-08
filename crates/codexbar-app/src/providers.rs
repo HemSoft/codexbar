@@ -1,6 +1,7 @@
 //! Which providers run, built from the account records in the shared settings file. Environment variables still win
 //! for secrets; Credential Manager comes next; plaintext keys from the WPF app are the last fallback.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use codexbar_providers::balance::{MoonshotProvider, OpenRouterProvider};
@@ -100,6 +101,28 @@ pub fn enabled(hub: &SettingsHub) -> Vec<Arc<dyn UsageProvider>> {
         providers.push(Arc::new(provider));
     }
     providers
+}
+
+/// The dashboard account each configured record owns (#85), by record id: OpenRouter and Moonshot records report under
+/// their own id, and a Copilot record for one username under that user's id. Removing such a record removes that
+/// dashboard account. Codex, Claude, Cursor, OpenCode, and Copilot without a username keep showing through the
+/// provider's own sign-in after their record is removed, so they own nothing here.
+pub fn owned_account_ids(hub: &SettingsHub) -> HashMap<String, String> {
+    hub.settings()
+        .accounts()
+        .iter()
+        .filter_map(|record| {
+            let owned = match record.provider.as_str() {
+                names::OPENROUTER | names::MOONSHOT => record.id.clone(),
+                names::COPILOT => {
+                    let user = record.external_id.as_deref()?.trim();
+                    (!user.is_empty()).then(|| codexbar_providers::copilot::account_id(user).as_str().to_owned())?
+                }
+                _ => return None,
+            };
+            Some((record.id.clone(), owned))
+        })
+        .collect()
 }
 
 /// Accounts that used to report under their provider's legacy id: a provider's only OpenRouter or Moonshot account

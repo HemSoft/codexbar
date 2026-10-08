@@ -173,6 +173,9 @@ pub struct Dashboard {
     layout: codexbar_core::layout::Layout,
     /// The alert settings and held alerts the Smart order was ranked with; a change re-ranks it.
     ranked_with: (codexbar_core::alerts::AlertSettings, std::collections::BTreeSet<String>),
+    /// The dashboard account each configured record owns, by record id (#85); a record that disappears takes its
+    /// account's history, snapshot and preferences with it.
+    owned_ids: HashMap<String, String>,
     _clock: Task<()>,
     _subscriptions: Vec<Subscription>,
 }
@@ -269,6 +272,7 @@ impl Dashboard {
         let layout_changes = cx.observe_global::<crate::prefs_hub::PrefsHub>(|this, cx| this.rearrange_if_changed(cx));
         let alert_changes =
             cx.observe_global::<crate::notifications::Notifications>(|this, cx| this.rearrange_if_changed(cx));
+        let settings_changes = cx.observe_global::<SettingsHub>(|this, cx| this.forget_removed_accounts(cx));
         let mut dashboard = Self {
             source,
             history,
@@ -294,8 +298,9 @@ impl Dashboard {
             view_tab_focus: DashboardView::ALL.iter().map(|_| cx.focus_handle()).collect(),
             layout: crate::prefs_hub::PrefsHub::layout(cx),
             ranked_with: Default::default(),
+            owned_ids: crate::providers::owned_account_ids(SettingsHub::global(cx)),
             _clock: clock,
-            _subscriptions: vec![selection, activation, layout_changes, alert_changes],
+            _subscriptions: vec![selection, activation, layout_changes, alert_changes, settings_changes],
         };
         if matches!(dashboard.source, DataSource::Live { .. }) {
             dashboard.restore_snapshots(cx);
@@ -308,6 +313,12 @@ impl Dashboard {
     pub fn should_hide_on_toggle(&self, window: &Window) -> bool {
         crate::tray::is_shown(window)
             && (window.is_window_active() || self.deactivated_at.is_some_and(|at| at.elapsed() < TOGGLE_GRACE))
+    }
+
+    /// The history store, for the headless UI tests.
+    #[cfg(test)]
+    pub fn history(&self) -> Arc<Mutex<HistoryStore>> {
+        self.history.clone()
     }
 
     /// A shown account, for the headless UI tests.
@@ -746,6 +757,51 @@ impl Dashboard {
                 (id.to_owned(), urgency)
             })
             .collect()
+    }
+
+    /// When accounts are removed in Settings (one at a time or by Reset), deletes what was kept for them: stored history,
+    /// the last-good snapshot, preferences, held alerts and their place in groups (#85). Accounts that keep showing
+    /// through a provider's own sign-in own no id here, so their history stays. Nothing is deleted while the settings
+    /// are read-only, or in the demo.
+    fn forget_removed_accounts(&mut self, cx: &mut Context<Self>) {
+        let DataSource::Live { history, .. } = &self.source else {
+            return;
+        };
+        let hub = SettingsHub::global(cx);
+        if hub.is_read_only() {
+            return;
+        }
+        let owned = crate::providers::owned_account_ids(hub);
+        let removed: Vec<String> = self
+            .owned_ids
+            .values()
+            .filter(|id| !owned.values().any(|still| still == *id))
+            .cloned()
+            .collect();
+        self.owned_ids = owned;
+        if removed.is_empty() {
+            return;
+        }
+        {
+            let mut store = history.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            for id in &removed {
+                // A failed rewrite keeps the deletion in memory; the next prune writes it.
+                let _ = store.remove_account(id);
+            }
+        }
+        crate::prefs_hub::PrefsHub::forget_accounts(cx, &removed);
+        for id in &removed {
+            self.states.remove(id);
+            self.placeholders.remove(id);
+        }
+        let accounts: Vec<AccountSnapshot> = self
+            .accounts
+            .iter()
+            .filter(|account| !removed.iter().any(|id| id == account.id().as_str()))
+            .cloned()
+            .collect();
+        self.set_accounts(accounts, cx);
+        self.save_snapshots(cx);
     }
 
     /// Smart order ranks by time-dependent signals (projections, resets), so it is rechecked each minute; the table is

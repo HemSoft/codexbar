@@ -497,11 +497,14 @@ fn save_account(form: &AccountForm, existing: Option<AccountRecord>, window: &mu
 
 fn confirm_remove(record: AccountRecord, window: &mut Window, cx: &mut App) {
     let label = record.label.clone();
-    // Only accounts that hold a pasted secret have anything in Credential Manager to delete.
-    let description = if catalog::info(&record.provider).secret.is_some() {
-        "Its saved key is deleted from Credential Manager. Usage history is kept."
-    } else {
-        "The provider's own sign-in and usage history are kept."
+    // Only accounts that hold a pasted secret have anything in Credential Manager to delete. An account that is its own
+    // dashboard account loses its stored usage too (#85); one that keeps showing through the provider's sign-in keeps it.
+    let owns_account = crate::providers::owned_account_ids(SettingsHub::global(cx)).contains_key(&record.id);
+    let description = match (catalog::info(&record.provider).secret.is_some(), owns_account) {
+        (true, true) => "Its saved key is deleted from Credential Manager, and its usage history is deleted.",
+        (true, false) => "Its saved key is deleted from Credential Manager. Usage history is kept.",
+        (false, true) => "Its usage history is deleted. The provider's own sign-in is kept.",
+        (false, false) => "The provider's own sign-in and usage history are kept.",
     };
     window.open_alert_dialog(cx, move |alert, _, _| {
         let record = record.clone();
@@ -537,7 +540,7 @@ fn confirm_reset(window: &mut Window, cx: &mut App) {
     window.open_alert_dialog(cx, |alert, _, _| {
         alert
             .title("Reset all accounts?")
-            .description("Every account and its saved keys are removed. Providers fall back to their default sign-in. This can't be undone.")
+            .description("Every account, its saved keys and its usage history are removed. Providers fall back to their default sign-in. This can't be undone.")
             .button_props(DialogButtonProps::default().ok_text("Reset accounts").ok_variant(ButtonVariant::Danger).show_cancel(true))
             .on_ok(|_, _, cx| {
                 let ids: Vec<String> = SettingsHub::global(cx).settings().accounts().iter().map(|a| a.id.clone()).collect();
