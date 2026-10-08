@@ -937,7 +937,6 @@ impl Dashboard {
             .map(|account| focus_cards(account, self.now, cx))
             .unwrap_or_default();
         let heading = focused.map(|account| {
-            let severity = account.assess(self.now).severity();
             // Alerts that hold now (#88), from the current settings and the delivered set, so they stay visible
             // after their notification was sent or deduplicated.
             let details = codexbar_core::alerts::account_alerts(
@@ -946,6 +945,13 @@ impl Dashboard {
                 account,
                 self.now,
             );
+            // A held alert (say a 50% usage alert) is at least worth watching, so the status agrees with the block.
+            let severity = account.assess(self.now).severity();
+            let severity = if details.is_empty() {
+                severity
+            } else {
+                severity.max(codexbar_core::Severity::Watch)
+            };
             v_flex()
                 .gap_1()
                 .child(

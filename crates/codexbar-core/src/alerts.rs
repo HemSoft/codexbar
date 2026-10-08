@@ -298,6 +298,16 @@ pub fn account_alerts(
                 .iter()
                 .filter_map(|key| split_key(key))
                 .any(|(account, slot, slug)| account == id && slug == kind.slug() && same_window(slot, &current));
+            // A kind switched off in settings isn't shown, even while its earlier notification is still held (the key
+            // stays, so turning it back on doesn't notify again).
+            let switched_off = match kind {
+                AlertKind::Warning => !settings.warning,
+                AlertKind::Critical => !settings.critical,
+                AlertKind::Usage | AlertKind::Balance => false,
+            };
+            if switched_off {
+                continue;
+            }
             let holds = match condition(settings, metric, kind, now) {
                 Condition::Triggered => true,
                 Condition::Holding => notified,
@@ -1099,6 +1109,21 @@ mod detail_tests {
         let detail = &account_alerts(&all_on(), &BTreeSet::new(), &snapshot, now())[0];
         assert_eq!(detail.summary(now()), "82% · Alert at 80% · resets in 1d 2h");
         assert!(!detail.is_projected());
+    }
+
+    #[test]
+    fn a_kind_switched_off_is_hidden_even_while_its_key_is_held() {
+        let snapshot = account(vec![metric("Weekly", 0.97, Duration::hours(2), None)]);
+        let mut active = BTreeSet::new();
+        let first = evaluate(&all_on(), &active, std::slice::from_ref(&snapshot), now());
+        active.extend(first.notify.iter().flat_map(|alert| alert.keys().cloned()));
+        let critical_off = AlertSettings {
+            critical: false,
+            warning: false,
+            ..all_on()
+        };
+        let details = account_alerts(&critical_off, &active, &snapshot, now());
+        assert_eq!(kinds_and_metrics(&details), vec![(AlertKind::Usage, "Weekly")]);
     }
 
     #[test]
