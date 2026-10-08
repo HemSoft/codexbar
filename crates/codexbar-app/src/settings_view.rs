@@ -777,12 +777,35 @@ fn alerts_page(cx: &App) -> SettingPage {
 }
 
 fn appearance_page() -> SettingPage {
-    SettingPage::new("Appearance")
-        .icon(IconName::Palette)
-        .group(SettingGroup::new().title("Theme").item(info_item(
-            "CodexBar Dark",
-            "HemSoft gold on black. Light theme and provider branding arrive with #92.",
-        )))
+    use crate::theme::Appearance;
+    let options = Appearance::ALL
+        .iter()
+        .map(|appearance| {
+            (
+                SharedString::from(appearance.key()),
+                SharedString::from(appearance.label()),
+            )
+        })
+        .collect();
+    SettingPage::new("Appearance").icon(IconName::Palette).group(
+        SettingGroup::new().title("Theme").item(
+            SettingItem::new(
+                "Theme",
+                SettingField::dropdown(
+                    options,
+                    |cx: &App| SharedString::from(crate::prefs_hub::PrefsHub::appearance(cx).key()),
+                    |value: SharedString, cx: &mut App| {
+                        if let Some(appearance) = Appearance::from_key(&value) {
+                            crate::prefs_hub::PrefsHub::set_appearance(cx, appearance);
+                        }
+                    },
+                ),
+            )
+            .description(
+                "System follows the Windows app mode. While Windows high contrast is on, CodexBar uses its colors.",
+            ),
+        ),
+    )
 }
 
 fn widgets_page() -> SettingPage {

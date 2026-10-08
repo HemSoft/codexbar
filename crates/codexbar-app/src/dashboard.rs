@@ -220,6 +220,9 @@ impl Dashboard {
                 cx.background_executor().timer(std::time::Duration::from_secs(1)).await;
                 let alive = this.update(cx, |this, cx| {
                     this.now = Utc::now();
+                    // System appearance and Windows high contrast can change while CodexBar runs (#92).
+                    let appearance = crate::prefs_hub::PrefsHub::appearance(cx);
+                    crate::theme::apply(cx, appearance);
                     let interval = SettingsHub::global(cx).settings().refresh_interval_secs();
                     let due = match (this.last_refresh, interval) {
                         (None, _) => true,

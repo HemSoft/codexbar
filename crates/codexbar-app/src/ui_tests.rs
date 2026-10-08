@@ -2099,3 +2099,72 @@ fn removing_the_first_account_also_deletes_the_moved_key(cx: &mut TestAppContext
         "the provider doesn't go on signing in with it"
     );
 }
+
+#[gpui_kit::test]
+fn the_appearance_choice_applies_at_once_and_is_saved(cx: &mut TestAppContext) {
+    use crate::theme::{Appearance, applied, apply_with};
+    use gpui_kit::component::ActiveTheme as _;
+    let settings = TempSettings::new("appearance", "{}");
+    let dashboard = open_live(cx, &settings, vec![]);
+    cx.run_until_parked();
+    let handle = cx.windows()[0];
+    cx.update(|cx| dashboard.update(cx, |dashboard, cx| dashboard.show_view(DashboardView::Settings, cx)));
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    // Appearance is the fifth page: General, Accounts, Alerts, Groups, Appearance.
+    cx.update_window(handle, |_, window, cx| {
+        window.within("settings-sidebar").click("0-4", cx)
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(handle, |_, window, cx| {
+        window
+            .within("group-0")
+            .within("item-0")
+            .within("field")
+            .click("btn", cx)
+    })
+    .unwrap();
+    cx.run_until_parked();
+    // System, Light, Dark: the second is Light.
+    press(cx, handle, "down");
+    press(cx, handle, "down");
+    press(cx, handle, "enter");
+    assert_eq!(cx.update(|cx| applied(cx)).unwrap().theme, "CodexBar Light");
+    assert!(!cx.update(|cx| cx.theme().is_dark()));
+    let saved = codexbar_store::prefs::DashboardPrefs::load(&settings.0);
+    assert_eq!(saved.appearance(), Some("light"));
+
+    // System follows Windows' app mode.
+    cx.update(|cx| apply_with(cx, Appearance::System, true, None));
+    assert_eq!(cx.update(|cx| applied(cx)).unwrap().theme, "CodexBar Dark");
+    cx.update(|cx| apply_with(cx, Appearance::System, false, None));
+    assert_eq!(cx.update(|cx| applied(cx)).unwrap().theme, "CodexBar Light");
+}
+
+#[gpui_kit::test]
+fn windows_high_contrast_overrides_the_choice_and_hands_back(cx: &mut TestAppContext) {
+    use crate::theme::{Appearance, SystemColors, applied, apply_with};
+    use gpui_kit::component::ActiveTheme as _;
+    let settings = TempSettings::new("appearance-hc", "{}");
+    let _dashboard = open_live(cx, &settings, vec![]);
+    cx.run_until_parked();
+    let scheme = SystemColors {
+        window: "#000000".into(),
+        text: "#FFFFFF".into(),
+        highlight: "#1AEBFF".into(),
+        highlight_text: "#000000".into(),
+        disabled_text: "#3FF23F".into(),
+        hotlight: "#FFFF00".into(),
+    };
+    cx.update(|cx| apply_with(cx, Appearance::Light, false, Some(scheme.clone())));
+    let shown = cx.update(|cx| applied(cx)).unwrap();
+    assert!(shown.high_contrast);
+    assert_eq!(shown.theme, "CodexBar High Contrast");
+    let (background, primary) = cx.update(|cx| (cx.theme().background, cx.theme().primary));
+    assert_eq!(background, gpui_kit::rgb(0x000000).into());
+    assert_eq!(primary, gpui_kit::rgb(0x1AEBFF).into());
+    // High contrast off again: back to the user's choice.
+    cx.update(|cx| apply_with(cx, Appearance::Light, false, None));
+    assert_eq!(cx.update(|cx| applied(cx)).unwrap().theme, "CodexBar Light");
+}
