@@ -75,7 +75,11 @@ fn main() {
         theme::init(cx);
         settings_hub::SettingsHub::init(cx);
         let dir = settings_hub::SettingsHub::global(cx).dir().to_owned();
-        prefs_hub::PrefsHub::init(cx, &dir);
+        if is_demo() {
+            prefs_hub::PrefsHub::init_in_memory(cx);
+        } else {
+            prefs_hub::PrefsHub::init(cx, &dir);
+        }
         // The demo never pops real notifications; its alerts are kept in memory.
         let notifier: std::sync::Arc<dyn notifications::Notifier> = if is_demo() {
             std::sync::Arc::new(notifications::RecordingNotifier::default())

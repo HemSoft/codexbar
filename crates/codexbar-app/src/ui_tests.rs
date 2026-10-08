@@ -788,3 +788,38 @@ fn a_successful_resend_clears_the_failure_message(cx: &mut TestAppContext) {
         "the resend went through"
     );
 }
+
+#[gpui_kit::test]
+fn a_blocked_message_clears_once_notifications_are_on_again(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("alerts-unblock", "{}");
+    std::fs::write(settings.0.join("dashboard.json"), ALERTS_ON).unwrap();
+    let notifier = Arc::new(RecordingNotifier::default());
+    *notifier.blocked.lock().unwrap() = Some("Notifications are off for CodexBar.".into());
+    let recorder = notifier.clone();
+    cx.update(|cx| crate::notifications::Notifications::init(cx, recorder, true));
+    let (_, dashboard) = open_dashboard(cx, &settings);
+    assert!(
+        cx.update(|cx| crate::notifications::Notifications::problem(cx))
+            .is_some()
+    );
+
+    // The user turns alerts off, then notifications back on: nothing to send, but the message is out of date.
+    cx.update(|cx| crate::prefs_hub::PrefsHub::update_alert_settings(cx, |alerts| alerts.enabled = false));
+    *notifier.blocked.lock().unwrap() = None;
+    refresh(cx, &dashboard);
+    assert_eq!(cx.update(|cx| crate::notifications::Notifications::problem(cx)), None);
+}
+
+#[gpui_kit::test]
+fn demo_preferences_stay_in_memory(cx: &mut TestAppContext) {
+    let dir = TempSettings::new("prefs-demo", "{}");
+    cx.update(|cx| {
+        crate::prefs_hub::PrefsHub::init_in_memory(cx);
+        crate::prefs_hub::PrefsHub::update_alert_settings(cx, |alerts| alerts.enabled = true);
+    });
+    assert!(
+        cx.update(|cx| crate::prefs_hub::PrefsHub::alert_settings(cx)).enabled,
+        "applies in memory"
+    );
+    assert!(!dir.0.join("dashboard.json").exists(), "nothing is written");
+}

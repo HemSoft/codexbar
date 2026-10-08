@@ -148,6 +148,9 @@ pub fn process(cx: &mut App, refreshed: &[AccountSnapshot], now: DateTime<Utc>) 
     {
         if let Some(reason) = reason {
             cx.update_global(|global: &mut Notifications, _| global.problem = Some(reason.into()));
+        } else if notifier.status() == NotifierStatus::Ready {
+            // Notifications were turned back on: an old "blocked" message no longer applies.
+            cx.update_global(|global: &mut Notifications, _| global.problem = None);
         }
         // Nothing new; still retry an active-alert save that failed earlier.
         Notifications::set_active(cx, active);
