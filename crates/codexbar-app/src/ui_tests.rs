@@ -1915,3 +1915,101 @@ fn removing_an_account_deletes_its_history_and_preferences(cx: &mut TestAppConte
     assert!(prefs.shows_history(&id));
     assert_eq!(prefs.layout().group_of(&id), None);
 }
+
+fn history_points(cx: &mut TestAppContext, dashboard: &Entity<Dashboard>, id: &str, metric: &str) -> usize {
+    let history = cx.update(|cx| dashboard.read(cx).history());
+    let now = chrono::Utc::now();
+    let store = history.lock().unwrap();
+    store
+        .points(
+            id,
+            metric,
+            now - chrono::Duration::days(1),
+            now + chrono::Duration::minutes(1),
+        )
+        .len()
+}
+
+#[gpui_kit::test]
+fn a_refresh_after_removal_does_not_bring_the_account_or_its_history_back(cx: &mut TestAppContext) {
+    use codexbar_store::settings::{AccountRecord, AuthMethod, names};
+    let settings = TempSettings::new("remove-stale", "{}");
+    let record = AccountRecord::new(names::OPENROUTER, "Work", AuthMethod::ApiKey);
+    let id: &'static str = Box::leak(record.id.clone().into_boxed_str());
+    // The provider keeps answering for the account, like a fetch that started before it was removed.
+    let provider = FakeProvider::for_account(Provider::OpenRouter, id, Some(0.5));
+    let dashboard = open_live(cx, &settings, vec![provider]);
+    cx.update(|cx| SettingsHub::update(cx, |settings| settings.upsert(record.clone())))
+        .unwrap();
+    refresh(cx, &dashboard);
+    assert!(shown_ids(cx, &dashboard).contains(&id.to_owned()));
+    assert_eq!(history_points(cx, &dashboard, id, "weekly"), 1);
+
+    cx.update(|cx| {
+        SettingsHub::update(cx, |settings| {
+            settings.remove(id);
+            Ok(())
+        })
+    })
+    .unwrap();
+    cx.run_until_parked();
+    refresh(cx, &dashboard);
+    assert!(!shown_ids(cx, &dashboard).contains(&id.to_owned()), "not shown again");
+    assert_eq!(
+        history_points(cx, &dashboard, id, "weekly"),
+        0,
+        "and its history stays deleted"
+    );
+}
+
+#[gpui_kit::test]
+fn copilot_history_is_kept_while_discovery_still_shows_the_account(cx: &mut TestAppContext) {
+    use codexbar_store::settings::{AccountRecord, AuthMethod, names};
+    let settings = TempSettings::new("remove-copilot", "{}");
+    let dashboard = open_live(cx, &settings, vec![]);
+    cx.run_until_parked();
+    let mut alice = AccountRecord::new(names::COPILOT, "Alice", AuthMethod::CommandLine);
+    alice.external_id = Some("alice".into());
+    let mut bob = AccountRecord::new(names::COPILOT, "Bob", AuthMethod::CommandLine);
+    bob.external_id = Some("bob".into());
+    cx.update(|cx| {
+        SettingsHub::update(cx, |settings| {
+            settings.upsert(alice.clone())?;
+            settings.upsert(bob.clone())
+        })
+    })
+    .unwrap();
+    cx.run_until_parked();
+    let history = cx.update(|cx| dashboard.read(cx).history());
+    let now = chrono::Utc::now();
+    for user in ["copilot-alice", "copilot-bob"] {
+        history.lock().unwrap().insert_points(
+            user,
+            "premium-requests",
+            &[codexbar_store::summary::Point::new(
+                now - chrono::Duration::hours(1),
+                0.3,
+            )],
+        );
+    }
+    // Clearing Alice's username makes Copilot show every signed-in account again: nothing is deleted.
+    alice.external_id = None;
+    cx.update(|cx| SettingsHub::update(cx, |settings| settings.upsert(alice.clone())))
+        .unwrap();
+    cx.run_until_parked();
+    assert_eq!(history_points(cx, &dashboard, "copilot-bob", "premium-requests"), 1);
+    // Back to usernames only, then Bob is removed: only his history goes.
+    alice.external_id = Some("alice".into());
+    cx.update(|cx| SettingsHub::update(cx, |settings| settings.upsert(alice.clone())))
+        .unwrap();
+    cx.update(|cx| {
+        SettingsHub::update(cx, |settings| {
+            settings.remove(&bob.id);
+            Ok(())
+        })
+    })
+    .unwrap();
+    cx.run_until_parked();
+    assert_eq!(history_points(cx, &dashboard, "copilot-bob", "premium-requests"), 0);
+    assert_eq!(history_points(cx, &dashboard, "copilot-alice", "premium-requests"), 1);
+}

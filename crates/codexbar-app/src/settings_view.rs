@@ -540,7 +540,7 @@ fn confirm_reset(window: &mut Window, cx: &mut App) {
     window.open_alert_dialog(cx, |alert, _, _| {
         alert
             .title("Reset all accounts?")
-            .description("Every account, its saved keys and its usage history are removed. Providers fall back to their default sign-in. This can't be undone.")
+            .description("Every account and its saved keys are removed. OpenRouter, Moonshot and Copilot accounts for a username also lose their usage history; providers that fall back to their default sign-in keep theirs. This can't be undone.")
             .button_props(DialogButtonProps::default().ok_text("Reset accounts").ok_variant(ButtonVariant::Danger).show_cancel(true))
             .on_ok(|_, _, cx| {
                 let ids: Vec<String> = SettingsHub::global(cx).settings().accounts().iter().map(|a| a.id.clone()).collect();
