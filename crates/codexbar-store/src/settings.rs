@@ -10,8 +10,9 @@
 //!   conflict with changes another process made since load, and replaces the file through a temp file.
 //! - Legacy provider switches, Copilot selections and the OpenCode Go workspace stay in sync with the accounts.
 //!
-//! Secrets are not written here. New keys go to Windows Credential Manager (`credentials`); plaintext keys already in
-//! the file stay readable until the WPF app is retired, when #74's migration removes them.
+//! Secrets are never written here. Keys go to Windows Credential Manager (`credentials`). Plaintext keys an older
+//! CodexBar left in the file move there once (#74, `move_plaintext_keys`) and are removed from the file only after
+//! Credential Manager holds them.
 
 use std::collections::HashSet;
 use std::fs;
@@ -239,6 +240,8 @@ pub struct Settings {
     /// Top-level scalar settings this copy changed. Only these are written back, so a value another process
     /// saved since load (the WPF app's zoom, say) is never overwritten with this copy's stale one.
     edited: Vec<&'static str>,
+    /// Providers whose plaintext `apiKey` moved to Credential Manager; the next save removes it from the file.
+    forgotten_keys: Vec<String>,
 }
 
 impl Settings {
@@ -265,6 +268,7 @@ impl Settings {
             loaded_accounts: accounts.clone(),
             accounts,
             edited: Vec::new(),
+            forgotten_keys: Vec::new(),
         })
     }
 
@@ -277,6 +281,7 @@ impl Settings {
             accounts: Vec::new(),
             loaded_accounts: Vec::new(),
             edited: Vec::new(),
+            forgotten_keys: Vec::new(),
         })
     }
 
@@ -291,6 +296,7 @@ impl Settings {
             loaded_accounts: accounts.clone(),
             accounts,
             edited: Vec::new(),
+            forgotten_keys: Vec::new(),
         }
     }
 
@@ -323,6 +329,27 @@ impl Settings {
             .map(str::trim)
             .filter(|key| !key.is_empty())
             .map(str::to_owned)
+    }
+
+    /// Providers whose entry still holds a plaintext `apiKey`, by their canonical name.
+    pub fn plaintext_key_providers(&self) -> Vec<&'static str> {
+        names::ALL
+            .into_iter()
+            .filter(|provider| self.api_key(provider).is_some())
+            .collect()
+    }
+
+    /// Drops a provider's plaintext `apiKey` (after it moved to Credential Manager). The next save removes it from the
+    /// file, whatever else changed there since load.
+    pub fn forget_api_key(&mut self, provider: &str) {
+        remove_api_key(&mut self.doc, provider);
+        if !self
+            .forgotten_keys
+            .iter()
+            .any(|known| known.eq_ignore_ascii_case(provider))
+        {
+            self.forgotten_keys.push(provider.to_owned());
+        }
     }
 
     pub fn opencode_workspace_id(&self) -> Option<String> {
@@ -437,6 +464,9 @@ impl Settings {
             }
         }
         apply_accounts(&mut doc, &accounts)?;
+        for provider in &self.forgotten_keys {
+            remove_api_key(&mut doc, provider);
+        }
 
         let json = serde_json::to_string_pretty(&doc).map_err(|err| SettingsError::Io(err.to_string()))?;
         write_replacing(&path, &json)?;
@@ -445,6 +475,7 @@ impl Settings {
         self.accounts = accounts.clone();
         self.loaded_accounts = accounts;
         self.edited.clear();
+        self.forgotten_keys.clear();
         Ok(())
     }
 
@@ -690,6 +721,74 @@ fn provider_entry<'a>(doc: &'a Value, provider: &str) -> Option<&'a Value> {
         .iter()
         .find(|(key, _)| key.eq_ignore_ascii_case(provider))
         .map(|(_, v)| v)
+}
+
+/// Removes `providers.<provider>.apiKey`, matching the provider name case-insensitively like `provider_entry`.
+fn remove_api_key(doc: &mut Value, provider: &str) {
+    let Some(providers) = doc.get_mut("providers").and_then(Value::as_object_mut) else {
+        return;
+    };
+    for (key, entry) in providers.iter_mut() {
+        if key.eq_ignore_ascii_case(provider)
+            && let Some(entry) = entry.as_object_mut()
+        {
+            entry.remove("apiKey");
+        }
+    }
+}
+
+/// The outcome of moving plaintext keys out of the settings file (#74).
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct KeyMigration {
+    /// Providers whose key now lives only in Credential Manager.
+    pub moved: Vec<&'static str>,
+    /// Providers whose key stayed in the file, with why. Retried at the next start.
+    pub failed: Vec<(&'static str, String)>,
+}
+
+/// Moves every plaintext `apiKey` in the file to Credential Manager, under the account that uses it today (the
+/// provider's first account, or its implicit one when it has none), then removes it from the file.
+///
+/// Nothing is lost on failure: a key leaves the file only after Credential Manager returns it, and if the save fails the
+/// file keeps every key (the copies in Credential Manager are used first, so a retry is harmless). A key Credential
+/// Manager already holds for that account is the one in use, so the stale plaintext copy is simply removed.
+pub fn move_plaintext_keys(settings: &mut Settings, store: &dyn crate::credentials::CredentialStore) -> KeyMigration {
+    let mut outcome = KeyMigration::default();
+    for provider in settings.plaintext_key_providers() {
+        let Some(key) = settings.api_key(provider) else {
+            continue;
+        };
+        let account = settings
+            .accounts_for(provider)
+            .next()
+            .map_or_else(|| legacy_id(provider, ""), |account| account.id.clone());
+        let stored = match store.read(&account) {
+            Ok(Some(_)) => Ok(()),
+            Ok(None) => store.write(&account, &key).and_then(|()| match store.read(&account) {
+                Ok(Some(back)) if back == key => Ok(()),
+                Ok(_) => Err(crate::credentials::CredentialError::verification()),
+                Err(err) => Err(err),
+            }),
+            Err(err) => Err(err),
+        };
+        match stored {
+            Ok(()) => {
+                settings.forget_api_key(provider);
+                outcome.moved.push(provider);
+            }
+            Err(err) => outcome.failed.push((provider, err.to_string())),
+        }
+    }
+    if !outcome.moved.is_empty()
+        && let Err(err) = settings.save()
+    {
+        // The file keeps its keys; Credential Manager's copies are used meanwhile, and the next start tries again.
+        let moved = std::mem::take(&mut outcome.moved);
+        outcome
+            .failed
+            .extend(moved.into_iter().map(|provider| (provider, err.to_string())));
+    }
+    outcome
 }
 
 fn object_mut(value: &mut Value) -> &mut Map<String, Value> {
@@ -1018,5 +1117,163 @@ mod tests {
         assert_eq!(a.len(), 32);
         assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
         assert_ne!(a, b);
+    }
+
+    mod key_migration {
+        use super::*;
+        use crate::credentials::{CredentialError, CredentialStore, MemoryCredentialStore};
+
+        const WITH_KEYS: &str = r#"{
+            "accountConfigurationVersion": 1,
+            "accounts": [
+                { "id": "acct-or", "providerId": "OpenRouter", "displayLabel": "Work", "enabled": true,
+                  "authenticationMethod": "ApiKey" }
+            ],
+            "providers": {
+                "OpenRouter": { "enabled": true, "apiKey": "sk-or-plain" },
+                "opencodezen": { "enabled": true, "apiKey": "zen-cookie-plain" },
+                "Cursor": { "enabled": true }
+            },
+            "zoomLevel": 1.2
+        }"#;
+
+        fn file_text(dir: &TempDir) -> String {
+            fs::read_to_string(dir.0.join(PRIMARY_FILE)).unwrap()
+        }
+
+        #[test]
+        fn keys_move_to_their_accounts_and_leave_the_file() {
+            let dir = TempDir::with(PRIMARY_FILE, WITH_KEYS);
+            let store = MemoryCredentialStore::default();
+            let mut settings = Settings::load(&dir.0).unwrap();
+            assert_eq!(
+                settings.plaintext_key_providers(),
+                [names::OPENROUTER, names::OPENCODE_ZEN]
+            );
+            let outcome = move_plaintext_keys(&mut settings, &store);
+            assert_eq!(outcome.moved, [names::OPENROUTER, names::OPENCODE_ZEN]);
+            assert!(outcome.failed.is_empty());
+            // Under the configured account, or the implicit one for a provider without records.
+            assert_eq!(store.read("acct-or").unwrap().as_deref(), Some("sk-or-plain"));
+            let implicit = legacy_id(names::OPENCODE_ZEN, "");
+            assert_eq!(store.read(&implicit).unwrap().as_deref(), Some("zen-cookie-plain"));
+            let text = file_text(&dir);
+            assert!(
+                !text.contains("sk-or-plain") && !text.contains("zen-cookie-plain"),
+                "no secret left in the file"
+            );
+            assert!(!text.contains("apiKey"));
+            // Everything else is kept.
+            let saved = dir.read(PRIMARY_FILE);
+            assert_eq!(saved["zoomLevel"], json!(1.2));
+            assert_eq!(saved["providers"]["Cursor"]["enabled"], json!(true));
+            assert_eq!(saved["accounts"][0]["id"], json!("acct-or"));
+            // Done once: a second run finds nothing to move.
+            let mut again = Settings::load(&dir.0).unwrap();
+            assert_eq!(move_plaintext_keys(&mut again, &store), KeyMigration::default());
+        }
+
+        #[test]
+        fn a_failing_store_keeps_every_key_in_the_file() {
+            let dir = TempDir::with(PRIMARY_FILE, WITH_KEYS);
+            let mut settings = Settings::load(&dir.0).unwrap();
+            let outcome = move_plaintext_keys(&mut settings, &MemoryCredentialStore::failing());
+            assert!(outcome.moved.is_empty());
+            assert_eq!(outcome.failed.len(), 2);
+            assert!(
+                outcome.failed.iter().all(|(_, why)| !why.contains("plain")),
+                "errors never carry the secret"
+            );
+            let text = file_text(&dir);
+            assert!(text.contains("sk-or-plain") && text.contains("zen-cookie-plain"));
+            assert_eq!(
+                settings.api_key(names::OPENROUTER).as_deref(),
+                Some("sk-or-plain"),
+                "still usable"
+            );
+        }
+
+        /// Accepts writes but hands back something else, like a store that silently truncates.
+        struct Garbling;
+
+        impl CredentialStore for Garbling {
+            fn read(&self, _: &str) -> Result<Option<String>, CredentialError> {
+                Ok(None)
+            }
+
+            fn write(&self, _: &str, _: &str) -> Result<(), CredentialError> {
+                Ok(())
+            }
+
+            fn delete(&self, _: &str) -> Result<(), CredentialError> {
+                Ok(())
+            }
+        }
+
+        #[test]
+        fn a_key_that_does_not_read_back_stays_in_the_file() {
+            let dir = TempDir::with(PRIMARY_FILE, WITH_KEYS);
+            let mut settings = Settings::load(&dir.0).unwrap();
+            let outcome = move_plaintext_keys(&mut settings, &Garbling);
+            assert!(outcome.moved.is_empty());
+            assert_eq!(
+                outcome.failed[0].1,
+                "Windows Credential Manager didn't return the saved secret."
+            );
+            assert!(file_text(&dir).contains("sk-or-plain"));
+        }
+
+        #[test]
+        fn a_key_already_in_credential_manager_wins_and_the_plaintext_goes() {
+            let dir = TempDir::with(PRIMARY_FILE, WITH_KEYS);
+            let store = MemoryCredentialStore::default();
+            store.write("acct-or", "sk-or-newer").unwrap();
+            let mut settings = Settings::load(&dir.0).unwrap();
+            let outcome = move_plaintext_keys(&mut settings, &store);
+            assert!(outcome.moved.contains(&names::OPENROUTER));
+            assert_eq!(
+                store.read("acct-or").unwrap().as_deref(),
+                Some("sk-or-newer"),
+                "never overwritten"
+            );
+            assert!(!file_text(&dir).contains("sk-or-plain"));
+        }
+
+        #[test]
+        fn a_busy_file_keeps_its_keys_for_the_next_start() {
+            let dir = TempDir::with(PRIMARY_FILE, WITH_KEYS);
+            let store = MemoryCredentialStore::default();
+            let mut settings = Settings::load(&dir.0).unwrap();
+            let _held = crate::lock::FileLock::acquire(&dir.0.join(LOCK_FILE)).unwrap();
+            let outcome = move_plaintext_keys(&mut settings, &store);
+            assert!(
+                outcome.moved.is_empty(),
+                "nothing counts as moved until the file is saved"
+            );
+            assert_eq!(outcome.failed.len(), 2);
+            assert!(file_text(&dir).contains("sk-or-plain"));
+            // The copies in Credential Manager are already in use; the retry completes it.
+            drop(_held);
+            let mut retry = Settings::load(&dir.0).unwrap();
+            assert_eq!(move_plaintext_keys(&mut retry, &store).moved.len(), 2);
+            assert!(!file_text(&dir).contains("sk-or-plain"));
+        }
+
+        #[test]
+        fn a_removal_survives_another_writer_saving_in_between() {
+            let dir = TempDir::with(PRIMARY_FILE, WITH_KEYS);
+            let mut mine = Settings::load(&dir.0).unwrap();
+            let mut theirs = Settings::load(&dir.0).unwrap();
+            theirs.set_zoom_level(2.0);
+            theirs.save().unwrap();
+            mine.forget_api_key(names::OPENROUTER);
+            mine.save().unwrap();
+            let saved = dir.read(PRIMARY_FILE);
+            assert_eq!(saved["zoomLevel"], json!(2.0), "their change kept");
+            assert!(
+                saved["providers"]["OpenRouter"].get("apiKey").is_none(),
+                "my removal applied"
+            );
+        }
     }
 }

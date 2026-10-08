@@ -2013,3 +2013,37 @@ fn copilot_history_is_kept_while_discovery_still_shows_the_account(cx: &mut Test
     assert_eq!(history_points(cx, &dashboard, "copilot-bob", "premium-requests"), 0);
     assert_eq!(history_points(cx, &dashboard, "copilot-alice", "premium-requests"), 1);
 }
+
+const PLAINTEXT_KEY: &str = r#"{
+    "accountConfigurationVersion": 1,
+    "accounts": [],
+    "providers": { "OpenRouter": { "enabled": true, "apiKey": "sk-or-plaintext" } }
+}"#;
+
+#[gpui_kit::test]
+fn plaintext_keys_move_to_credential_manager_at_start(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("keys-move", PLAINTEXT_KEY);
+    let _dashboard = open_live_with(cx, &settings, vec![], MemoryCredentialStore::default());
+    cx.run_until_parked();
+    let text = std::fs::read_to_string(settings.0.join("settings.json")).unwrap();
+    assert!(!text.contains("sk-or-plaintext"), "the file no longer holds the key");
+    let implicit = codexbar_store::settings::legacy_id("OpenRouter", "");
+    assert_eq!(secret_of(cx, &implicit).as_deref(), Some("sk-or-plaintext"));
+    assert_eq!(cx.update(|cx| SettingsHub::global(cx).notice()), None);
+}
+
+#[gpui_kit::test]
+fn a_key_that_cannot_move_stays_usable_and_says_so(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("keys-stay", PLAINTEXT_KEY);
+    let _dashboard = open_live_with(cx, &settings, vec![], MemoryCredentialStore::failing());
+    cx.run_until_parked();
+    let text = std::fs::read_to_string(settings.0.join("settings.json")).unwrap();
+    assert!(text.contains("sk-or-plaintext"), "kept until it can move");
+    let notice = cx.update(|cx| SettingsHub::global(cx).notice()).expect("a notice");
+    assert_eq!(
+        notice.as_ref(),
+        "Keys for OpenRouter are still in the settings file: Windows Credential Manager failed (error 5). \
+         CodexBar tries again at the next start."
+    );
+    assert!(!notice.contains("sk-or"), "never the key itself");
+}
