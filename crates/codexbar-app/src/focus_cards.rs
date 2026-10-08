@@ -390,7 +390,10 @@ fn pace_takeaway(metric: &Metric, now: DateTime<Utc>) -> String {
                 format::countdown(to_limit)
             )
         }
-        Some(_) => "On pace to stay under the limit".to_owned(),
+        Some(_) => match metric.projected_at_reset(now) {
+            Some(projected) => format!("On pace for about {:.0}% by the reset", projected * 100.0),
+            None => "On pace to stay under the limit".to_owned(),
+        },
         None => "Steady".to_owned(),
     }
 }
@@ -427,4 +430,33 @@ fn day_label(len: usize, ix: usize) -> String {
     (Local::now() - chrono::Duration::days(days_ago))
         .format("%a")
         .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Duration;
+    use codexbar_core::Pace;
+
+    fn window(used: f64, per_hour: f64) -> Metric {
+        Metric::Window {
+            label: "Included usage".into(),
+            used,
+            resets_at: now() + Duration::hours(10),
+            pace: Some(Pace::per_hour(per_hour)),
+        }
+    }
+
+    fn now() -> DateTime<Utc> {
+        "2026-10-07T02:00:00Z".parse().unwrap()
+    }
+
+    #[test]
+    fn pace_takeaway_shows_the_projection_or_when_the_limit_is_hit() {
+        assert_eq!(
+            pace_takeaway(&window(0.4, 0.03), now()),
+            "On pace for about 70% by the reset"
+        );
+        assert!(pace_takeaway(&window(0.4, 0.1), now()).starts_with("Hits the included usage limit in ~"));
+    }
 }

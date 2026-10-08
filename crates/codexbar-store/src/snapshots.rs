@@ -121,10 +121,11 @@ fn metric_to_json(metric: &Metric) -> Value {
             spent,
             limit,
             resets_at,
+            pace,
         } => json!({
             "kind": "spend", "label": label, "currency": spent.currency().code(), "spentMinor": spent.cents(),
             "limitMinor": limit.map(Money::cents), "limitCurrency": limit.map(|limit| limit.currency().code()),
-            "resetsAt": resets_at.map(|at| at.to_rfc3339()),
+            "resetsAt": resets_at.map(|at| at.to_rfc3339()), "pacePerHour": pace.map(Pace::fraction_per_hour),
         }),
         // Amounts are minor units of `currency`; files written before currencies existed are US dollars.
         Metric::Balance {
@@ -181,6 +182,7 @@ fn metric_from_json(value: &Value) -> Option<Metric> {
                 spent: Money::new(value.get("spentMinor")?.as_i64()?, currency),
                 limit,
                 resets_at: value.get("resetsAt").and_then(time),
+                pace,
             }
         }
         _ => return None,
@@ -263,6 +265,7 @@ mod tests {
                     spent: Money::new(1240, Currency::Eur),
                     limit: Some(Money::new(5000, Currency::Eur)),
                     resets_at: Some(now() + chrono::Duration::days(9)),
+                    pace: Some(Pace::per_hour(0.002)),
                 },
                 // A cap in another currency stays incomparable after a restart.
                 Metric::Spend {
@@ -270,6 +273,7 @@ mod tests {
                     spent: Money::new(1240, Currency::Eur),
                     limit: Some(Money::from_cents(5000)),
                     resets_at: None,
+                    pace: None,
                 },
                 Metric::Balance {
                     label: "Credits".into(),
