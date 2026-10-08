@@ -2047,3 +2047,26 @@ fn a_key_that_cannot_move_stays_usable_and_says_so(cx: &mut TestAppContext) {
     );
     assert!(!notice.contains("sk-or"), "never the key itself");
 }
+
+#[gpui_kit::test]
+fn a_moved_key_still_works_after_the_first_account_is_added(cx: &mut TestAppContext) {
+    use codexbar_store::settings::{AccountRecord, AuthMethod, names};
+    let settings = TempSettings::new("keys-first-account", PLAINTEXT_KEY);
+    let _dashboard = open_live_with(cx, &settings, vec![], MemoryCredentialStore::default());
+    cx.run_until_parked();
+    // The key moved under the implicit account; now the first explicit account is added without a key.
+    let record = AccountRecord::new(names::OPENROUTER, "Work", AuthMethod::ApiKey);
+    cx.update(|cx| SettingsHub::update(cx, |settings| settings.upsert(record.clone())))
+        .unwrap();
+    // An OPENROUTER_API_KEY in the environment would win over every stored key; this case needs it unset.
+    if std::env::var_os("OPENROUTER_API_KEY").is_some() {
+        return;
+    }
+    let (secret, source) = cx.update(|cx| SettingsHub::global(cx).secret_for(&record));
+    // Compared without printing: a failure must never put a secret in the test output.
+    assert!(secret.as_deref() == Some("sk-or-plaintext"), "the moved key is found");
+    assert!(matches!(
+        source,
+        codexbar_store::credentials::SecretSource::CredentialManager
+    ));
+}

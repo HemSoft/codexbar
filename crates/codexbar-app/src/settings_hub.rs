@@ -38,7 +38,14 @@ impl SettingsHub {
         // version can save; a key that couldn't move stays usable and is tried again at the next start.
         let error = load_error
             .is_none()
-            .then(|| codexbar_store::settings::move_plaintext_keys(&mut settings, credentials.as_ref()))
+            .then(|| {
+                let providers: Vec<&str> = crate::catalog::PROVIDERS
+                    .iter()
+                    .filter(|info| info.secret.is_some())
+                    .map(|info| info.id)
+                    .collect();
+                codexbar_store::settings::move_plaintext_keys(&mut settings, credentials.as_ref(), &providers)
+            })
             .filter(|outcome| !outcome.failed.is_empty())
             .map(|outcome| {
                 let providers: Vec<&str> = outcome.failed.iter().map(|(provider, _)| *provider).collect();
@@ -155,10 +162,21 @@ impl SettingsHub {
             return (None, SecretSource::Missing);
         };
         let first = self.settings.accounts_for(info.id).next().map(|a| a.id.as_str());
-        let legacy = (first.is_none_or(|id| id == account.id))
-            .then(|| self.settings.api_key(info.id))
-            .flatten();
-        resolve_secret(Some(spec.env), self.credentials.as_ref(), &account.id, legacy)
+        let is_first = first.is_none_or(|id| id == account.id);
+        let legacy = is_first.then(|| self.settings.api_key(info.id)).flatten();
+        let resolved = resolve_secret(Some(spec.env), self.credentials.as_ref(), &account.id, legacy);
+        // A key moved from the file before the provider had accounts (#74) is kept under its implicit account; the
+        // provider's first account goes on using it until a key is saved for that account.
+        let implicit = codexbar_store::settings::legacy_id(info.id, "");
+        if matches!(resolved.1, SecretSource::Missing)
+            && is_first
+            && account.id != implicit
+            && let Ok(Some(secret)) = self.credentials.read(&implicit)
+            && !secret.trim().is_empty()
+        {
+            return (Some(secret), SecretSource::CredentialManager);
+        }
+        resolved
     }
 }
 
