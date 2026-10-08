@@ -407,6 +407,14 @@ fn table_trend_shows_compact_history_until_hidden(cx: &mut TestAppContext) {
     open_history(cx, handle);
     click(cx, handle, "history-show");
 
+    // Back on the Usage view, the row is there but its trend is gone.
+    click(cx, handle, ("view-tab", 0usize));
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    assert!(
+        label(cx, handle, "provider-badge-codex-personal").is_some(),
+        "the table is showing the account"
+    );
     assert!(label(cx, handle, cell).is_none(), "a hidden account shows no trend");
 }
 
