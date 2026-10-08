@@ -12,7 +12,8 @@ use codexbar_core::{AccountId, AccountSnapshot, Currency, Metric, Money, Pace, P
 use serde_json::{Value, json};
 
 pub const SNAPSHOTS_FILE: &str = "snapshots.json";
-const VERSION: u64 = 1;
+/// Version 2 added currencies, spend and messages. Version 1 files read as US dollars with no messages.
+const VERSION: u64 = 2;
 
 /// Loads the last-good snapshots in `dir`. Missing, unreadable or newer files give none; entries that can't be read
 /// are skipped.
@@ -23,7 +24,11 @@ pub fn load_snapshots(dir: &Path) -> Vec<AccountSnapshot> {
     let Ok(doc) = serde_json::from_str::<Value>(&text) else {
         return Vec::new();
     };
-    if doc.get("version").and_then(Value::as_u64) != Some(VERSION) {
+    if !doc
+        .get("version")
+        .and_then(Value::as_u64)
+        .is_some_and(|version| (1..=VERSION).contains(&version))
+    {
         return Vec::new();
     }
     doc.get("accounts")
@@ -274,6 +279,9 @@ mod tests {
         .unwrap();
         let loaded = load_snapshots(&dir.0);
         assert_eq!(loaded[0].metrics()[0].used_display(), "$18.42 left");
+        save_snapshots(&dir.0, &loaded).unwrap();
+        let text = std::fs::read_to_string(dir.0.join(SNAPSHOTS_FILE)).unwrap();
+        assert!(text.contains(r#""version": 2"#), "rewritten in the current format");
     }
 
     #[test]
@@ -282,14 +290,14 @@ mod tests {
         assert!(load_snapshots(&dir.0).is_empty());
         std::fs::write(dir.0.join(SNAPSHOTS_FILE), "{ nope").unwrap();
         assert!(load_snapshots(&dir.0).is_empty());
-        std::fs::write(dir.0.join(SNAPSHOTS_FILE), r#"{ "version": 2, "accounts": [] }"#).unwrap();
+        std::fs::write(dir.0.join(SNAPSHOTS_FILE), r#"{ "version": 3, "accounts": [] }"#).unwrap();
         assert!(load_snapshots(&dir.0).is_empty());
     }
 
     #[test]
     fn a_newer_file_is_never_overwritten() {
         let dir = Dir::new("newer");
-        let newer = r#"{ "version": 2, "accounts": [] }"#;
+        let newer = r#"{ "version": 3, "accounts": [] }"#;
         std::fs::write(dir.0.join(SNAPSHOTS_FILE), newer).unwrap();
         let account = AccountSnapshot::new(AccountId::new("c"), Provider::Cursor, Vec::new(), now());
         assert!(save_snapshots(&dir.0, &[account]).is_err());

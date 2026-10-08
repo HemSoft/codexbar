@@ -31,7 +31,7 @@ impl Currency {
             .find(|currency| currency.code().eq_ignore_ascii_case(code))
     }
 
-    fn symbol(self) -> &'static str {
+    pub fn symbol(self) -> &'static str {
         match self {
             Self::Usd => "$",
             Self::Eur => "€",

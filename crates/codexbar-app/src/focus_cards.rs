@@ -217,6 +217,7 @@ fn share_card(account: &AccountSnapshot, now: DateTime<Utc>, cx: &App) -> Card {
     let Some(used) = metric.used_fraction() else {
         let amount = match metric {
             Metric::Balance { remaining, .. } => remaining.display(),
+            Metric::Spend { spent, .. } => spent.display(),
             _ => "—".into(),
         };
         let body = v_flex()
@@ -230,6 +231,10 @@ fn share_card(account: &AccountSnapshot, now: DateTime<Utc>, cx: &App) -> Card {
                     .text_color(cx.theme().muted_foreground)
                     .child(metric.label().to_owned()),
             );
+        if let Metric::Spend { .. } = metric {
+            return Card::new(metric.label().to_owned(), "Spent so far", body)
+                .takeaway("No spend limit is set for this account");
+        }
         let takeaway = metric
             .days_of_credit()
             .map(|days| format!("About {days:.0} days of credit left"))

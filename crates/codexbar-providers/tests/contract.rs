@@ -18,7 +18,7 @@ fn keys(account: &AccountSnapshot) -> Vec<String> {
 fn codex_results_keep_their_id_and_metric_keys() {
     let account = codex::parse_usage(include_str!("fixtures/codex-usage.json"), now()).unwrap();
     assert_eq!(account.id().as_str(), "codex-chatgpt");
-    assert!(!keys(&account).is_empty());
+    assert_eq!(keys(&account), vec!["5-hour-window", "weekly"]);
     for key in keys(&account) {
         assert!(
             key.chars()
@@ -32,7 +32,7 @@ fn codex_results_keep_their_id_and_metric_keys() {
 fn claude_results_keep_their_id_and_metric_keys() {
     let account = claude::parse_usage(include_str!("fixtures/claude-usage.json"), None, now()).unwrap();
     assert_eq!(account.id().as_str(), "claude");
-    assert!(!keys(&account).is_empty());
+    assert_eq!(keys(&account), vec!["5-hour-window", "weekly"]);
 }
 
 #[test]
@@ -44,7 +44,7 @@ fn copilot_results_are_identified_by_username() {
         "case-insensitive, like GitHub usernames"
     );
     assert_eq!(account.id().as_str(), "copilot-hemsoft");
-    assert!(keys(&account).contains(&"premium-requests".to_owned()));
+    assert_eq!(keys(&account), vec!["premium-requests"]);
 }
 
 #[test]
@@ -52,7 +52,7 @@ fn cursor_results_keep_their_id_and_metric_keys() {
     let payload = r#"{"billingCycleEnd":"1792540800000","planUsage":{"totalPercentUsed":71,"autoPercentUsed":40,"apiPercentUsed":12.5}}"#;
     let account = cursor::parse_usage(payload, now()).unwrap();
     assert_eq!(account.id().as_str(), "cursor");
-    assert_eq!(keys(&account)[0], "included-usage");
+    assert_eq!(keys(&account), vec!["included-usage", "auto", "api"]);
 }
 
 #[test]
