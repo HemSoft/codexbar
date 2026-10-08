@@ -4,7 +4,7 @@
 use std::sync::{Arc, Mutex};
 
 use chrono::{Duration, Local, Utc};
-use codexbar_core::{AccountId, AccountSnapshot, Metric};
+use codexbar_core::{AccountId, AccountSnapshot, Currency, Metric};
 use codexbar_store::HistoryStore;
 use codexbar_store::summary::{ChartPoint, GAP_THRESHOLD, HistorySummary, chart_series, summarize};
 use gpui_kit::TestSupportExt as _;
@@ -26,17 +26,20 @@ use crate::status::severity_dot_color;
 /// The most points a history chart draws; longer ranges are reduced, keeping spikes.
 const MAX_CHART_POINTS: usize = 120;
 
-/// How a metric's stored values read: limits are fractions used, balances are dollars.
+/// How a metric's stored values read: limits are fractions used, balances and uncapped spend are money in the
+/// metric's currency.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ValueKind {
     Percent,
-    Dollars,
+    Money(Currency),
 }
 
 impl ValueKind {
     pub fn of(metric: &Metric) -> Self {
         match metric {
-            Metric::Balance { .. } => Self::Dollars,
+            // Spend is stored as money whether or not it has a cap.
+            Metric::Balance { remaining, .. } => Self::Money(remaining.currency()),
+            Metric::Spend { spent, .. } => Self::Money(spent.currency()),
             _ => Self::Percent,
         }
     }
@@ -44,19 +47,19 @@ impl ValueKind {
     pub fn value(self, value: f64) -> String {
         match self {
             Self::Percent => format!("{:.0}%", value * 100.0),
-            Self::Dollars if value < 0.0 => format!("\u{2212}${:.2}", value.abs()),
-            Self::Dollars => format!("${value:.2}"),
+            Self::Money(currency) if value < 0.0 => format!("\u{2212}{}", amount(currency, value)),
+            Self::Money(currency) => amount(currency, value),
         }
     }
 
-    /// A signed change: "+18 pts", "−$9.30", "no change".
+    /// A signed change: "+18 pts", "\u{2212}$9.30", "no change".
     pub fn change(self, delta: f64) -> String {
         let sign = if delta > 0.0 { "+" } else { "\u{2212}" };
         match self {
             Self::Percent if (delta * 100.0).abs() < 0.5 => "no change".into(),
             Self::Percent => format!("{sign}{:.0} pts", (delta * 100.0).abs()),
-            Self::Dollars if delta.abs() < 0.005 => "no change".into(),
-            Self::Dollars => format!("{sign}${:.2}", delta.abs()),
+            Self::Money(currency) if negligible(currency, delta) => "no change".into(),
+            Self::Money(currency) => format!("{sign}{}", amount(currency, delta)),
         }
     }
 
@@ -66,10 +69,21 @@ impl ValueKind {
         match self {
             Self::Percent if (delta * 100.0).abs() < 0.5 => "unchanged".into(),
             Self::Percent => format!("{direction} {:.0} points", (delta * 100.0).abs()),
-            Self::Dollars if delta.abs() < 0.005 => "unchanged".into(),
-            Self::Dollars => format!("{direction} ${:.2}", delta.abs()),
+            Self::Money(currency) if negligible(currency, delta) => "unchanged".into(),
+            Self::Money(currency) => format!("{direction} {}", amount(currency, delta)),
         }
     }
+}
+
+/// The absolute amount with its currency symbol and minor units: "$9.30", "\u{a5}1200".
+fn amount(currency: Currency, value: f64) -> String {
+    let digits = currency.minor_digits() as usize;
+    format!("{}{:.digits$}", currency.symbol(), value.abs())
+}
+
+/// Smaller than half the currency's smallest unit, so it would display as zero.
+fn negligible(currency: Currency, delta: f64) -> bool {
+    delta.abs() < 0.5 / 10f64.powi(currency.minor_digits() as i32)
 }
 
 /// The ranges the History view offers.
@@ -552,7 +566,7 @@ impl HistoryView {
                 ValueKind::Percent => (0.0, 1.0),
                 // Balances start at zero so a drop reads as a drop; a flat series still gets visible headroom.
                 // A negative (overdrawn) balance extends the axis below zero instead of being clipped.
-                ValueKind::Dollars => (summary.low.min(0.0) * 1.15, (summary.high * 1.15).max(1.0)),
+                ValueKind::Money(_) => (summary.low.min(0.0) * 1.15, (summary.high * 1.15).max(1.0)),
             };
             AreaChart::new(data)
                 .id("history-chart")
@@ -700,15 +714,30 @@ mod tests {
     }
 
     #[test]
+    fn money_values_use_the_metric_currency() {
+        let euros = Metric::Balance {
+            label: "Credits".into(),
+            remaining: codexbar_core::Money::new(1842, Currency::Eur),
+            burn_per_day: None,
+        };
+        let kind = ValueKind::of(&euros);
+        assert_eq!(kind, ValueKind::Money(Currency::Eur));
+        assert_eq!(kind.value(18.42), "\u{20ac}18.42");
+        assert_eq!(ValueKind::Money(Currency::Jpy).value(1200.0), "\u{a5}1200");
+        assert_eq!(ValueKind::Money(Currency::Jpy).change(0.3), "no change");
+        assert_eq!(ValueKind::Money(Currency::Jpy).change(-40.0), "\u{2212}\u{a5}40");
+    }
+
+    #[test]
     fn value_kind_formats_values_and_changes() {
         assert_eq!(ValueKind::Percent.value(0.623), "62%");
         assert_eq!(ValueKind::Percent.change(0.18), "+18 pts");
         assert_eq!(ValueKind::Percent.change(-0.04), "\u{2212}4 pts");
         assert_eq!(ValueKind::Percent.change(0.001), "no change");
-        assert_eq!(ValueKind::Dollars.value(18.42), "$18.42");
-        assert_eq!(ValueKind::Dollars.value(-9.3), "\u{2212}$9.30");
-        assert_eq!(ValueKind::Dollars.change(-9.3), "\u{2212}$9.30");
-        assert_eq!(ValueKind::Dollars.change(0.0), "no change");
+        assert_eq!(ValueKind::Money(Currency::Usd).value(18.42), "$18.42");
+        assert_eq!(ValueKind::Money(Currency::Usd).value(-9.3), "\u{2212}$9.30");
+        assert_eq!(ValueKind::Money(Currency::Usd).change(-9.3), "\u{2212}$9.30");
+        assert_eq!(ValueKind::Money(Currency::Usd).change(0.0), "no change");
     }
 
     #[test]
@@ -730,7 +759,7 @@ mod tests {
     #[test]
     fn describe_handles_single_samples_and_gaps() {
         assert_eq!(
-            describe(&summary(&[(0, 12.6)]), ValueKind::Dollars),
+            describe(&summary(&[(0, 12.6)]), ValueKind::Money(Currency::Usd)),
             "Latest $12.60. Only one sample so far."
         );
         let gappy = describe(&summary(&[(0, 0.1), (300, 0.1)]), ValueKind::Percent);

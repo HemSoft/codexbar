@@ -8,11 +8,12 @@ use std::io;
 use std::path::Path;
 
 use chrono::{DateTime, Utc};
-use codexbar_core::{AccountId, AccountSnapshot, Metric, Money, Pace, Provider};
+use codexbar_core::{AccountId, AccountSnapshot, Currency, Metric, Money, Pace, Provider};
 use serde_json::{Value, json};
 
 pub const SNAPSHOTS_FILE: &str = "snapshots.json";
-const VERSION: u64 = 1;
+/// Version 2 added currencies, spend and messages. Version 1 files read as US dollars with no messages.
+const VERSION: u64 = 2;
 
 /// Loads the last-good snapshots in `dir`. Missing, unreadable or newer files give none; entries that can't be read
 /// are skipped.
@@ -23,7 +24,11 @@ pub fn load_snapshots(dir: &Path) -> Vec<AccountSnapshot> {
     let Ok(doc) = serde_json::from_str::<Value>(&text) else {
         return Vec::new();
     };
-    if doc.get("version").and_then(Value::as_u64) != Some(VERSION) {
+    if !doc
+        .get("version")
+        .and_then(Value::as_u64)
+        .is_some_and(|version| (1..=VERSION).contains(&version))
+    {
         return Vec::new();
     }
     doc.get("accounts")
@@ -64,6 +69,7 @@ fn account_to_json(account: &AccountSnapshot) -> Value {
         "label": account.label(),
         "fetchedAt": account.fetched_at().to_rfc3339(),
         "metrics": account.metrics().iter().map(metric_to_json).collect::<Vec<_>>(),
+        "messages": account.messages(),
     })
 }
 
@@ -77,11 +83,16 @@ fn account_from_json(value: &Value) -> Option<AccountSnapshot> {
         .iter()
         .map(metric_from_json)
         .collect::<Option<Vec<_>>>()?;
-    let account = AccountSnapshot::new(AccountId::new(id), provider, metrics, fetched_at);
-    Some(match value.get("label").and_then(Value::as_str) {
-        Some(label) => account.with_label(label),
-        None => account,
-    })
+    let mut account = AccountSnapshot::new(AccountId::new(id), provider, metrics, fetched_at);
+    if let Some(label) = value.get("label").and_then(Value::as_str) {
+        account = account.with_label(label);
+    }
+    for message in value.get("messages").and_then(Value::as_array).into_iter().flatten() {
+        if let Some(message) = message.as_str() {
+            account = account.with_message(message);
+        }
+    }
+    Some(account)
 }
 
 fn metric_to_json(metric: &Metric) -> Value {
@@ -105,13 +116,24 @@ fn metric_to_json(metric: &Metric) -> Value {
             "kind": "quota", "label": label, "used": used, "limit": limit, "resetsAt": resets_at.to_rfc3339(),
             "pacePerHour": pace.map(Pace::fraction_per_hour),
         }),
+        Metric::Spend {
+            label,
+            spent,
+            limit,
+            resets_at,
+        } => json!({
+            "kind": "spend", "label": label, "currency": spent.currency().code(), "spentMinor": spent.cents(),
+            "limitMinor": limit.map(Money::cents), "limitCurrency": limit.map(|limit| limit.currency().code()),
+            "resetsAt": resets_at.map(|at| at.to_rfc3339()),
+        }),
+        // Amounts are minor units of `currency`; files written before currencies existed are US dollars.
         Metric::Balance {
             label,
             remaining,
             burn_per_day,
         } => json!({
-            "kind": "balance", "label": label, "remainingCents": remaining.cents(),
-            "burnPerDayCents": burn_per_day.map(Money::cents),
+            "kind": "balance", "label": label, "currency": remaining.currency().code(),
+            "remainingCents": remaining.cents(), "burnPerDayCents": burn_per_day.map(Money::cents),
         }),
     }
 }
@@ -135,14 +157,42 @@ fn metric_from_json(value: &Value) -> Option<Metric> {
         },
         "balance" => Metric::Balance {
             label,
-            remaining: Money::from_cents(value.get("remainingCents")?.as_i64()?),
+            remaining: Money::new(value.get("remainingCents")?.as_i64()?, currency(value)?),
             burn_per_day: value
                 .get("burnPerDayCents")
                 .and_then(Value::as_i64)
-                .map(Money::from_cents),
+                .map(|minor| Money::new(minor, currency(value).unwrap_or_default())),
         },
+        "spend" => {
+            let currency = currency(value)?;
+            // The limit keeps its own currency, so a cap in another currency stays incomparable after a restart.
+            let limit = match value.get("limitMinor").and_then(Value::as_i64) {
+                None => None,
+                Some(minor) => {
+                    let limit_currency = match value.get("limitCurrency").and_then(Value::as_str) {
+                        None => currency,
+                        Some(code) => Currency::from_code(code)?,
+                    };
+                    Some(Money::new(minor, limit_currency))
+                }
+            };
+            Metric::Spend {
+                label,
+                spent: Money::new(value.get("spentMinor")?.as_i64()?, currency),
+                limit,
+                resets_at: value.get("resetsAt").and_then(time),
+            }
+        }
         _ => return None,
     })
+}
+
+/// The amounts' currency: US dollars when absent (files from before currencies), `None` when unknown.
+fn currency(value: &Value) -> Option<Currency> {
+    match value.get("currency").and_then(Value::as_str) {
+        None => Some(Currency::Usd),
+        Some(code) => Currency::from_code(code),
+    }
 }
 
 fn time(value: &Value) -> Option<DateTime<Utc>> {
@@ -202,19 +252,68 @@ mod tests {
     }
 
     #[test]
+    fn spend_currency_and_messages_round_trip() {
+        let dir = Dir::new("spend");
+        let account = AccountSnapshot::new(
+            AccountId::new("billing"),
+            Provider::Copilot,
+            vec![
+                Metric::Spend {
+                    label: "Monthly spend".into(),
+                    spent: Money::new(1240, Currency::Eur),
+                    limit: Some(Money::new(5000, Currency::Eur)),
+                    resets_at: Some(now() + chrono::Duration::days(9)),
+                },
+                // A cap in another currency stays incomparable after a restart.
+                Metric::Spend {
+                    label: "Team spend".into(),
+                    spent: Money::new(1240, Currency::Eur),
+                    limit: Some(Money::from_cents(5000)),
+                    resets_at: None,
+                },
+                Metric::Balance {
+                    label: "Credits".into(),
+                    remaining: Money::new(1200, Currency::Jpy),
+                    burn_per_day: None,
+                },
+            ],
+            now(),
+        )
+        .with_message("Usage is delayed by up to an hour");
+        save_snapshots(&dir.0, std::slice::from_ref(&account)).unwrap();
+        assert_eq!(load_snapshots(&dir.0), vec![account]);
+    }
+
+    #[test]
+    fn files_from_before_currencies_read_as_dollars() {
+        let dir = Dir::new("legacy-currency");
+        std::fs::write(
+            dir.0.join(SNAPSHOTS_FILE),
+            r#"{ "version": 1, "accounts": [ { "id": "o", "provider": "openrouter", "fetchedAt": "2026-10-07T14:00:00Z",
+                "metrics": [ { "kind": "balance", "label": "Credits", "remainingCents": 1842 } ] } ] }"#,
+        )
+        .unwrap();
+        let loaded = load_snapshots(&dir.0);
+        assert_eq!(loaded[0].metrics()[0].used_display(), "$18.42 left");
+        save_snapshots(&dir.0, &loaded).unwrap();
+        let text = std::fs::read_to_string(dir.0.join(SNAPSHOTS_FILE)).unwrap();
+        assert!(text.contains(r#""version": 2"#), "rewritten in the current format");
+    }
+
+    #[test]
     fn missing_unreadable_or_newer_files_give_no_snapshots() {
         let dir = Dir::new("bad");
         assert!(load_snapshots(&dir.0).is_empty());
         std::fs::write(dir.0.join(SNAPSHOTS_FILE), "{ nope").unwrap();
         assert!(load_snapshots(&dir.0).is_empty());
-        std::fs::write(dir.0.join(SNAPSHOTS_FILE), r#"{ "version": 2, "accounts": [] }"#).unwrap();
+        std::fs::write(dir.0.join(SNAPSHOTS_FILE), r#"{ "version": 3, "accounts": [] }"#).unwrap();
         assert!(load_snapshots(&dir.0).is_empty());
     }
 
     #[test]
     fn a_newer_file_is_never_overwritten() {
         let dir = Dir::new("newer");
-        let newer = r#"{ "version": 2, "accounts": [] }"#;
+        let newer = r#"{ "version": 3, "accounts": [] }"#;
         std::fs::write(dir.0.join(SNAPSHOTS_FILE), newer).unwrap();
         let account = AccountSnapshot::new(AccountId::new("c"), Provider::Cursor, Vec::new(), now());
         assert!(save_snapshots(&dir.0, &[account]).is_err());

@@ -1223,3 +1223,136 @@ fn sibling_accounts_are_named_by_their_labels(cx: &mut TestAppContext) {
         .unwrap();
     assert_eq!(retry.as_deref(), Some("Retry OpenRouter · Team"));
 }
+
+/// A provider serving several users that reports each user's outcome, like Copilot with two GitHub accounts.
+struct FakeMultiProvider {
+    outcomes: Mutex<Vec<(&'static str, Option<f64>)>>,
+}
+
+impl UsageProvider for FakeMultiProvider {
+    fn name(&self) -> &'static str {
+        Provider::Copilot.display_name()
+    }
+
+    fn fetch(&self, _: chrono::DateTime<chrono::Utc>) -> Result<Vec<AccountSnapshot>, ProviderError> {
+        unreachable!("the dashboard asks for per-account outcomes")
+    }
+
+    fn fetch_outcomes(
+        &self,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<codexbar_providers::AccountOutcome>, ProviderError> {
+        use codexbar_providers::AccountOutcome;
+        Ok(self
+            .outcomes
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(user, used)| match used {
+                Some(used) => AccountOutcome::Fresh(
+                    AccountSnapshot::new(
+                        AccountId::new(format!("copilot-{user}")),
+                        Provider::Copilot,
+                        vec![Metric::Window {
+                            label: "Weekly".into(),
+                            used: *used,
+                            resets_at: now + chrono::Duration::days(3),
+                            pace: None,
+                        }],
+                        now,
+                    )
+                    .with_label(*user),
+                ),
+                None => AccountOutcome::Failed {
+                    account: AccountId::new(format!("copilot-{user}")),
+                    label: Some((*user).to_owned()),
+                    error: ProviderError::Network,
+                },
+            })
+            .collect())
+    }
+}
+
+#[gpui_kit::test]
+fn one_user_failing_keeps_its_last_good_usage_and_snapshot(cx: &mut TestAppContext) {
+    use codexbar_store::HistoryStore;
+    let settings = TempSettings::new("outcomes-partial", "{}");
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        theme::init(cx);
+        SettingsHub::init_with(cx, &settings.0, Arc::new(MemoryCredentialStore::default()));
+        crate::prefs_hub::PrefsHub::init(cx, &settings.0);
+        zoom::init(cx);
+        crate::notifications::Notifications::init(cx, Arc::new(RecordingNotifier::default()), false);
+    });
+    let provider = Arc::new(FakeMultiProvider {
+        outcomes: Mutex::new(vec![("ada", Some(0.3)), ("bob", Some(0.6))]),
+    });
+    let factory_provider = provider.clone();
+    let factory: crate::dashboard::ProviderFactory =
+        Arc::new(move |_| vec![factory_provider.clone() as Arc<dyn UsageProvider>]);
+    let mut dashboard = None;
+    cx.open_window(size(px(1440.), px(960.)), |window, cx| {
+        let source = DataSource::Live {
+            history: Arc::new(Mutex::new(HistoryStore::in_memory(chrono::Duration::days(30)))),
+            providers: factory,
+        };
+        let view = cx.new(|cx| Dashboard::new(source, window, cx));
+        dashboard = Some(view.clone());
+        Root::new(view, window, cx)
+    });
+    let dashboard = dashboard.unwrap();
+    cx.run_until_parked();
+
+    // Bob's next fetch fails while Ada's succeeds.
+    *provider.outcomes.lock().unwrap() = vec![("ada", Some(0.4)), ("bob", None)];
+    refresh(cx, &dashboard);
+    let mut shown = ids(cx, &dashboard);
+    shown.sort();
+    assert_eq!(
+        shown,
+        vec!["copilot-ada", "copilot-bob"],
+        "Bob stays with his last good usage"
+    );
+    assert_eq!(state(cx, &dashboard, "copilot-ada"), AccountState::Fresh);
+    assert!(matches!(state(cx, &dashboard, "copilot-bob"), AccountState::Failed(_)));
+    let saved: Vec<String> = codexbar_store::snapshots::load_snapshots(&settings.0)
+        .iter()
+        .map(|account| account.id().as_str().to_owned())
+        .collect();
+    assert!(
+        saved.contains(&"copilot-bob".to_owned()),
+        "his snapshot survives a restart"
+    );
+}
+
+#[gpui_kit::test]
+fn provider_messages_show_with_the_focused_account(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("messages", "{}");
+    let saved = AccountSnapshot::new(
+        AccountId::new("claude-1"),
+        Provider::Claude,
+        Vec::new(),
+        chrono::Utc::now(),
+    )
+    .with_message("Usage is delayed by up to an hour");
+    codexbar_store::snapshots::save_snapshots(&settings.0, &[saved]).unwrap();
+    // The provider is down, so the restored snapshot (and its message) stays.
+    let _dashboard = open_live(
+        cx,
+        &settings,
+        vec![FakeProvider::new(Provider::Claude, "claude-1", None)],
+    );
+    cx.run_until_parked();
+    let handle = cx.windows()[0];
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    let message = cx
+        .update_window(handle, |_, window, _| {
+            window
+                .try_find(("provider-message", 0usize))
+                .and_then(|found| found.label().map(str::to_owned))
+        })
+        .unwrap();
+    assert_eq!(message.as_deref(), Some("Usage is delayed by up to an hour"));
+}

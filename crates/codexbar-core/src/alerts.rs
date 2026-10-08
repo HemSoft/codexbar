@@ -9,7 +9,7 @@ use std::collections::BTreeSet;
 
 use chrono::{DateTime, Utc};
 
-use crate::{AccountSnapshot, Metric, Severity, assess};
+use crate::{AccountSnapshot, Currency, Metric, Severity, assess};
 
 /// A usage alert recovers once usage falls this far below the threshold, so a value hovering at the line doesn't
 /// notify on every refresh.
@@ -244,8 +244,9 @@ fn condition(settings: &AlertSettings, metric: &Metric, kind: AlertKind, now: Da
             None => Condition::NotApplicable,
         },
         AlertKind::Balance => match metric {
-            Metric::Balance { remaining, .. } => {
-                let dollars = remaining.cents() as f64 / 100.0;
+            // The threshold is in US dollars; balances in other currencies aren't compared against it.
+            Metric::Balance { remaining, .. } if remaining.currency() == Currency::Usd => {
+                let dollars = remaining.major();
                 let recovery =
                     (settings.balance_threshold * 1.1).max(settings.balance_threshold + BALANCE_RECOVERY_DOLLARS);
                 if dollars < settings.balance_threshold {
@@ -457,6 +458,22 @@ mod tests {
         );
         let counts: Vec<usize> = sent.iter().map(Vec::len).collect();
         assert_eq!(counts, vec![0, 1, 0, 0, 0, 0, 1]);
+    }
+
+    #[test]
+    fn balances_in_other_currencies_are_not_compared_with_the_dollar_threshold() {
+        let euros = AccountSnapshot::new(
+            AccountId::new("e"),
+            Provider::OpenRouter,
+            vec![Metric::Balance {
+                label: "Credits".into(),
+                remaining: Money::new(100, Currency::Eur),
+                burn_per_day: None,
+            }],
+            now(),
+        );
+        let evaluation = evaluate(&on(), &BTreeSet::new(), &[euros], now());
+        assert!(evaluation.notify.is_empty());
     }
 
     #[test]
