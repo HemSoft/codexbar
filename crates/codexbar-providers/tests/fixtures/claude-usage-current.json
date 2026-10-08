@@ -1,0 +1,16 @@
+{
+  "five_hour": { "utilization": 31.0, "resets_at": "2026-10-07T15:00:00+00:00" },
+  "seven_day": { "utilization": 58.0, "resets_at": "2026-10-10T08:00:00+00:00" },
+  "seven_day_oauth_apps": null,
+  "seven_day_opus": { "utilization": 12.0, "resets_at": "2026-10-10T08:00:00+00:00" },
+  "seven_day_sonnet": null,
+  "seven_day_fable": { "utilization": 74.0, "resets_at": "2026-10-10T08:00:00+00:00" },
+  "extra_usage": {
+    "is_enabled": true,
+    "monthly_limit": 6000,
+    "used_credits": 1234,
+    "utilization": 20.57,
+    "currency": "SGD",
+    "decimal_places": 2
+  }
+}

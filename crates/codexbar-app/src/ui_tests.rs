@@ -950,6 +950,28 @@ fn open_live_with(
     providers: Vec<Arc<FakeProvider>>,
     store: MemoryCredentialStore,
 ) -> Entity<Dashboard> {
+    let providers = providers
+        .into_iter()
+        .map(|provider| provider as Arc<dyn UsageProvider>)
+        .collect();
+    open_live_dyn(cx, settings, providers, store)
+}
+
+/// `open_live` with any providers, such as one returning a real parser's output.
+fn open_live_fixed(
+    cx: &mut TestAppContext,
+    settings: &TempSettings,
+    providers: Vec<Arc<dyn UsageProvider>>,
+) -> Entity<Dashboard> {
+    open_live_dyn(cx, settings, providers, MemoryCredentialStore::default())
+}
+
+fn open_live_dyn(
+    cx: &mut TestAppContext,
+    settings: &TempSettings,
+    providers: Vec<Arc<dyn UsageProvider>>,
+    store: MemoryCredentialStore,
+) -> Entity<Dashboard> {
     use codexbar_store::HistoryStore;
     cx.update(|cx| {
         gpui_kit::init(cx);
@@ -959,12 +981,7 @@ fn open_live_with(
         zoom::init(cx);
         crate::notifications::Notifications::init(cx, Arc::new(RecordingNotifier::default()), false);
     });
-    let factory: crate::dashboard::ProviderFactory = Arc::new(move |_| {
-        providers
-            .iter()
-            .map(|provider| provider.clone() as Arc<dyn UsageProvider>)
-            .collect()
-    });
+    let factory: crate::dashboard::ProviderFactory = Arc::new(move |_| providers.clone());
     let mut dashboard = None;
     cx.open_window(size(px(1440.), px(960.)), |window, cx| {
         let source = DataSource::Live {
@@ -1787,5 +1804,38 @@ fn secure_store_failures_are_shown_and_nothing_is_saved_without_its_key(cx: &mut
     assert!(
         saved_settings(&settings).accounts().is_empty(),
         "no account without its key"
+    );
+}
+
+/// A provider that returns fixed accounts, such as a provider's real parser output.
+struct FixedProvider(Vec<AccountSnapshot>);
+
+impl UsageProvider for FixedProvider {
+    fn name(&self) -> &'static str {
+        "Claude"
+    }
+
+    fn fetch(&self, _: chrono::DateTime<chrono::Utc>) -> Result<Vec<AccountSnapshot>, ProviderError> {
+        Ok(self.0.clone())
+    }
+}
+
+#[gpui_kit::test]
+fn claude_extra_usage_near_its_limit_shows_as_the_alert_in_its_currency(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("claude-extra", "{}");
+    std::fs::write(settings.0.join("dashboard.json"), ALERTS_ON).unwrap();
+    let now = chrono::Utc::now();
+    let resets = (now + chrono::Duration::days(3)).to_rfc3339();
+    let payload = format!(
+        r#"{{"five_hour":{{"utilization":10,"resets_at":"{resets}"}},"seven_day":{{"utilization":20,"resets_at":"{resets}"}},
+            "extra_usage":{{"is_enabled":true,"monthly_limit":6000,"used_credits":5760,"currency":"SGD","decimal_places":2}}}}"#
+    );
+    let account = codexbar_providers::claude::parse_usage(&payload, Some("max"), now).unwrap();
+    let _dashboard = open_live_fixed(cx, &settings, vec![Arc::new(FixedProvider(vec![account]))]);
+    cx.run_until_parked();
+    let strongest = label_of(cx, "alert-strongest").expect("an alert is shown");
+    assert!(
+        strongest.starts_with("Limit soon: Extra usage. S$57.60 of S$60.00"),
+        "{strongest}"
     );
 }

@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use chrono::{DateTime, Duration, Utc};
-use codexbar_core::{AccountId, AccountSnapshot, Metric, Provider};
+use codexbar_core::{AccountId, AccountSnapshot, Currency, Metric, Money, Provider};
 use serde_json::Value;
 
 use crate::pace::elapsed_pace;
@@ -76,33 +76,34 @@ pub fn read_credentials(path: &Path) -> Result<Credentials, ProviderError> {
     })
 }
 
-/// Maps the OAuth usage response. `utilization` is a percentage; absent or null windows are skipped.
+/// Maps `/api/oauth/usage` (#82): the shared 5-hour window, the all-model weekly window, every model-scoped weekly
+/// window the endpoint returns (`seven_day_opus`, `seven_day_sonnet`, and any newer `seven_day_*`, such as Fable),
+/// and extra usage as money. Windows that are null or incomplete are skipped; extra usage that can't be read becomes a
+/// message rather than failing the account. Only an account with no window at all is an error.
 pub fn parse_usage(
     payload: &str,
     subscription: Option<&str>,
     now: DateTime<Utc>,
 ) -> Result<AccountSnapshot, ProviderError> {
     let json: Value = serde_json::from_str(payload).map_err(|_| ProviderError::Unexpected { detail: "not JSON" })?;
-    let windows = [
-        ("five_hour", "5-hour window", Duration::hours(5)),
-        ("seven_day", "Weekly", Duration::days(7)),
-        ("seven_day_opus", "Weekly Opus", Duration::days(7)),
-        ("seven_day_sonnet", "Weekly Sonnet", Duration::days(7)),
-    ];
-    let metrics: Vec<Metric> = windows
+    let mut metrics: Vec<Metric> = window_keys(&json)
         .iter()
-        .filter_map(|(key, label, length)| {
-            let window = json.get(*key)?;
+        .filter_map(|key| {
+            let window = json.get(key)?;
             let used = (window.get("utilization")?.as_f64()? / 100.0).clamp(0.0, 1.0);
             let resets_at = DateTime::parse_from_rfc3339(window.get("resets_at")?.as_str()?)
                 .ok()?
                 .with_timezone(&Utc);
-            let pace = elapsed_pace(used, resets_at - *length, resets_at, now);
+            let length = if key == "five_hour" {
+                Duration::hours(5)
+            } else {
+                Duration::days(7)
+            };
             Some(Metric::Window {
-                label: (*label).to_owned(),
+                label: window_label(key),
                 used,
                 resets_at,
-                pace,
+                pace: elapsed_pace(used, resets_at - length, resets_at, now),
             })
         })
         .collect();
@@ -111,11 +112,101 @@ pub fn parse_usage(
             detail: "no usage windows for this account",
         });
     }
-    let account = AccountSnapshot::new(AccountId::new("claude"), Provider::Claude, metrics, now);
+    let mut message = None;
+    match extra_usage(&json) {
+        Some(Ok(spend)) => metrics.push(spend),
+        Some(Err(text)) => message = Some(text),
+        None => {}
+    }
+    let mut account = AccountSnapshot::new(AccountId::new("claude"), Provider::Claude, metrics, now);
+    if let Some(message) = message {
+        account = account.with_message(message);
+    }
     Ok(match subscription.filter(|s| !s.is_empty()) {
         Some(plan) => account.with_label(crate::codex::plan_name(plan)),
         None => account,
     })
+}
+
+/// The window keys to read, in display order: the 5-hour and all-model weekly windows, the model windows known today,
+/// then any other `seven_day_*` window alphabetically, so a new model's limit shows without a code change.
+fn window_keys(json: &Value) -> Vec<String> {
+    const KNOWN: [&str; 5] = [
+        "five_hour",
+        "seven_day",
+        "seven_day_opus",
+        "seven_day_sonnet",
+        "seven_day_oauth_apps",
+    ];
+    let mut keys: Vec<String> = KNOWN.iter().map(|key| (*key).to_owned()).collect();
+    let mut others: Vec<String> = json
+        .as_object()
+        .map(|object| {
+            object
+                .keys()
+                .filter(|key| key.starts_with("seven_day_") && !KNOWN.contains(&key.as_str()))
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
+    others.sort();
+    // Newer model windows go before the OAuth-apps window, which isn't a model.
+    keys.splice(4..4, others);
+    keys
+}
+
+/// "Weekly Opus", "Weekly Fable", "Weekly OAuth apps". The label is also the metric's stable key.
+fn window_label(key: &str) -> String {
+    match key {
+        "five_hour" => "5-hour window".to_owned(),
+        "seven_day" => "Weekly".to_owned(),
+        "seven_day_oauth_apps" => "Weekly OAuth apps".to_owned(),
+        other => {
+            let model = other.trim_start_matches("seven_day_").replace('_', " ");
+            let mut chars = model.chars();
+            let model = match chars.next() {
+                Some(first) => first.to_uppercase().chain(chars).collect::<String>(),
+                None => model,
+            };
+            format!("Weekly {model}")
+        }
+    }
+}
+
+/// Extra usage as money: `used_credits` against `monthly_limit`, in minor units of `currency` (US dollars when
+/// absent) with `decimal_places` digits (the currency's own when absent). `None` when it is off or not reported;
+/// a message when it is on but can't be shown faithfully.
+fn extra_usage(json: &Value) -> Option<Result<Metric, String>> {
+    let extra = json.get("extra_usage")?;
+    if !extra.get("is_enabled").and_then(Value::as_bool).unwrap_or(false) {
+        return None;
+    }
+    let code = extra.get("currency").and_then(Value::as_str).unwrap_or("USD");
+    let Some(currency) = Currency::from_code(code) else {
+        return Some(Err(format!(
+            "Extra usage is billed in {code}, which CodexBar can't show yet."
+        )));
+    };
+    let places = extra
+        .get("decimal_places")
+        .and_then(Value::as_u64)
+        .map_or(currency.minor_digits(), |places| places as u32);
+    // Rescale from the payload's decimal places to the currency's minor unit (both are 2 for most currencies).
+    let minor = |field: &str| -> Option<i64> {
+        let value = extra.get(field)?.as_f64()?;
+        let scale = 10f64.powi(currency.minor_digits() as i32 - places as i32);
+        Some((value * scale).round() as i64)
+    };
+    let spent = minor("used_credits")?;
+    let limit = minor("monthly_limit").filter(|limit| *limit > 0);
+    Some(Ok(Metric::Spend {
+        label: "Extra usage".to_owned(),
+        spent: Money::new(spent.max(0), currency),
+        limit: limit.map(|limit| Money::new(limit, currency)),
+        // Extra usage resets monthly, but the endpoint doesn't say when.
+        resets_at: None,
+        pace: None,
+    }))
 }
 
 #[derive(Default)]
@@ -258,6 +349,77 @@ mod tests {
     fn provider(name: &str, responses: Vec<HttpResponse>) -> (ClaudeProvider<FakeHttp>, CredentialsFile) {
         let file = CredentialsFile::new(name, now() + Duration::hours(8));
         (ClaudeProvider::new(FakeHttp::new(responses), file.0.clone()), file)
+    }
+
+    #[test]
+    fn current_payload_maps_every_window_and_extra_usage_in_its_currency() {
+        let payload = include_str!("../tests/fixtures/claude-usage-current.json");
+        let account = parse_usage(payload, Some("max"), now()).unwrap();
+        let keys: Vec<String> = account.metrics().iter().map(Metric::key).collect();
+        assert_eq!(
+            keys,
+            ["5-hour-window", "weekly", "weekly-opus", "weekly-fable", "extra-usage"],
+            "all-model and model-scoped weekly limits stay distinct; null windows are skipped"
+        );
+        let fable = &account.metrics()[3];
+        assert_eq!(fable.label(), "Weekly Fable");
+        assert_eq!(fable.used_fraction(), Some(0.74));
+        assert!(fable.resets_at().is_some());
+        let extra = account.metrics().last().unwrap();
+        assert_eq!(extra.used_display(), "S$12.34 of S$60.00");
+        assert_eq!(extra.headroom(), Some(Money::new(4766, Currency::Sgd)));
+        assert!(account.messages().is_empty());
+    }
+
+    #[test]
+    fn extra_usage_handles_missing_and_unusual_fields() {
+        let with_extra = |extra: &str| {
+            let payload = format!(
+                r#"{{"five_hour":{{"utilization":10,"resets_at":"2026-10-07T03:00:00Z"}},"extra_usage":{extra}}}"#
+            );
+            parse_usage(&payload, None, now()).unwrap()
+        };
+        // Off, or not reported: no money metric.
+        assert_eq!(with_extra(r#"{"is_enabled":false}"#).metrics().len(), 1);
+        assert_eq!(with_extra("null").metrics().len(), 1);
+        // Legacy payloads without a currency are US dollars in cents.
+        let legacy = with_extra(r#"{"is_enabled":true,"monthly_limit":1000,"used_credits":277,"utilization":27.7}"#);
+        assert_eq!(legacy.metrics()[1].used_display(), "$2.77 of $10.00");
+        // No limit set: spend without a cap.
+        let uncapped = with_extra(r#"{"is_enabled":true,"monthly_limit":null,"used_credits":500,"currency":"EUR"}"#);
+        assert_eq!(uncapped.metrics()[1].used_display(), "€5.00 spent");
+        // Whole-unit payloads are rescaled to the currency's minor unit.
+        let whole = with_extra(
+            r#"{"is_enabled":true,"monthly_limit":60,"used_credits":12,"currency":"CAD","decimal_places":0}"#,
+        );
+        assert_eq!(whole.metrics()[1].used_display(), "CA$12.00 of CA$60.00");
+        // A currency CodexBar doesn't know: said, not misreported, and the windows still show.
+        let unknown = with_extra(r#"{"is_enabled":true,"monthly_limit":6000,"used_credits":10,"currency":"XAU"}"#);
+        assert_eq!(unknown.metrics().len(), 1);
+        assert_eq!(
+            unknown.messages(),
+            ["Extra usage is billed in XAU, which CodexBar can't show yet."]
+        );
+        // Enabled but no credits reported: nothing to show.
+        assert_eq!(with_extra(r#"{"is_enabled":true}"#).metrics().len(), 1);
+    }
+
+    #[test]
+    fn extra_usage_near_its_limit_raises_the_account_status() {
+        let payload = r#"{"five_hour":{"utilization":10,"resets_at":"2026-10-07T03:00:00Z"},
+            "extra_usage":{"is_enabled":true,"monthly_limit":6000,"used_credits":5760,"currency":"SGD"}}"#;
+        let account = parse_usage(payload, None, now()).unwrap();
+        assert_eq!(account.assess(now()).severity(), Severity::LimitSoon);
+    }
+
+    #[test]
+    fn incomplete_windows_are_skipped_not_fatal() {
+        let payload = r#"{"five_hour":{"utilization":10,"resets_at":null},
+            "seven_day":{"utilization":40,"resets_at":"2026-10-10T08:00:00Z"},
+            "seven_day_fable":{"utilization":null,"resets_at":"2026-10-10T08:00:00Z"}}"#;
+        let account = parse_usage(payload, None, now()).unwrap();
+        let labels: Vec<&str> = account.metrics().iter().map(Metric::label).collect();
+        assert_eq!(labels, ["Weekly"]);
     }
 
     #[test]
