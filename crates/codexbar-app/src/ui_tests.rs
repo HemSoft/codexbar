@@ -719,12 +719,14 @@ fn a_notification_windows_failed_to_raise_is_sent_again(cx: &mut TestAppContext)
     let first = notifier.shown.lock().unwrap().len();
     let lost = notifier.shown.lock().unwrap()[0].clone();
 
-    // Windows accepted the first toast but later raised `Failed` for it.
+    // Windows accepted the first toast but later raised `Failed` for it; the clock resends it without a refresh.
     notifier.failed.lock().unwrap().extend(lost.keys().cloned());
-    refresh(cx, &dashboard);
+    cx.executor().advance_clock(std::time::Duration::from_secs(2));
+    cx.run_until_parked();
     let shown = notifier.shown.lock().unwrap();
     assert_eq!(shown.len(), first + 1, "only the failed one is sent again");
     assert_eq!(shown.last().unwrap().title, lost.title);
+    let _ = dashboard;
 }
 
 #[gpui_kit::test]
@@ -756,4 +758,21 @@ fn a_failed_provider_keeps_its_alerts_even_with_no_accounts_known(cx: &mut TestA
         crate::notifications::Notifications::active(cx)
     });
     assert!(kept.contains(&key), "a failed refresh retires nothing");
+}
+
+#[gpui_kit::test]
+fn changing_a_threshold_judges_held_alerts_afresh(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("alerts-threshold", "{}");
+    std::fs::write(settings.0.join("dashboard.json"), ALERTS_ON).unwrap();
+    let (_, _) = open_with_alerts(cx, &settings);
+    let has_usage = |keys: &[String]| keys.iter().any(|key| key.ends_with("|usage"));
+    assert!(has_usage(&active_on_disk(&settings)));
+
+    cx.update(|cx| crate::prefs_hub::PrefsHub::update_alert_settings(cx, |alerts| alerts.usage_threshold = 0.95));
+    let active = active_on_disk(&settings);
+    assert!(!has_usage(&active), "usage alerts are re-judged against 95%");
+    assert!(
+        active.iter().any(|key| key.ends_with("|balance")),
+        "other kinds keep theirs"
+    );
 }

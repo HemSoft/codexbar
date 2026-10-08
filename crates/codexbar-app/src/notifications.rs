@@ -26,6 +26,11 @@ pub trait Notifier: Send + Sync {
     fn take_failed(&self) -> Vec<String> {
         Vec::new()
     }
+
+    /// True when `take_failed` has keys waiting.
+    fn has_failed(&self) -> bool {
+        false
+    }
 }
 
 /// The notifier in use and the last delivery problem.
@@ -179,6 +184,18 @@ pub fn process(cx: &mut App, refreshed: &[AccountSnapshot], shown: Option<&[Stri
     Notifications::set_active(cx, next);
 }
 
+/// Sends again, right away, any notification Windows failed to raise, without waiting for the next refresh (which
+/// may never come with automatic refresh off). Called from the dashboard's clock with the accounts it shows; nothing
+/// is retired here.
+pub fn retry_failed(cx: &mut App, accounts: &[AccountSnapshot], now: DateTime<Utc>) {
+    let waiting = cx
+        .try_global::<Notifications>()
+        .is_some_and(|global| global.notifier.has_failed());
+    if waiting {
+        process(cx, accounts, None, now);
+    }
+}
+
 /// Keeps notifications in memory: the demo dashboard (so design work never pops real notifications) and tests.
 #[derive(Default)]
 pub struct RecordingNotifier {
@@ -203,6 +220,10 @@ impl Notifier for RecordingNotifier {
 
     fn take_failed(&self) -> Vec<String> {
         std::mem::take(&mut *self.failed.lock().unwrap())
+    }
+
+    fn has_failed(&self) -> bool {
+        !self.failed.lock().unwrap().is_empty()
     }
 }
 
@@ -279,6 +300,18 @@ impl Notifier for WindowsNotifier {
             ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from(APP_ID))?.Show(&toast)
         })();
         result.map_err(|err| format!("Notification not shown: {}", err.message()))
+    }
+
+    fn take_failed(&self) -> Vec<String> {
+        std::mem::take(&mut *self.failed.lock().unwrap_or_else(|poisoned| poisoned.into_inner()))
+    }
+
+    fn has_failed(&self) -> bool {
+        !self
+            .failed
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .is_empty()
     }
 }
 

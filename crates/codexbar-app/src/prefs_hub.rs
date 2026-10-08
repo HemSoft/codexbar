@@ -52,10 +52,29 @@ impl PrefsHub {
     }
 
     /// Changes alert settings with `change` and saves.
+    /// Changes alert settings and saves. A changed usage or balance threshold clears that kind's active alerts, so
+    /// they are judged against the new threshold rather than held by the old one.
     pub fn update_alert_settings(cx: &mut App, change: impl FnOnce(&mut AlertSettings)) {
         Self::edit(cx, |prefs| {
-            let mut settings = prefs.alert_settings().clone();
+            let old = prefs.alert_settings().clone();
+            let mut settings = old.clone();
             change(&mut settings);
+            let mut stale = Vec::new();
+            if settings.usage_threshold != old.usage_threshold {
+                stale.push("|usage");
+            }
+            if settings.balance_threshold != old.balance_threshold {
+                stale.push("|balance");
+            }
+            if !stale.is_empty() {
+                let active = prefs
+                    .active_alerts()
+                    .iter()
+                    .filter(|key| !stale.iter().any(|kind| key.ends_with(kind)))
+                    .cloned()
+                    .collect();
+                prefs.set_active_alerts(active);
+            }
             prefs.set_alert_settings(settings);
         });
         cx.refresh_windows();

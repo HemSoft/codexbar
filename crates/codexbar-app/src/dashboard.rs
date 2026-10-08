@@ -172,6 +172,8 @@ impl Dashboard {
                     } else if this.now.timestamp() / 60 != this.compact_minute {
                         this.update_compact_history(cx);
                     }
+                    let shown = this.accounts.clone();
+                    crate::notifications::retry_failed(cx, &shown, this.now);
                     cx.notify();
                 });
                 if alive.is_err() {
