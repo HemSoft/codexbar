@@ -157,6 +157,8 @@ pub enum Metric {
         limit: Option<Money>,
         /// When the period starts over, if it does.
         resets_at: Option<DateTime<Utc>>,
+        /// How fast the limit is being used, as a fraction of it per hour; only meaningful with a limit.
+        pace: Option<Pace>,
     },
     /// Prepaid credit that runs down with spend.
     Balance {
@@ -238,9 +240,9 @@ impl Metric {
     /// Time until the limit is exhausted at the current pace, when the pace is known.
     pub fn time_to_limit(&self) -> Option<Duration> {
         let (used, pace) = match self {
-            Self::Window { pace: Some(pace), .. } | Self::Quota { pace: Some(pace), .. } => {
-                (self.used_fraction()?, *pace)
-            }
+            Self::Window { pace: Some(pace), .. }
+            | Self::Quota { pace: Some(pace), .. }
+            | Self::Spend { pace: Some(pace), .. } => (self.used_fraction()?, *pace),
             _ => return None,
         };
         if pace.fraction_per_hour() <= 0.0 {
@@ -248,6 +250,21 @@ impl Metric {
         }
         let hours = (1.0 - used) / pace.fraction_per_hour();
         Some(Duration::seconds((hours * 3600.0).round() as i64))
+    }
+
+    /// The fraction of the limit used by the reset if the current pace holds (#83): above 1 when it runs out first.
+    /// `None` without a pace, a limit or a reset still ahead, so nothing is projected from too little information.
+    pub fn projected_at_reset(&self, now: DateTime<Utc>) -> Option<f64> {
+        let pace = match self {
+            Self::Window { pace, .. } | Self::Quota { pace, .. } | Self::Spend { pace, .. } => (*pace)?,
+            Self::Balance { .. } => return None,
+        };
+        let used = self.used_fraction()?;
+        let left = self.resets_at()? - now;
+        if left <= Duration::zero() || !pace.fraction_per_hour().is_finite() || pace.fraction_per_hour() < 0.0 {
+            return None;
+        }
+        Some(used + pace.fraction_per_hour() * left.num_seconds() as f64 / 3600.0)
     }
 
     /// True when the current pace exhausts the limit before it resets.
@@ -371,6 +388,64 @@ mod tests {
     }
 
     #[test]
+    fn projected_at_reset_adds_the_pace_until_the_reset() {
+        let metric = Metric::Window {
+            label: "Monthly".into(),
+            used: 0.4,
+            resets_at: now() + Duration::hours(10),
+            pace: Some(Pace::per_hour(0.03)),
+        };
+        assert!((metric.projected_at_reset(now()).unwrap() - 0.7).abs() < 1e-9);
+        // A pace that runs out first projects past the limit.
+        let fast = Metric::Window {
+            label: "Monthly".into(),
+            used: 0.4,
+            resets_at: now() + Duration::hours(10),
+            pace: Some(Pace::per_hour(0.1)),
+        };
+        assert!((fast.projected_at_reset(now()).unwrap() - 1.4).abs() < 1e-9);
+    }
+
+    #[test]
+    fn projected_at_reset_needs_pace_limit_and_a_future_reset() {
+        let window = |resets_at, pace| Metric::Window {
+            label: "Monthly".into(),
+            used: 0.4,
+            resets_at,
+            pace,
+        };
+        assert_eq!(window(now() + Duration::hours(1), None).projected_at_reset(now()), None);
+        let pace = Some(Pace::per_hour(0.1));
+        assert_eq!(window(now(), pace).projected_at_reset(now()), None, "resetting now");
+        assert_eq!(
+            window(now() - Duration::hours(1), pace).projected_at_reset(now()),
+            None,
+            "expired"
+        );
+        let uncapped = Metric::Spend {
+            label: "Spend".into(),
+            spent: Money::from_cents(500),
+            limit: None,
+            resets_at: Some(now() + Duration::hours(5)),
+            pace,
+        };
+        assert_eq!(uncapped.projected_at_reset(now()), None, "no limit to project against");
+    }
+
+    #[test]
+    fn spend_with_a_pace_can_exhaust_before_reset() {
+        let spend = Metric::Spend {
+            label: "On-demand".into(),
+            spent: Money::from_cents(1500),
+            limit: Some(Money::from_cents(2000)),
+            resets_at: Some(now() + Duration::hours(10)),
+            pace: Some(Pace::per_hour(0.05)),
+        };
+        assert_eq!(spend.time_to_limit(), Some(Duration::hours(5)));
+        assert!(spend.exhausts_before_reset(now()));
+    }
+
+    #[test]
     fn exhausts_before_reset_without_pace_returns_false() {
         let metric = Metric::Window {
             label: "Weekly".into(),
@@ -414,6 +489,7 @@ mod money_tests {
             spent: Money::from_cents(1240),
             limit: Some(Money::from_cents(5000)),
             resets_at: None,
+            pace: None,
         };
         assert!((capped.used_fraction().unwrap() - 0.248).abs() < 1e-9);
         assert_eq!(capped.headroom(), Some(Money::from_cents(3760)));
@@ -425,6 +501,7 @@ mod money_tests {
             spent: Money::new(990, Currency::Eur),
             limit: None,
             resets_at: None,
+            pace: None,
         };
         assert_eq!(open.used_fraction(), None);
         assert_eq!(open.history_value(), Some(9.9));
@@ -435,6 +512,7 @@ mod money_tests {
             spent: Money::new(100, Currency::Eur),
             limit: Some(Money::from_cents(500)),
             resets_at: None,
+            pace: None,
         };
         assert_eq!((mixed.used_fraction(), mixed.headroom()), (None, None));
     }

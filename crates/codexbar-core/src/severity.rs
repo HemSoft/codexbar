@@ -184,6 +184,7 @@ mod tests {
             spent: Money::from_cents(4800),
             limit: Some(Money::from_cents(5000)),
             resets_at: None,
+            pace: None,
         };
         assert_eq!(
             assess(&spend, now()).severity(),

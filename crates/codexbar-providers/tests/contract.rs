@@ -53,6 +53,10 @@ fn cursor_results_keep_their_id_and_metric_keys() {
     let account = cursor::parse_usage(payload, now()).unwrap();
     assert_eq!(account.id().as_str(), "cursor");
     assert_eq!(keys(&account), vec!["included-usage", "auto", "api"]);
+    let with_on_demand = r#"{"billingCycleEnd":"1792540800000","planUsage":{"totalPercentUsed":71},
+        "spendLimitUsage":{"individualLimit":2000,"individualRemaining":1500}}"#;
+    let account = cursor::parse_usage(with_on_demand, now()).unwrap();
+    assert_eq!(keys(&account), vec!["included-usage", "on-demand"]);
 }
 
 #[test]
