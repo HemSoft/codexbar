@@ -37,9 +37,9 @@ pub enum ValueKind {
 impl ValueKind {
     pub fn of(metric: &Metric) -> Self {
         match metric {
-            // Uncapped spend is stored as money; spend against a limit as the fraction used.
+            // Spend is stored as money whether or not it has a cap.
             Metric::Balance { remaining, .. } => Self::Money(remaining.currency()),
-            Metric::Spend { spent, limit: None, .. } => Self::Money(spent.currency()),
+            Metric::Spend { spent, .. } => Self::Money(spent.currency()),
             _ => Self::Percent,
         }
     }

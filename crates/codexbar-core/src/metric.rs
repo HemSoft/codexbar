@@ -189,11 +189,12 @@ impl Metric {
         key.trim_end_matches('-').to_owned()
     }
 
-    /// The value history stores: fraction used for limits, money in major units for balances and uncapped spend.
+    /// The value history stores: fraction used for limits, money in major units for balances and spend. Spend is
+    /// always money, capped or not, so adding or removing a cap doesn't mix units in one series.
     pub fn history_value(&self) -> Option<f64> {
         match self {
             Self::Balance { remaining, .. } => Some(remaining.major()),
-            Self::Spend { spent, limit: None, .. } => Some(spent.major()),
+            Self::Spend { spent, .. } => Some(spent.major()),
             _ => self.used_fraction(),
         }
     }
@@ -418,6 +419,7 @@ mod money_tests {
         assert_eq!(capped.headroom(), Some(Money::from_cents(3760)));
         assert_eq!(capped.used_display(), "$12.40 of $50.00");
         assert_eq!(capped.key(), "monthly-spend");
+        assert_eq!(capped.history_value(), Some(12.4), "money, like uncapped spend");
         let open = Metric::Spend {
             label: "Spend".into(),
             spent: Money::new(990, Currency::Eur),

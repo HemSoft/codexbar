@@ -123,7 +123,8 @@ fn metric_to_json(metric: &Metric) -> Value {
             resets_at,
         } => json!({
             "kind": "spend", "label": label, "currency": spent.currency().code(), "spentMinor": spent.cents(),
-            "limitMinor": limit.map(Money::cents), "resetsAt": resets_at.map(|at| at.to_rfc3339()),
+            "limitMinor": limit.map(Money::cents), "limitCurrency": limit.map(|limit| limit.currency().code()),
+            "resetsAt": resets_at.map(|at| at.to_rfc3339()),
         }),
         // Amounts are minor units of `currency`; files written before currencies existed are US dollars.
         Metric::Balance {
@@ -164,13 +165,21 @@ fn metric_from_json(value: &Value) -> Option<Metric> {
         },
         "spend" => {
             let currency = currency(value)?;
+            // The limit keeps its own currency, so a cap in another currency stays incomparable after a restart.
+            let limit = match value.get("limitMinor").and_then(Value::as_i64) {
+                None => None,
+                Some(minor) => {
+                    let limit_currency = match value.get("limitCurrency").and_then(Value::as_str) {
+                        None => currency,
+                        Some(code) => Currency::from_code(code)?,
+                    };
+                    Some(Money::new(minor, limit_currency))
+                }
+            };
             Metric::Spend {
                 label,
                 spent: Money::new(value.get("spentMinor")?.as_i64()?, currency),
-                limit: value
-                    .get("limitMinor")
-                    .and_then(Value::as_i64)
-                    .map(|minor| Money::new(minor, currency)),
+                limit,
                 resets_at: value.get("resetsAt").and_then(time),
             }
         }
@@ -254,6 +263,13 @@ mod tests {
                     spent: Money::new(1240, Currency::Eur),
                     limit: Some(Money::new(5000, Currency::Eur)),
                     resets_at: Some(now() + chrono::Duration::days(9)),
+                },
+                // A cap in another currency stays incomparable after a restart.
+                Metric::Spend {
+                    label: "Team spend".into(),
+                    spent: Money::new(1240, Currency::Eur),
+                    limit: Some(Money::from_cents(5000)),
+                    resets_at: None,
                 },
                 Metric::Balance {
                     label: "Credits".into(),

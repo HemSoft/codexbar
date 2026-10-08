@@ -227,7 +227,16 @@ impl Dashboard {
                     // Resend against the last refresh's accounts while settings still match it; otherwise refresh,
                     // so the failed alert is judged under the current settings rather than dropped.
                     if this.accounts_revision == Some(SettingsHub::revision(cx)) {
-                        let accounts = this.accounts.clone();
+                        // Only fresh accounts (unlisted ones, as in the demo, are fresh): a failed account's
+                        // last-good snapshot neither clears nor repeats alerts.
+                        let accounts: Vec<AccountSnapshot> = this
+                            .accounts
+                            .iter()
+                            .filter(|account| {
+                                matches!(this.states.get(account.id().as_str()), None | Some(AccountState::Fresh))
+                            })
+                            .cloned()
+                            .collect();
                         crate::notifications::retry_failed(cx, &accounts, this.now);
                     } else if crate::notifications::has_failed(cx) {
                         this.refresh(cx);

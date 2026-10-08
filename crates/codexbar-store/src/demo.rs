@@ -70,6 +70,11 @@ fn series(metric: &Metric, current: f64, seed: u64, now: DateTime<Utc>) -> Vec<P
         }
         // Spend and quotas climb steadily through the period, with a short burst three days ago.
         Metric::Quota { .. } | Metric::Spend { .. } => {
+            // Quotas are fractions used; spend is money, so its burst and ceiling scale with the amount.
+            let (burst, ceiling) = match metric {
+                Metric::Spend { .. } => (current * 0.25, f64::MAX),
+                _ => (0.25, 1.0),
+            };
             let spike = steps - 3 * 24 * 60 / STEP_MINUTES;
             (0..=steps)
                 .map(|step| {
@@ -77,12 +82,12 @@ fn series(metric: &Metric, current: f64, seed: u64, now: DateTime<Utc>) -> Vec<P
                     let mut value = current * progress + noise.next() * 0.01;
                     // A short burst three days ago, so the chart shows a spike that downsampling must keep.
                     if (spike..spike + 2).contains(&step) {
-                        value += 0.25;
+                        value += burst;
                     }
                     if step == steps {
                         value = current;
                     }
-                    Point::new(at(step), value.clamp(0.0, 1.0))
+                    Point::new(at(step), value.clamp(0.0, ceiling))
                 })
                 .collect()
         }

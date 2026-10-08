@@ -304,7 +304,9 @@ fn limit_label(metric: &Metric) -> String {
         }
         Metric::Spend { limit: Some(limit), .. } => format!("{} limit", limit.display()),
         Metric::Spend { label, .. } => label.clone(),
-        Metric::Balance { label, .. } => format!("$ {}", label.to_lowercase()),
+        Metric::Balance { label, remaining, .. } => {
+            format!("{} {}", remaining.currency().symbol(), label.to_lowercase())
+        }
     }
 }
 
