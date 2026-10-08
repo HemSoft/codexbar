@@ -406,7 +406,15 @@ fn table_trend_shows_compact_history_until_hidden(cx: &mut TestAppContext) {
 
     open_history(cx, handle);
     click(cx, handle, "history-show");
+
+    // Back on the Usage view, the row is there but its trend is gone.
     click(cx, handle, ("view-tab", 0usize));
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    assert!(
+        label(cx, handle, "provider-badge-codex-personal").is_some(),
+        "the table is showing the account"
+    );
     assert!(label(cx, handle, cell).is_none(), "a hidden account shows no trend");
 }
 
@@ -2222,4 +2230,45 @@ fn accounts_carry_a_provider_badge_named_for_screen_readers(cx: &mut TestAppCont
     // In the table row and the focused account's heading.
     assert_eq!(label_of(cx, "provider-badge-claude-1").as_deref(), Some("Claude"));
     assert_eq!(label_of(cx, "provider-badge-focused").as_deref(), Some("Claude"));
+}
+
+#[gpui_kit::test]
+fn the_keyboard_starts_on_the_view_tabs_and_tab_cycles_through_the_usage_view(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("tab-order", "{}");
+    let _dashboard = open_live(
+        cx,
+        &settings,
+        vec![FakeProvider::new(Provider::Claude, "claude-1", Some(0.3))],
+    );
+    cx.run_until_parked();
+    let handle = cx.windows()[0];
+    let focused = |cx: &mut TestAppContext, id: gpui_kit::ElementId| {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.try_find(id).and_then(|found| found.focused()) == Some(true)
+        })
+        .unwrap()
+    };
+    // Focus starts on the selected view tab, so the first key press does something.
+    assert!(focused(cx, ("view-tab", 0usize).into()));
+    let order: [gpui_kit::ElementId; 4] = [
+        "refresh".into(),
+        ("order-mode", 0usize).into(),
+        ("order-mode", 1usize).into(),
+        "group-menu".into(),
+    ];
+    for (step, id) in order.iter().enumerate() {
+        press(cx, handle, "tab");
+        // After the Order toggle, Tab stops on the table (its arrow keys pick rows), and the next Tab leaves it.
+        if step == 3 {
+            assert!(!focused(cx, id.clone()), "the table takes one stop");
+            press(cx, handle, "tab");
+        }
+        assert!(focused(cx, id.clone()), "step {step}: {id:?}");
+    }
+    // And back around: the table no longer traps Tab.
+    press(cx, handle, "tab");
+    assert!(focused(cx, ("view-tab", 0usize).into()));
+    press(cx, handle, "shift-tab");
+    assert!(focused(cx, "group-menu".into()), "Shift+Tab goes back the same way");
 }

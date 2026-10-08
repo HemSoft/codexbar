@@ -100,6 +100,10 @@ pub fn migrate_legacy_ids(history: &Mutex<HistoryStore>, cx: &mut gpui_kit::App)
     crate::prefs_hub::PrefsHub::rename_accounts(cx, &renames);
 }
 
+// gpui-kit's DataTable takes Tab and Shift+Tab to move between columns, which traps keyboard focus in the table
+// (#92). The arrow keys already move between rows and columns, so Tab and Shift+Tab leave the table instead.
+gpui_kit::actions!(codexbar_table, [LeaveTableForward, LeaveTableBackward]);
+
 /// Placeholder rows for configured providers that haven't returned anything yet.
 const PLACEHOLDER_PREFIX: &str = "pending:";
 
@@ -220,7 +224,9 @@ impl Dashboard {
                 cx.background_executor().timer(std::time::Duration::from_secs(1)).await;
                 let alive = this.update(cx, |this, cx| {
                     this.now = Utc::now();
-                    // System appearance and Windows high contrast can change while CodexBar runs (#92).
+                    // Windows' animation setting, system appearance and high contrast can change while CodexBar
+                    // runs (#92); gpui-kit reads the animation setting only at start.
+                    gpui_kit::base::apply_system_reduce_motion(cx);
                     let appearance = crate::prefs_hub::PrefsHub::appearance(cx);
                     crate::theme::apply(cx, appearance);
                     let interval = SettingsHub::global(cx).settings().refresh_interval_secs();
@@ -313,6 +319,17 @@ impl Dashboard {
             dashboard.restore_snapshots(cx);
         }
         dashboard.refresh(cx);
+        // Later bindings win, so these take Tab back from the table's own bindings.
+        cx.bind_keys([
+            gpui_kit::KeyBinding::new("tab", LeaveTableForward, Some("DataTable")),
+            gpui_kit::KeyBinding::new("shift-tab", LeaveTableBackward, Some("DataTable")),
+        ]);
+        // Keyboard users start on the selected view tab, so the first Tab or arrow key does something (#92).
+        let selected = DashboardView::ALL
+            .iter()
+            .position(|view| *view == dashboard.view)
+            .unwrap_or(0);
+        window.focus(&dashboard.view_tab_focus[selected], cx);
         dashboard
     }
 
@@ -1513,6 +1530,8 @@ impl Render for Dashboard {
             .size_full()
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
+            .on_action(cx.listener(|_, _: &LeaveTableForward, window, cx| window.focus_next(cx)))
+            .on_action(cx.listener(|_, _: &LeaveTableBackward, window, cx| window.focus_prev(cx)))
             // Ctrl+wheel zoom is caught in the capture phase, before the table or settings list can scroll (#116).
             .child(
                 canvas(|_, _, _| {}, |_, _, window, _| crate::zoom::capture_wheel(window))
