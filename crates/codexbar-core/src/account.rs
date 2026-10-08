@@ -28,6 +28,38 @@ impl Provider {
             Self::Moonshot => "Moonshot (Kimi)",
         }
     }
+
+    pub const ALL: [Self; 7] = [
+        Self::Codex,
+        Self::Claude,
+        Self::Copilot,
+        Self::Cursor,
+        Self::OpenRouter,
+        Self::OpenCode,
+        Self::Moonshot,
+    ];
+
+    /// A stable key for storage; unlike the display name it never changes with wording.
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Codex => "codex",
+            Self::Claude => "claude",
+            Self::Copilot => "copilot",
+            Self::Cursor => "cursor",
+            Self::OpenRouter => "openrouter",
+            Self::OpenCode => "opencode",
+            Self::Moonshot => "moonshot",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|provider| provider.key() == key)
+    }
+
+    /// The provider an adapter reports as, by its display name (`UsageProvider::name`).
+    pub fn from_display_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|provider| provider.display_name() == name)
+    }
 }
 
 /// Stable identity of one provider account, independent of display order.

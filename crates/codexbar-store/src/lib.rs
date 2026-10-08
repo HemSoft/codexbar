@@ -9,6 +9,7 @@ mod history;
 mod lock;
 pub mod prefs;
 pub mod settings;
+pub mod snapshots;
 pub mod summary;
 
 pub use demo::demo_history;

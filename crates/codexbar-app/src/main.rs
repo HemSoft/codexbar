@@ -41,6 +41,7 @@ fn data_source() -> DataSource {
     let history = HistoryStore::open(default_history_path(), HISTORY_RETENTION, chrono::Utc::now());
     DataSource::Live {
         history: Arc::new(Mutex::new(history)),
+        providers: Arc::new(providers::enabled),
     }
 }
 

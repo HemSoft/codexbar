@@ -4,8 +4,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use chrono::{DateTime, Duration, Local, Utc};
-use codexbar_core::{AccountId, AccountSnapshot, Metric, demo::demo_accounts, format, sort_by_urgency};
-use codexbar_providers::ProviderError;
+use codexbar_core::{AccountId, AccountSnapshot, Metric, Provider, demo::demo_accounts, format, sort_by_urgency};
+use codexbar_providers::{ProviderError, UsageProvider};
 use codexbar_store::summary::{GAP_THRESHOLD, summarize};
 use codexbar_store::{HistoryStore, TREND_DAYS, demo_history};
 
@@ -23,7 +23,7 @@ use gpui_kit::{
     Window, canvas, div, px, rems,
 };
 
-use crate::account_table::{AccountTable, Compact};
+use crate::account_table::{AccountState, AccountTable, Compact, States};
 use crate::focus_cards::focus_cards;
 use crate::history_view::{HistoryView, ValueKind};
 use crate::status::{severity_dot_color, severity_tag};
@@ -66,10 +66,16 @@ const TABLE_ROW_HEIGHT: f32 = 40.;
 const TOGGLE_GRACE: std::time::Duration = std::time::Duration::from_millis(400);
 
 /// Where accounts come from.
+/// Builds a refresh's providers from the current settings: the real adapters in the app, fakes in tests.
+pub type ProviderFactory = Arc<dyn Fn(&SettingsHub) -> Vec<Arc<dyn UsageProvider>> + Send + Sync>;
+
 pub enum DataSource {
     /// Real provider adapters, fetched off the UI thread, with their history.
     /// Providers are rebuilt from the account settings on every refresh, so edits apply at once.
-    Live { history: Arc<Mutex<HistoryStore>> },
+    Live {
+        history: Arc<Mutex<HistoryStore>>,
+        providers: ProviderFactory,
+    },
     /// Synthetic accounts for design work (`CODEXBAR_DEMO=1`).
     Demo,
 }
@@ -91,6 +97,13 @@ pub fn migrate_legacy_ids(history: &Mutex<HistoryStore>, cx: &mut gpui_kit::App)
         }
     }
     crate::prefs_hub::PrefsHub::rename_accounts(cx, &renames);
+}
+
+/// Placeholder rows for configured providers that haven't returned anything yet.
+const PLACEHOLDER_PREFIX: &str = "pending:";
+
+fn is_placeholder(account: &AccountSnapshot) -> bool {
+    account.id().as_str().starts_with(PLACEHOLDER_PREFIX)
 }
 
 /// A provider whose last fetch failed. Its last good accounts stay on screen.
@@ -117,6 +130,10 @@ pub struct Dashboard {
     table_zoom: f64,
     /// A refresh was requested while one was running; it runs when that one finishes.
     refresh_queued: bool,
+    /// Where each shown account's usage comes from: restored, loading, fresh or failed (#76).
+    states: States,
+    /// The running fetch is a single-provider retry rather than a full refresh.
+    fetch_partial: bool,
     /// The settings revision the running live fetch started under.
     refresh_revision: u64,
     /// The minute the table's compact history was computed for; it is recomputed as the 14-day window moves.
@@ -132,12 +149,16 @@ impl Dashboard {
     pub fn new(source: DataSource, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let now = Utc::now();
         let table = cx.new(|cx| {
-            TableState::new(AccountTable::new(Vec::new(), now, Compact::default()), window, cx)
-                .row_selectable(true)
-                .col_selectable(false)
-                .col_movable(false)
-                .col_resizable(false)
-                .sortable(false)
+            TableState::new(
+                AccountTable::new(Vec::new(), now, Compact::default(), States::new()),
+                window,
+                cx,
+            )
+            .row_selectable(true)
+            .col_selectable(false)
+            .col_movable(false)
+            .col_resizable(false)
+            .sortable(false)
         });
 
         let selection = cx.subscribe(&table, |this, table, event: &TableEvent, cx| {
@@ -181,7 +202,7 @@ impl Dashboard {
         });
 
         let history = match &source {
-            DataSource::Live { history } => {
+            DataSource::Live { history, .. } => {
                 migrate_legacy_ids(history, cx);
                 history.clone()
             }
@@ -204,12 +225,17 @@ impl Dashboard {
             deactivated_at: None,
             table_zoom: crate::zoom::level(cx),
             refresh_queued: false,
+            states: States::new(),
+            fetch_partial: false,
             refresh_revision: 0,
             compact_minute: 0,
             view_tab_focus: DashboardView::ALL.iter().map(|_| cx.focus_handle()).collect(),
             _clock: clock,
             _subscriptions: vec![selection, activation],
         };
+        if matches!(dashboard.source, DataSource::Live { .. }) {
+            dashboard.restore_snapshots(cx);
+        }
         dashboard.refresh(cx);
         dashboard
     }
@@ -218,6 +244,27 @@ impl Dashboard {
     pub fn should_hide_on_toggle(&self, window: &Window) -> bool {
         crate::tray::is_shown(window)
             && (window.is_window_active() || self.deactivated_at.is_some_and(|at| at.elapsed() < TOGGLE_GRACE))
+    }
+
+    /// Shown account ids in table order, for the headless UI tests.
+    #[cfg(test)]
+    pub fn account_ids(&self) -> Vec<String> {
+        self.accounts
+            .iter()
+            .map(|account| account.id().as_str().to_owned())
+            .collect()
+    }
+
+    /// An account's refresh state (fresh when unlisted), for the headless UI tests.
+    #[cfg(test)]
+    pub fn state(&self, id: &str) -> AccountState {
+        self.states.get(id).cloned().unwrap_or(AccountState::Fresh)
+    }
+
+    /// The providers listed as failed, for the headless UI tests.
+    #[cfg(test)]
+    pub fn failed_providers(&self) -> Vec<&'static str> {
+        self.failures.iter().map(|failure| failure.provider).collect()
     }
 
     /// The visible view, for the headless UI tests.
@@ -251,7 +298,17 @@ impl Dashboard {
     }
 
     /// Fetches every provider off the UI thread. A failed provider keeps its last good accounts.
+    /// Fetches every enabled provider.
     pub fn refresh(&mut self, cx: &mut Context<Self>) {
+        self.fetch(None, cx);
+    }
+
+    /// Fetches one provider again after it failed, keeping every other account as it is.
+    pub fn retry(&mut self, provider: &'static str, cx: &mut Context<Self>) {
+        self.fetch(Some(provider), cx);
+    }
+
+    fn fetch(&mut self, only: Option<&'static str>, cx: &mut Context<Self>) {
         // One refresh at a time: a tray Refresh during a fetch would otherwise race it, and the older result could
         // land last, replacing newer accounts and recording history out of order. A request made meanwhile runs
         // right after, with the settings as they are then.
@@ -278,14 +335,19 @@ impl Dashboard {
                 self.set_accounts(accounts, cx);
                 return;
             }
-            DataSource::Live { history } => history.clone(),
+            DataSource::Live { history, providers } => (history.clone(), providers.clone()),
         };
+        let (history, factory) = providers;
         // Account settings may have changed since the last refresh (a first configured account added).
-        migrate_legacy_ids(&providers, cx);
-        let history = providers;
-        let providers = crate::providers::enabled(SettingsHub::global(cx));
+        migrate_legacy_ids(&history, cx);
+        let mut providers = factory(SettingsHub::global(cx));
+        if let Some(only) = only {
+            providers.retain(|provider| provider.name() == only);
+        }
         self.refresh_revision = SettingsHub::revision(cx);
         self.loading = true;
+        self.fetch_partial = only.is_some();
+        self.show_placeholders(&providers, cx);
         cx.notify();
         cx.spawn(async move |this, cx| {
             let results = cx
@@ -314,33 +376,75 @@ impl Dashboard {
         .detach();
     }
 
+    /// Configured providers with nothing shown yet (first run, newly added) get a placeholder row, so every account
+    /// is visible before its first result arrives.
+    fn show_placeholders(&mut self, providers: &[Arc<dyn UsageProvider>], cx: &mut Context<Self>) {
+        let mut accounts = self.accounts.clone();
+        let mut added = false;
+        for provider in providers {
+            let shown = accounts
+                .iter()
+                .any(|account| account.provider().display_name() == provider.name());
+            let Some(kind) = Provider::from_display_name(provider.name()) else {
+                continue;
+            };
+            if !shown {
+                let id = AccountId::new(format!("{PLACEHOLDER_PREFIX}{}", kind.key()));
+                self.states.insert(id.as_str().to_owned(), AccountState::Loading);
+                accounts.push(AccountSnapshot::new(id, kind, Vec::new(), Utc::now()));
+                added = true;
+            }
+        }
+        if added {
+            self.set_accounts(accounts, cx);
+        }
+    }
+
     fn apply_results(
         &mut self,
         results: Vec<(&'static str, Result<Vec<AccountSnapshot>, ProviderError>)>,
         cx: &mut Context<Self>,
     ) {
-        let mut accounts = Vec::new();
+        let fetched: Vec<&'static str> = results.iter().map(|(provider, _)| *provider).collect();
+        // A retry replaces only its provider's accounts; a full refresh replaces everything, so providers switched
+        // off since disappear.
+        let mut accounts: Vec<AccountSnapshot> = if self.fetch_partial {
+            self.accounts
+                .iter()
+                .filter(|account| !fetched.contains(&account.provider().display_name()))
+                .cloned()
+                .collect()
+        } else {
+            Vec::new()
+        };
+        if self.fetch_partial {
+            self.failures.retain(|failure| !fetched.contains(&failure.provider));
+        } else {
+            self.failures.clear();
+            self.states
+                .retain(|id, _| accounts.iter().any(|account| account.id().as_str() == id));
+        }
         // Only accounts that refreshed are checked for alerts: a failed provider's alerts neither clear nor repeat.
         let mut refreshed = Vec::new();
-        self.failures.clear();
         for (provider, result) in results {
             match result {
                 Ok(fresh) => {
+                    for account in &fresh {
+                        self.states
+                            .insert(account.id().as_str().to_owned(), AccountState::Fresh);
+                    }
                     refreshed.extend(fresh.iter().cloned());
                     accounts.extend(fresh);
                 }
                 Err(error) => {
-                    // Keep last good snapshots from this provider; their age shows they are stale.
-                    accounts.extend(
-                        self.accounts
-                            .iter()
-                            .filter(|a| a.provider().display_name() == provider)
-                            .cloned(),
-                    );
-                    self.failures.push(Failure {
-                        provider,
-                        message: error.to_string(),
-                    });
+                    // Keep this provider's last good snapshots (or its placeholder) visible, marked stale.
+                    let message = error.to_string();
+                    for account in self.accounts.iter().filter(|a| a.provider().display_name() == provider) {
+                        self.states
+                            .insert(account.id().as_str().to_owned(), AccountState::Failed(message.clone()));
+                        accounts.push(account.clone());
+                    }
+                    self.failures.push(Failure { provider, message });
                 }
             }
         }
@@ -356,9 +460,41 @@ impl Dashboard {
             crate::notifications::process(cx, &refreshed, &shown, Utc::now());
         }
         self.set_accounts(accounts, cx);
+        self.save_snapshots(cx);
         if std::mem::take(&mut self.refresh_queued) {
             self.refresh(cx);
         }
+    }
+
+    /// Saves real accounts' usage for the next start. Placeholders aren't saved; a write failure only costs the
+    /// restored view next time.
+    fn save_snapshots(&self, cx: &mut Context<Self>) {
+        if !matches!(self.source, DataSource::Live { .. }) {
+            return;
+        }
+        let real: Vec<AccountSnapshot> = self.accounts.iter().filter(|a| !is_placeholder(a)).cloned().collect();
+        let _ = codexbar_store::snapshots::save_snapshots(SettingsHub::global(cx).dir(), &real);
+    }
+
+    /// Shows the last-good snapshots from the previous run until the first fetch returns.
+    fn restore_snapshots(&mut self, cx: &mut Context<Self>) {
+        let restored = codexbar_store::snapshots::load_snapshots(SettingsHub::global(cx).dir());
+        if restored.is_empty() {
+            return;
+        }
+        let now = Utc::now();
+        let restored: Vec<AccountSnapshot> = {
+            let history = self.history.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            restored
+                .into_iter()
+                .map(|account| codexbar_store::enrich(&history, account, &Local, now))
+                .collect()
+        };
+        for account in &restored {
+            self.states
+                .insert(account.id().as_str().to_owned(), AccountState::Restored);
+        }
+        self.set_accounts(restored, cx);
     }
 
     fn set_accounts(&mut self, mut accounts: Vec<AccountSnapshot>, cx: &mut Context<Self>) {
@@ -374,12 +510,13 @@ impl Dashboard {
         let now = self.now;
         self.compact_minute = now.timestamp() / 60;
         let compact = self.compact_history(&accounts);
+        let states = self.states.clone();
         let preferred = self.selected.clone();
         self.history_view.update(cx, |view, cx| {
             view.set_accounts(accounts.clone(), preferred.as_ref(), cx);
         });
         self.table.update(cx, |table, cx| {
-            *table.delegate_mut() = AccountTable::new(accounts, now, compact);
+            *table.delegate_mut() = AccountTable::new(accounts, now, compact, states);
             table.refresh(cx);
             if table.delegate().row(selected_ix).is_some() {
                 table.set_selected_row(selected_ix, cx);
@@ -624,9 +761,20 @@ impl Dashboard {
                 .child(div().font_semibold().child(failure.provider))
                 .child(
                     div()
+                        .flex_1()
+                        .min_w_0()
                         .text_color(cx.theme().muted_foreground)
                         .child(failure.message.clone()),
                 )
+                .child({
+                    let provider = failure.provider;
+                    Button::new(SharedString::from(format!("retry-{provider}")))
+                        .label("Retry")
+                        .small()
+                        .outline()
+                        .loading(self.loading)
+                        .on_click(cx.listener(move |this, _, _, cx| this.retry(provider, cx)))
+                })
         });
         if self.accounts.is_empty() {
             return v_flex()

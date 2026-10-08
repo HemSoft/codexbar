@@ -710,3 +710,224 @@ fn alerts_of_accounts_no_longer_shown_recover(cx: &mut TestAppContext) {
     assert!(!active_on_disk(&settings).contains(&gone));
     assert!(!active_on_disk(&settings).is_empty(), "shown accounts keep theirs");
 }
+
+// --- Refresh lifecycle (#76): a live dashboard over fake providers.
+
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use codexbar_core::{AccountId, AccountSnapshot, Metric, Provider};
+use codexbar_providers::{ProviderError, UsageProvider};
+
+use crate::account_table::AccountState;
+
+/// A provider whose next result the test controls: `Some(used)` returns one account, `None` fails.
+struct FakeProvider {
+    name: &'static str,
+    kind: Provider,
+    id: &'static str,
+    next: Mutex<Option<f64>>,
+    calls: AtomicUsize,
+    /// A credential the adapter holds; it must never reach snapshots.json.
+    _key: &'static str,
+}
+
+impl FakeProvider {
+    fn new(kind: Provider, id: &'static str, used: Option<f64>) -> Arc<Self> {
+        Arc::new(Self {
+            name: kind.display_name(),
+            kind,
+            id,
+            next: Mutex::new(used),
+            calls: AtomicUsize::new(0),
+            _key: "sk-test-secret-key",
+        })
+    }
+
+    fn set(&self, used: Option<f64>) {
+        *self.next.lock().unwrap() = used;
+    }
+
+    fn calls(&self) -> usize {
+        self.calls.load(Ordering::SeqCst)
+    }
+}
+
+impl UsageProvider for FakeProvider {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+
+    fn fetch(&self, now: chrono::DateTime<chrono::Utc>) -> Result<Vec<AccountSnapshot>, ProviderError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        match *self.next.lock().unwrap() {
+            Some(used) => Ok(vec![AccountSnapshot::new(
+                AccountId::new(self.id),
+                self.kind,
+                vec![Metric::Window {
+                    label: "Weekly".into(),
+                    used,
+                    resets_at: now + chrono::Duration::days(3),
+                    pace: None,
+                }],
+                now,
+            )]),
+            None => Err(ProviderError::Network),
+        }
+    }
+}
+
+/// Opens a live dashboard over `providers` without letting its first fetch run yet.
+fn open_live(cx: &mut TestAppContext, settings: &TempSettings, providers: Vec<Arc<FakeProvider>>) -> Entity<Dashboard> {
+    use codexbar_store::HistoryStore;
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        theme::init(cx);
+        SettingsHub::init_with(cx, &settings.0, Arc::new(MemoryCredentialStore::default()));
+        crate::prefs_hub::PrefsHub::init(cx, &settings.0);
+        zoom::init(cx);
+        crate::notifications::Notifications::init(cx, Arc::new(RecordingNotifier::default()), false);
+    });
+    let factory: crate::dashboard::ProviderFactory = Arc::new(move |_| {
+        providers
+            .iter()
+            .map(|provider| provider.clone() as Arc<dyn UsageProvider>)
+            .collect()
+    });
+    let mut dashboard = None;
+    cx.open_window(size(px(1440.), px(960.)), |window, cx| {
+        let source = DataSource::Live {
+            history: Arc::new(Mutex::new(HistoryStore::in_memory(chrono::Duration::days(30)))),
+            providers: factory,
+        };
+        let view = cx.new(|cx| Dashboard::new(source, window, cx));
+        dashboard = Some(view.clone());
+        Root::new(view, window, cx)
+    });
+    dashboard.unwrap()
+}
+
+fn ids(cx: &mut TestAppContext, dashboard: &Entity<Dashboard>) -> Vec<String> {
+    cx.update(|cx| dashboard.read(cx).account_ids())
+}
+
+fn state(cx: &mut TestAppContext, dashboard: &Entity<Dashboard>, id: &str) -> AccountState {
+    cx.update(|cx| dashboard.read(cx).state(id))
+}
+
+#[gpui_kit::test]
+fn restored_snapshots_show_before_the_first_fetch(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("lifecycle-restore", "{}");
+    let saved = AccountSnapshot::new(
+        AccountId::new("claude-1"),
+        Provider::Claude,
+        Vec::new(),
+        chrono::Utc::now(),
+    );
+    codexbar_store::snapshots::save_snapshots(&settings.0, &[saved]).unwrap();
+    let claude = FakeProvider::new(Provider::Claude, "claude-1", Some(0.4));
+    let dashboard = open_live(cx, &settings, vec![claude.clone()]);
+
+    assert_eq!(
+        ids(cx, &dashboard),
+        vec!["claude-1"],
+        "the saved account is shown at once"
+    );
+    assert_eq!(state(cx, &dashboard, "claude-1"), AccountState::Restored);
+    cx.run_until_parked();
+    assert_eq!(claude.calls(), 1);
+    assert_eq!(state(cx, &dashboard, "claude-1"), AccountState::Fresh);
+}
+
+#[gpui_kit::test]
+fn configured_providers_show_a_placeholder_until_their_first_result(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("lifecycle-placeholder", "{}");
+    let cursor = FakeProvider::new(Provider::Cursor, "cursor-1", Some(0.2));
+    let dashboard = open_live(cx, &settings, vec![cursor]);
+
+    assert_eq!(ids(cx, &dashboard), vec!["pending:cursor"]);
+    assert_eq!(state(cx, &dashboard, "pending:cursor"), AccountState::Loading);
+    cx.run_until_parked();
+    assert_eq!(
+        ids(cx, &dashboard),
+        vec!["cursor-1"],
+        "the placeholder is replaced by the real account"
+    );
+}
+
+#[gpui_kit::test]
+fn overlapping_refreshes_run_one_at_a_time_with_one_follow_up(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("lifecycle-coalesce", "{}");
+    let codex = FakeProvider::new(Provider::Codex, "codex-1", Some(0.3));
+    let dashboard = open_live(cx, &settings, vec![codex.clone()]);
+
+    // The startup fetch is running; three more requests coalesce into a single follow-up batch.
+    for _ in 0..3 {
+        cx.update(|cx| dashboard.update(cx, |dashboard, cx| dashboard.refresh(cx)));
+    }
+    cx.run_until_parked();
+    assert_eq!(codex.calls(), 2, "the startup batch plus one queued follow-up");
+}
+
+#[gpui_kit::test]
+fn a_failed_refresh_keeps_last_good_usage_marked_stale(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("lifecycle-failure", "{}");
+    let claude = FakeProvider::new(Provider::Claude, "claude-1", Some(0.6));
+    let dashboard = open_live(cx, &settings, vec![claude.clone()]);
+    cx.run_until_parked();
+
+    claude.set(None);
+    refresh(cx, &dashboard);
+    assert_eq!(ids(cx, &dashboard), vec!["claude-1"], "still shown");
+    match state(cx, &dashboard, "claude-1") {
+        AccountState::Failed(error) => assert!(!error.is_empty()),
+        other => panic!("expected a stale account, got {other:?}"),
+    }
+    assert_eq!(cx.update(|cx| dashboard.read(cx).failed_providers()), vec!["Claude"]);
+    let handle = cx.windows()[0];
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    let tag = label(cx, handle, "state-claude-1").unwrap();
+    assert!(tag.starts_with("Stale. Refresh failed:"), "{tag}");
+}
+
+#[gpui_kit::test]
+fn retry_fetches_only_the_failed_provider(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("lifecycle-retry", "{}");
+    let claude = FakeProvider::new(Provider::Claude, "claude-1", None);
+    let cursor = FakeProvider::new(Provider::Cursor, "cursor-1", Some(0.2));
+    let dashboard = open_live(cx, &settings, vec![claude.clone(), cursor.clone()]);
+    cx.run_until_parked();
+    assert_eq!(cx.update(|cx| dashboard.read(cx).failed_providers()), vec!["Claude"]);
+
+    claude.set(Some(0.5));
+    let handle = cx.windows()[0];
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    click(cx, handle, "retry-Claude");
+    assert_eq!((claude.calls(), cursor.calls()), (2, 1), "only Claude is fetched again");
+    assert!(cx.update(|cx| dashboard.read(cx).failed_providers()).is_empty());
+    let mut shown = ids(cx, &dashboard);
+    shown.sort();
+    assert_eq!(
+        shown,
+        vec!["claude-1", "cursor-1"],
+        "the other provider's account stays"
+    );
+    assert_eq!(state(cx, &dashboard, "claude-1"), AccountState::Fresh);
+}
+
+#[gpui_kit::test]
+fn snapshots_are_saved_after_a_refresh_without_secrets(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("lifecycle-persist", "{}");
+    let codex = FakeProvider::new(Provider::Codex, "codex-1", Some(0.3));
+    let _dashboard = open_live(cx, &settings, vec![codex]);
+    cx.run_until_parked();
+
+    let text = std::fs::read_to_string(settings.0.join("snapshots.json")).unwrap();
+    assert!(text.contains("\"codex-1\""));
+    assert!(!text.contains("sk-test-secret"), "only usage is stored");
+    assert!(!text.contains("pending:"), "placeholders aren't stored");
+    let restored = codexbar_store::snapshots::load_snapshots(&settings.0);
+    assert_eq!(restored.len(), 1);
+}
