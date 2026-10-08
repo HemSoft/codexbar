@@ -216,8 +216,9 @@ fn high_contrast_name(colors: &SystemColors) -> String {
 /// A theme made of the user's high-contrast colors, always in Windows' pairs: window text on the window, highlight
 /// text on the highlight. Marks on the window (focus ring, caret, charts, progress) use the window text, which is
 /// guaranteed to show there; filled controls (buttons, status) use the highlight with its text. Hovered and selected
-/// rows keep the window background and show a highlight border, since a row's text doesn't change color. Supporting
-/// and disabled text use the scheme's disabled-text color. Status keeps its words and icons.
+/// rows keep the window background and show a highlight border, since a row's text doesn't change color. Status and
+/// switch tracks use the window text (with the window color on them), so they show whether drawn bare or filled.
+/// Status keeps its words and icons.
 fn high_contrast_json(colors: &SystemColors) -> String {
     let dark = luminance(&colors.window) < 0.5;
     let (window, text, highlight, highlight_text) =
@@ -296,12 +297,8 @@ fn high_contrast_json(colors: &SystemColors) -> String {
         "base.blue",
         "base.magenta",
     ];
-    // Filled controls: the highlight, with its own text on top.
-    let filled = [
-        "primary.background",
-        "primary.hover.background",
-        "primary.active.background",
-        "sidebar.primary.background",
+    // Status, drawn bare on the window as often as filled: the window text, with the window color on top when filled.
+    let status = [
         "danger.background",
         "danger.hover.background",
         "danger.active.background",
@@ -314,18 +311,27 @@ fn high_contrast_json(colors: &SystemColors) -> String {
         "info.background",
         "info.hover.background",
         "info.active.background",
-        "selection.background",
-        "list.active.border",
-        "table.active.border",
+        // A switch's unchecked track; its thumb is the window color on it.
+        "switch.background",
     ];
-    let on_filled = [
-        "primary.foreground",
-        "sidebar.primary.foreground",
+    let on_status = [
         "danger.foreground",
         "warning.foreground",
         "success.foreground",
         "info.foreground",
+        "switch.thumb.background",
     ];
+    // Filled controls: the highlight, with its own text on top.
+    let filled = [
+        "primary.background",
+        "primary.hover.background",
+        "primary.active.background",
+        "sidebar.primary.background",
+        "selection.background",
+        "list.active.border",
+        "table.active.border",
+    ];
+    let on_filled = ["primary.foreground", "sidebar.primary.foreground"];
     let mut entries: Vec<String> = Vec::new();
     let mut put = |keys: &[&str], value: &str| {
         entries.extend(keys.iter().map(|key| format!("\"{key}\": \"{value}\"")));
@@ -334,10 +340,14 @@ fn high_contrast_json(colors: &SystemColors) -> String {
     put(&transparent, "#00000000");
     put(&foreground, text);
     put(&marks, text);
+    put(&status, text);
+    put(&on_status, window);
     put(&filled, highlight);
     put(&on_filled, highlight_text);
-    // Supporting and disabled text: gpui-kit draws disabled controls in `muted.foreground`.
-    put(&["muted.foreground", "chart.5"], disabled);
+    // Supporting text keeps the window text: Windows reserves the disabled-text color for disabled UI, and enabled
+    // details (limits, resets, descriptions) use `muted.foreground`. Only the quietest chart series takes it.
+    put(&["muted.foreground"], text);
+    put(&["chart.5"], disabled);
     put(&["chart.3"], link);
     put(&["overlay"], "#00000099");
     format!(
@@ -445,7 +455,11 @@ mod tests {
         assert_eq!(c["table.hover.background"], "#000000");
         assert_eq!(c["table.active.border"], "#1AEBFF");
         assert_eq!(c["primary.foreground"], "#000000");
-        assert_eq!(c["muted.foreground"], "#3FF23F");
+        assert_eq!(c["muted.foreground"], "#FFFFFF", "secondary text stays readable");
+        assert_eq!(c["danger.background"], "#FFFFFF", "status shows bare on the window");
+        assert_eq!(c["danger.foreground"], "#000000");
+        assert_eq!(c["switch.background"], "#FFFFFF");
+        assert_eq!(c["switch.thumb.background"], "#000000");
         assert_ne!(
             high_contrast_name(&scheme),
             HIGH_CONTRAST,
