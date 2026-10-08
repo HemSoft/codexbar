@@ -1,10 +1,11 @@
 //! The borderless dashboard window: title bar, view rail, urgency table, focus cards and status line.
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use chrono::{DateTime, Duration, Local, Utc};
-use codexbar_core::{AccountId, AccountSnapshot, Metric, Provider, demo::demo_accounts, format, sort_by_urgency};
+use codexbar_core::{AccountId, AccountSnapshot, Metric, Provider, demo::demo_accounts, format};
 use codexbar_providers::{AccountOutcome, ProviderError, UsageProvider};
 use codexbar_store::summary::{GAP_THRESHOLD, summarize};
 use codexbar_store::{HistoryStore, TREND_DAYS, demo_history};
@@ -168,6 +169,8 @@ pub struct Dashboard {
     /// One focus handle per view tab. Only the selected tab is a Tab-key stop (a roving tab stop); the arrow keys
     /// move focus between tabs, and Enter or Space activates the focused one.
     view_tab_focus: Vec<FocusHandle>,
+    /// The groups and manual order the table was arranged with (#89); a change rearranges it.
+    layout: codexbar_core::layout::Layout,
     _clock: Task<()>,
     _subscriptions: Vec<Subscription>,
 }
@@ -258,6 +261,15 @@ impl Dashboard {
         };
         let history_view = cx.new(|cx| HistoryView::new(history.clone(), cx));
 
+        // Groups and the manual order can change in Settings or from the focused account; rearrange the table then.
+        let layout_changes = cx.observe_global::<crate::prefs_hub::PrefsHub>(|this, cx| {
+            let layout = crate::prefs_hub::PrefsHub::layout(cx);
+            if layout != this.layout {
+                this.layout = layout;
+                let accounts = this.accounts.clone();
+                this.set_accounts(accounts, cx);
+            }
+        });
         let mut dashboard = Self {
             source,
             history,
@@ -281,8 +293,9 @@ impl Dashboard {
             accounts_revision: None,
             compact_minute: 0,
             view_tab_focus: DashboardView::ALL.iter().map(|_| cx.focus_handle()).collect(),
+            layout: crate::prefs_hub::PrefsHub::layout(cx),
             _clock: clock,
-            _subscriptions: vec![selection, activation],
+            _subscriptions: vec![selection, activation, layout_changes],
         };
         if matches!(dashboard.source, DataSource::Live { .. }) {
             dashboard.restore_snapshots(cx);
@@ -684,7 +697,7 @@ impl Dashboard {
 
     fn set_accounts(&mut self, mut accounts: Vec<AccountSnapshot>, cx: &mut Context<Self>) {
         self.now = Utc::now();
-        sort_by_urgency(&mut accounts, self.now);
+        accounts = arrange(accounts, &self.layout);
         let selected_ix = self
             .selected
             .as_ref()
@@ -696,12 +709,19 @@ impl Dashboard {
         self.compact_minute = now.timestamp() / 60;
         let compact = self.compact_history(&accounts);
         let states = self.states.clone();
+        let groups: HashMap<String, String> = accounts
+            .iter()
+            .filter_map(|account| {
+                let group = self.layout.group_of(account.id().as_str())?;
+                Some((account.id().as_str().to_owned(), group.name.clone()))
+            })
+            .collect();
         let preferred = self.selected.clone();
         self.history_view.update(cx, |view, cx| {
             view.set_accounts(accounts.clone(), preferred.as_ref(), cx);
         });
         self.table.update(cx, |table, cx| {
-            *table.delegate_mut() = AccountTable::new(accounts, now, compact, states);
+            *table.delegate_mut() = AccountTable::new(accounts, now, compact, states).with_groups(groups);
             table.refresh(cx);
             if table.delegate().row(selected_ix).is_some() {
                 table.set_selected_row(selected_ix, cx);
@@ -748,7 +768,10 @@ impl Dashboard {
 
     /// The tray hover text: the most urgent account, or the reason there is none.
     fn tooltip(&self) -> String {
-        let Some(top) = self.accounts.first() else {
+        // The most urgent account, whatever the table's manual order.
+        let mut ranked = self.accounts.clone();
+        codexbar_core::sort_by_urgency(&mut ranked, self.now);
+        let Some(top) = ranked.first() else {
             return match self.failures.first() {
                 Some(failure) => format!("CodexBar: {} - {}", failure.name(), failure.message),
                 None => "CodexBar".to_owned(),
@@ -931,6 +954,101 @@ impl Dashboard {
             )
     }
 
+    /// The focused account's group and its place in the manual order (#89): a group menu, and Move up / Move down
+    /// within the group.
+    fn group_controls(&self, account: &AccountSnapshot, cx: &mut Context<Self>) -> impl IntoElement {
+        use gpui_kit::component::Disableable as _;
+        use gpui_kit::component::menu::{DropdownMenu as _, PopupMenuItem};
+        let id = account.id().as_str().to_owned();
+        let ids: Vec<String> = self.accounts.iter().map(|a| a.id().as_str().to_owned()).collect();
+        let section = self
+            .layout
+            .arrange(&ids)
+            .into_iter()
+            .find(|section| section.accounts.contains(&id));
+        let (ix, len) = section
+            .as_ref()
+            .map(|section| {
+                let ix = section.accounts.iter().position(|a| *a == id).unwrap_or_default();
+                (ix, section.accounts.len())
+            })
+            .unwrap_or((0, 1));
+        let current = self.layout.group_of(&id).map(|group| group.name.clone());
+        let groups = self.layout.groups().to_vec();
+        // A `pending:` placeholder takes the account's real id once its first fetch succeeds, so layout edits made
+        // under it would be lost; they wait for the real account.
+        let read_only = crate::prefs_hub::PrefsHub::is_read_only(cx) || id.starts_with(PLACEHOLDER_PREFIX);
+        let error = crate::prefs_hub::PrefsHub::error(cx);
+        let menu_id = id.clone();
+        let mover = |delta: isize, label: &'static str, disabled: bool| {
+            let id = id.clone();
+            let ids = ids.clone();
+            Button::new(SharedString::from(if delta < 0 { "move-up" } else { "move-down" }))
+                .small()
+                .ghost()
+                .label(label)
+                .disabled(disabled || read_only)
+                .on_click(move |_, _, cx| {
+                    let _ = crate::prefs_hub::PrefsHub::update_layout(cx, |layout| {
+                        Ok::<_, codexbar_core::layout::LayoutError>(layout.move_account(&id, delta, &ids))
+                    });
+                })
+        };
+        h_flex()
+            .gap_1()
+            .items_center()
+            .text_sm()
+            .child(
+                Button::new("group-menu")
+                    .small()
+                    .outline()
+                    .label(format!(
+                        "Group: {}",
+                        current
+                            .clone()
+                            .unwrap_or_else(|| codexbar_core::layout::UNGROUPED.into())
+                    ))
+                    .disabled(read_only)
+                    .dropdown_menu(move |menu, _, _| {
+                        let assign = |group: Option<String>| {
+                            let account = menu_id.clone();
+                            move |_: &gpui_kit::ClickEvent, _: &mut Window, cx: &mut gpui_kit::App| {
+                                let _ = crate::prefs_hub::PrefsHub::update_layout(cx, |layout| {
+                                    layout.assign(&account, group.as_deref())
+                                });
+                            }
+                        };
+                        let mut menu = menu.item(
+                            PopupMenuItem::new(codexbar_core::layout::UNGROUPED)
+                                .checked(current.is_none())
+                                .on_click(assign(None)),
+                        );
+                        for group in &groups {
+                            menu = menu.item(
+                                PopupMenuItem::new(group.name.clone())
+                                    .checked(current.as_deref() == Some(group.name.as_str()))
+                                    .on_click(assign(Some(group.id.clone()))),
+                            );
+                        }
+                        if groups.is_empty() {
+                            menu = menu.item(PopupMenuItem::label("Create groups in Settings → Groups"));
+                        }
+                        menu
+                    }),
+            )
+            .child(mover(-1, "Move up", ix == 0))
+            .child(mover(1, "Move down", ix + 1 >= len))
+            .children(error.map(|error| {
+                div()
+                    .id("layout-error")
+                    .role(Role::Alert)
+                    .test_support()
+                    .aria_label(error.clone())
+                    .text_color(cx.theme().danger)
+                    .child(error)
+            }))
+    }
+
     fn render_usage(&self, cx: &mut Context<Self>) -> gpui_kit::AnyElement {
         let focused = self.focused();
         let cards = focused
@@ -963,6 +1081,7 @@ impl Dashboard {
                         .children(severity_tag(severity))
                         .children(crate::alert_details::projected_tag(account, self.now)),
                 )
+                .child(self.group_controls(account, cx))
                 .children(crate::alert_details::alert_details(&details, self.now, cx))
                 // What the provider said besides numbers (#75), kept with last-good usage.
                 .children(account.messages().iter().enumerate().map(|(ix, message)| {
@@ -1181,4 +1300,34 @@ impl Render for Dashboard {
                     ),
             )
     }
+}
+
+/// The default order: provider order, then account id, so it doesn't depend on which fetch finished first.
+fn default_order(accounts: &mut [AccountSnapshot]) {
+    accounts.sort_by_key(|account| {
+        let provider = Provider::ALL
+            .iter()
+            .position(|kind| *kind == account.provider())
+            .unwrap_or(usize::MAX);
+        (provider, account.id().as_str().to_owned())
+    });
+}
+
+/// Orders accounts by group (#89): each group in its order, then Ungrouped, each in the manual order.
+fn arrange(mut accounts: Vec<AccountSnapshot>, layout: &codexbar_core::layout::Layout) -> Vec<AccountSnapshot> {
+    default_order(&mut accounts);
+    let ids: Vec<String> = accounts
+        .iter()
+        .map(|account| account.id().as_str().to_owned())
+        .collect();
+    let mut by_id: HashMap<String, AccountSnapshot> = accounts
+        .into_iter()
+        .map(|account| (account.id().as_str().to_owned(), account))
+        .collect();
+    layout
+        .arrange(&ids)
+        .into_iter()
+        .flat_map(|section| section.accounts)
+        .filter_map(|id| by_id.remove(&id))
+        .collect()
 }

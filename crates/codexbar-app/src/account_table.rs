@@ -65,12 +65,14 @@ pub enum AccountState {
 /// Refresh state by account id; accounts not listed are fresh.
 pub type States = HashMap<String, AccountState>;
 
-/// Supplies rows for the gpui-kit `DataTable`. Rows arrive already sorted by urgency.
+/// Supplies rows for the gpui-kit `DataTable`. Rows arrive already arranged by group and order.
 pub struct AccountTable {
     rows: Vec<AccountSnapshot>,
     now: DateTime<Utc>,
     compact: Compact,
     states: States,
+    /// Group names by account id (#89); rows arrive grouped, and the name shows beside the account.
+    groups: HashMap<String, String>,
 }
 
 impl AccountTable {
@@ -80,7 +82,13 @@ impl AccountTable {
             now,
             compact,
             states,
+            groups: HashMap::new(),
         }
+    }
+
+    pub fn with_groups(mut self, groups: HashMap<String, String>) -> Self {
+        self.groups = groups;
+        self
     }
 
     pub fn set_compact(&mut self, compact: Compact) {
@@ -149,6 +157,11 @@ impl TableDelegate for AccountTable {
                         .bg(severity_dot_color(severity, cx)),
                 )
                 .child(div().truncate().child(row.display_name()))
+                .children(self.groups.get(row.id().as_str()).map(|group| {
+                    div()
+                        .flex_shrink_0()
+                        .child(Tag::secondary().small().child(group.clone()))
+                }))
                 .children(severity_tag(severity).map(|tag| div().flex_shrink_0().child(tag)))
                 .children(self.state_tag(row, cx))
                 .into_any_element(),

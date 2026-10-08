@@ -1,6 +1,6 @@
-//! Settings (#91): General, Accounts, Alerts, Appearance, Widgets and About, built on gpui-kit's `Settings`.
-//! Changes apply and save immediately under the shared settings lock; account edits go through a dialog with
-//! Cancel, and destructive actions ask first.
+//! Settings (#91): General, Accounts, Alerts, Groups (#89), Appearance, Widgets and About, built on gpui-kit's
+//! `Settings`. Changes apply and save immediately under the shared settings lock; account edits go through a dialog
+//! with Cancel, and destructive actions ask first.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -60,6 +60,7 @@ pub fn render(_: &mut Window, cx: &mut App) -> impl IntoElement {
                     general_page(cx),
                     accounts_page(cx),
                     alerts_page(cx),
+                    crate::groups_page::groups_page(cx),
                     appearance_page(),
                     widgets_page(),
                     about_page(),

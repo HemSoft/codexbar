@@ -4,6 +4,7 @@ mod account;
 pub mod alerts;
 pub mod demo;
 pub mod format;
+pub mod layout;
 mod metric;
 mod severity;
 

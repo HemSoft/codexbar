@@ -1,5 +1,5 @@
 //! Dashboard preferences that only the Rust app uses: which accounts show history (#86), alert settings and the
-//! alerts currently active (#87).
+//! alerts currently active (#87), and account groups with the manual card order (#89).
 //!
 //! They live in `dashboard.json`, not `settings.json`: the WPF app reads `settings.json` into typed settings and writes
 //! them back, so a key it doesn't know would be dropped on its next save. Keys this version doesn't know are kept, and
@@ -10,6 +10,7 @@ use std::io;
 use std::path::Path;
 
 use codexbar_core::alerts::AlertSettings;
+use codexbar_core::layout::{Group, Layout};
 use serde_json::{Map, Value, json};
 
 pub const PREFS_FILE: &str = "dashboard.json";
@@ -30,6 +31,11 @@ pub struct DashboardPrefs {
     pending_alert_fields: BTreeMap<&'static str, Value>,
     /// Active-alert changes not yet saved: true adds a key, false removes it. Merged like `pending`.
     pending_active: BTreeMap<String, bool>,
+    /// Account groups and the manual order (#89).
+    layout: Layout,
+    /// The layout changed and isn't saved yet. A save replaces the file's layout with this one as a whole: group
+    /// edits depend on each other (a membership needs its group), and only one CodexBar runs per user.
+    layout_dirty: bool,
     /// The file came from a newer version: read what we understand, never write it.
     read_only: bool,
 }
@@ -57,8 +63,24 @@ impl DashboardPrefs {
                 .unwrap_or_default(),
             pending_alert_fields: BTreeMap::new(),
             pending_active: BTreeMap::new(),
+            layout: layout_from_json(&doc),
+            layout_dirty: false,
             read_only: version > VERSION,
         }
+    }
+
+    pub fn layout(&self) -> &Layout {
+        &self.layout
+    }
+
+    /// Changes the layout; returns `change`'s result. A change that leaves the layout as it was isn't saved.
+    pub fn update_layout<T>(&mut self, change: impl FnOnce(&mut Layout) -> T) -> T {
+        let before = self.layout.clone();
+        let result = change(&mut self.layout);
+        if self.layout != before {
+            self.layout_dirty = true;
+        }
+        result
     }
 
     pub fn alert_settings(&self) -> &AlertSettings {
@@ -91,7 +113,10 @@ impl DashboardPrefs {
 
     /// True when there are changes to save.
     pub fn is_dirty(&self) -> bool {
-        !self.pending.is_empty() || !self.pending_alert_fields.is_empty() || !self.pending_active.is_empty()
+        !self.pending.is_empty()
+            || !self.pending_alert_fields.is_empty()
+            || !self.pending_active.is_empty()
+            || self.layout_dirty
     }
 
     pub fn shows_history(&self, account: &str) -> bool {
@@ -129,6 +154,9 @@ impl DashboardPrefs {
             .collect();
         if moved != self.active_alerts {
             self.set_active_alerts(moved);
+            changed = true;
+        }
+        if self.update_layout(|layout| layout.rename_account(from, to)) {
             changed = true;
         }
         changed
@@ -185,6 +213,10 @@ impl DashboardPrefs {
         doc.insert("hiddenHistory".into(), json!(hidden));
         doc.insert("alerts".into(), Value::Object(alerts.clone()));
         doc.insert("activeAlerts".into(), json!(active));
+        if self.layout_dirty {
+            layout_to_json(&self.layout, &mut doc);
+        }
+        let layout = layout_from_json(&doc);
         let text = serde_json::to_string_pretty(&Value::Object(doc)).map_err(io::Error::other)?;
         std::fs::create_dir_all(dir)?;
         let path = dir.join(PREFS_FILE);
@@ -195,6 +227,8 @@ impl DashboardPrefs {
         self.hidden_history = hidden;
         self.alerts = alerts_from_json(&Value::Object(alerts));
         self.active_alerts = active;
+        self.layout = layout;
+        self.layout_dirty = false;
         self.pending.clear();
         self.pending_alert_fields.clear();
         self.pending_active.clear();
@@ -229,6 +263,60 @@ fn alerts_from_json(value: &Value) -> AlertSettings {
         warning: flag("warning", defaults.warning),
         critical: flag("critical", defaults.critical),
     }
+}
+
+/// Reads `groups` ([{id, name}] in order), `groupMembers` ({account: group}) and `manualOrder` ([account]). Missing
+/// keys (files from before groups) give no groups and the default order.
+fn layout_from_json(doc: &Map<String, Value>) -> Layout {
+    let groups = doc
+        .get("groups")
+        .and_then(Value::as_array)
+        .map(|groups| {
+            groups
+                .iter()
+                .filter_map(|group| {
+                    Some(Group {
+                        id: group.get("id")?.as_str()?.to_owned(),
+                        name: group.get("name")?.as_str()?.to_owned(),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let members = doc
+        .get("groupMembers")
+        .and_then(Value::as_object)
+        .map(|members| {
+            members
+                .iter()
+                .filter_map(|(account, group)| Some((account.clone(), group.as_str()?.to_owned())))
+                .collect()
+        })
+        .unwrap_or_default();
+    let order = doc
+        .get("manualOrder")
+        .and_then(Value::as_array)
+        .map(|ids| ids.iter().filter_map(Value::as_str).map(str::to_owned).collect())
+        .unwrap_or_default();
+    Layout::new(groups, members, order)
+}
+
+fn layout_to_json(layout: &Layout, doc: &mut Map<String, Value>) {
+    let groups: Vec<Value> = layout
+        .groups()
+        .iter()
+        .map(|group| json!({ "id": group.id, "name": group.name }))
+        .collect();
+    // Memberships of deleted groups are dropped on save; ones read from the file are already resolved.
+    let members: Map<String, Value> = layout
+        .members()
+        .iter()
+        .filter(|(_, group)| layout.group(group).is_some())
+        .map(|(account, group)| (account.clone(), json!(group)))
+        .collect();
+    doc.insert("groups".into(), Value::Array(groups));
+    doc.insert("groupMembers".into(), Value::Object(members));
+    doc.insert("manualOrder".into(), json!(layout.order()));
 }
 
 fn alerts_to_json(alerts: &AlertSettings) -> Value {
@@ -436,6 +524,52 @@ mod tests {
         let dir = Dir::new("alerts-bad");
         dir.write(r#"{ "version": 1, "alerts": { "enabled": "yes", "usageThreshold": -3, "balanceThreshold": "x" } }"#);
         assert_eq!(DashboardPrefs::load(&dir.0).alert_settings(), &AlertSettings::default());
+    }
+
+    #[test]
+    fn groups_and_manual_order_survive_a_restart() {
+        let dir = Dir::new("layout");
+        let mut prefs = DashboardPrefs::load(&dir.0);
+        assert!(prefs.layout().groups().is_empty(), "files from before groups have none");
+        let accounts: Vec<String> = ["codex", "claude", "cursor"].map(str::to_owned).to_vec();
+        prefs.update_layout(|layout| {
+            let work = layout.create_group("Work").unwrap();
+            layout.assign("claude", Some(&work)).unwrap();
+            layout.assign("codex", Some(&work)).unwrap();
+            layout.move_account("claude", -1, &accounts);
+        });
+        assert!(prefs.is_dirty());
+        prefs.save(&dir.0).unwrap();
+        let loaded = DashboardPrefs::load(&dir.0);
+        assert_eq!(loaded.layout(), prefs.layout());
+        let sections = loaded.layout().arrange(&accounts);
+        assert_eq!(sections[0].accounts, ["claude", "codex"]);
+        assert_eq!(sections[1].accounts, ["cursor"]);
+    }
+
+    #[test]
+    fn a_layout_change_that_changes_nothing_is_not_saved() {
+        let dir = Dir::new("layout-noop");
+        let mut prefs = DashboardPrefs::load(&dir.0);
+        assert!(prefs.update_layout(|layout| layout.delete_group("g1")).is_err());
+        assert!(!prefs.is_dirty());
+    }
+
+    #[test]
+    fn stale_memberships_read_as_ungrouped_and_are_dropped_on_save() {
+        let dir = Dir::new("layout-stale");
+        dir.write(
+            r#"{ "version": 1, "groups": [ { "id": "g1", "name": "Work" } ],
+                "groupMembers": { "claude": "g1", "codex": "g7" }, "manualOrder": [ "codex", "claude" ] }"#,
+        );
+        let mut prefs = DashboardPrefs::load(&dir.0);
+        assert_eq!(prefs.layout().group_of("codex"), None);
+        prefs
+            .update_layout(|layout| layout.create_group("Home").map(|_| ()))
+            .unwrap();
+        prefs.save(&dir.0).unwrap();
+        assert_eq!(dir.read()["groupMembers"], json!({ "claude": "g1" }));
+        assert_eq!(dir.read()["manualOrder"], json!(["codex", "claude"]));
     }
 
     #[test]

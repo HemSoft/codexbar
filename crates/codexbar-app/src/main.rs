@@ -5,6 +5,7 @@ mod alert_details;
 mod catalog;
 mod dashboard;
 mod focus_cards;
+mod groups_page;
 mod history_view;
 mod notifications;
 mod prefs_hub;

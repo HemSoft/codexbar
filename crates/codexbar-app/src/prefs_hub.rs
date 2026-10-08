@@ -1,10 +1,12 @@
 //! The app-wide Rust-only preferences in `dashboard.json`: which accounts show history (#86), alert settings and
-//! the alerts already notified (#87). Changes apply at once and save under the shared lock.
+//! the alerts already notified (#87), account groups and the manual order (#89). Changes apply at once and save
+//! under the shared lock.
 
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use codexbar_core::alerts::AlertSettings;
+use codexbar_core::layout::{Layout, LayoutError};
 use codexbar_store::prefs::DashboardPrefs;
 use gpui_kit::{App, BorrowAppContext as _, Global, SharedString};
 
@@ -104,6 +106,24 @@ impl PrefsHub {
         if dirty || Self::active_alerts(cx) != active {
             Self::edit(cx, |prefs| prefs.set_active_alerts(active));
         }
+    }
+
+    /// Account groups and the manual order (#89).
+    pub fn layout(cx: &App) -> Layout {
+        cx.try_global::<Self>()
+            .map(|hub| hub.prefs.layout().clone())
+            .unwrap_or_default()
+    }
+
+    /// Changes the layout and saves when it changed; returns `change`'s result (a refused change saves nothing).
+    pub fn update_layout<T>(
+        cx: &mut App,
+        change: impl FnOnce(&mut Layout) -> Result<T, LayoutError>,
+    ) -> Result<T, LayoutError> {
+        let mut result = Err(LayoutError::UnknownGroup);
+        Self::edit(cx, |prefs| result = prefs.update_layout(change));
+        cx.refresh_windows();
+        result
     }
 
     /// True when `dashboard.json` is from a newer CodexBar: settings are read, but nothing can be saved.
