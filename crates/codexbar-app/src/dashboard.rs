@@ -102,9 +102,17 @@ pub fn migrate_legacy_ids(history: &Mutex<HistoryStore>, cx: &mut gpui_kit::App)
 /// Placeholder rows for configured providers that haven't returned anything yet.
 const PLACEHOLDER_PREFIX: &str = "pending:";
 
+/// A row standing in for an account with no usage yet (Loading, or Unavailable after a failed first fetch).
 fn is_placeholder(account: &AccountSnapshot) -> bool {
-    account.id().as_str().starts_with(PLACEHOLDER_PREFIX)
+    account.metrics().is_empty()
 }
+
+/// One adapter's outcome: its provider name, the configured account it serves (if just one), and the result.
+type FetchResult = (
+    &'static str,
+    Option<String>,
+    Result<Vec<AccountSnapshot>, ProviderError>,
+);
 
 /// A provider whose last fetch failed. Its last good accounts stay on screen.
 struct Failure {
@@ -196,6 +204,8 @@ impl Dashboard {
                     } else if this.now.timestamp() / 60 != this.compact_minute {
                         this.update_compact_history(cx);
                     }
+                    let now = this.now;
+                    this.table.update(cx, |table, _| table.delegate_mut().set_now(now));
                     // Resend against the last refresh's accounts while settings still match it; otherwise refresh,
                     // so the failed alert is judged under the current settings rather than dropped.
                     if this.accounts_revision == Some(SettingsHub::revision(cx)) {
@@ -375,7 +385,7 @@ impl Dashboard {
                                     .map(|account| codexbar_store::enrich(&history, account, &Local, now))
                                     .collect()
                             });
-                            (provider.name(), result)
+                            (provider.name(), provider.account_id().map(str::to_owned), result)
                         })
                         .collect::<Vec<_>>()
                 })
@@ -391,14 +401,23 @@ impl Dashboard {
         let mut accounts = self.accounts.clone();
         let mut added = false;
         for provider in providers {
-            let shown = accounts
-                .iter()
-                .any(|account| account.provider().display_name() == provider.name());
             let Some(kind) = Provider::from_display_name(provider.name()) else {
                 continue;
             };
+            // An adapter for one configured account gets a placeholder under that account's id, which its first
+            // result then replaces; others get one per provider.
+            let shown = match provider.account_id() {
+                Some(id) => accounts.iter().any(|account| account.id().as_str() == id),
+                None => accounts
+                    .iter()
+                    .any(|account| account.provider().display_name() == provider.name()),
+            };
             if !shown {
-                let id = AccountId::new(format!("{PLACEHOLDER_PREFIX}{}", kind.key()));
+                let id = AccountId::new(
+                    provider
+                        .account_id()
+                        .map_or_else(|| format!("{PLACEHOLDER_PREFIX}{}", kind.key()), str::to_owned),
+                );
                 self.states.insert(id.as_str().to_owned(), AccountState::Loading);
                 accounts.push(AccountSnapshot::new(id, kind, Vec::new(), Utc::now()));
                 added = true;
@@ -409,12 +428,8 @@ impl Dashboard {
         }
     }
 
-    fn apply_results(
-        &mut self,
-        results: Vec<(&'static str, Result<Vec<AccountSnapshot>, ProviderError>)>,
-        cx: &mut Context<Self>,
-    ) {
-        let fetched: Vec<&'static str> = results.iter().map(|(provider, _)| *provider).collect();
+    fn apply_results(&mut self, results: Vec<FetchResult>, cx: &mut Context<Self>) {
+        let fetched: Vec<&'static str> = results.iter().map(|(provider, _, _)| *provider).collect();
         // A retry replaces only its provider's accounts; a full refresh replaces everything, so providers switched
         // off since disappear.
         let mut accounts: Vec<AccountSnapshot> = if self.fetch_partial {
@@ -435,7 +450,7 @@ impl Dashboard {
         }
         // Only accounts that refreshed are checked for alerts: a failed provider's alerts neither clear nor repeat.
         let mut refreshed = Vec::new();
-        for (provider, result) in results {
+        for (provider, account_id, result) in results {
             match result {
                 Ok(fresh) => {
                     for account in &fresh {
@@ -446,9 +461,14 @@ impl Dashboard {
                     accounts.extend(fresh);
                 }
                 Err(error) => {
-                    // Keep this provider's last good snapshots (or its placeholder) visible, marked stale.
+                    // Keep the failed adapter's last good snapshots (or its placeholder) visible, marked stale. An
+                    // adapter for one configured account keeps only that account; its siblings report separately.
                     let message = error.to_string();
-                    for account in self.accounts.iter().filter(|a| a.provider().display_name() == provider) {
+                    let belongs = |a: &&AccountSnapshot| match &account_id {
+                        Some(id) => a.id().as_str() == id,
+                        None => a.provider().display_name() == provider,
+                    };
+                    for account in self.accounts.iter().filter(belongs) {
                         self.states
                             .insert(account.id().as_str().to_owned(), AccountState::Failed(message.clone()));
                         accounts.push(account.clone());
@@ -489,7 +509,24 @@ impl Dashboard {
 
     /// Shows the last-good snapshots from the previous run until the first fetch returns.
     fn restore_snapshots(&mut self, cx: &mut Context<Self>) {
-        let restored = codexbar_store::snapshots::load_snapshots(SettingsHub::global(cx).dir());
+        let DataSource::Live { providers, .. } = &self.source else {
+            return;
+        };
+        // Only accounts still switched on: one removed or disabled since the last run doesn't reappear.
+        let hub = SettingsHub::global(cx);
+        let enabled: Vec<&'static str> = providers(hub).iter().map(|provider| provider.name()).collect();
+        let disabled: Vec<String> = hub
+            .settings()
+            .accounts()
+            .iter()
+            .filter(|account| !account.enabled)
+            .map(|account| account.id.clone())
+            .collect();
+        let restored: Vec<AccountSnapshot> = codexbar_store::snapshots::load_snapshots(hub.dir())
+            .into_iter()
+            .filter(|account| enabled.contains(&account.provider().display_name()))
+            .filter(|account| !disabled.iter().any(|id| id == account.id().as_str()))
+            .collect();
         if restored.is_empty() {
             return;
         }

@@ -856,6 +856,8 @@ use crate::account_table::AccountState;
 /// A provider whose next result the test controls: `Some(used)` returns one account, `None` fails.
 struct FakeProvider {
     name: &'static str,
+    /// The configured account this adapter serves, like a second OpenRouter account.
+    account: Option<&'static str>,
     kind: Provider,
     id: &'static str,
     next: Mutex<Option<f64>>,
@@ -868,12 +870,20 @@ impl FakeProvider {
     fn new(kind: Provider, id: &'static str, used: Option<f64>) -> Arc<Self> {
         Arc::new(Self {
             name: kind.display_name(),
+            account: None,
             kind,
             id,
             next: Mutex::new(used),
             calls: AtomicUsize::new(0),
             _key: "sk-test-secret-key",
         })
+    }
+
+    /// An adapter for one configured account, reporting under that account's id.
+    fn for_account(kind: Provider, id: &'static str, used: Option<f64>) -> Arc<Self> {
+        let mut provider = Arc::try_unwrap(Self::new(kind, id, used)).ok().unwrap();
+        provider.account = Some(id);
+        Arc::new(provider)
     }
 
     fn set(&self, used: Option<f64>) {
@@ -888,6 +898,10 @@ impl FakeProvider {
 impl UsageProvider for FakeProvider {
     fn name(&self) -> &'static str {
         self.name
+    }
+
+    fn account_id(&self) -> Option<&str> {
+        self.account
     }
 
     fn fetch(&self, now: chrono::DateTime<chrono::Utc>) -> Result<Vec<AccountSnapshot>, ProviderError> {
@@ -1062,4 +1076,51 @@ fn snapshots_are_saved_after_a_refresh_without_secrets(cx: &mut TestAppContext) 
     assert!(!text.contains("pending:"), "placeholders aren't stored");
     let restored = codexbar_store::snapshots::load_snapshots(&settings.0);
     assert_eq!(restored.len(), 1);
+}
+
+#[gpui_kit::test]
+fn each_configured_account_of_one_provider_loads_and_fails_on_its_own(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("lifecycle-siblings", "{}");
+    let first = FakeProvider::for_account(Provider::OpenRouter, "or-1", Some(0.4));
+    let second = FakeProvider::for_account(Provider::OpenRouter, "or-2", None);
+    let dashboard = open_live(cx, &settings, vec![first, second]);
+
+    let mut before = ids(cx, &dashboard);
+    before.sort();
+    assert_eq!(before, vec!["or-1", "or-2"], "a Loading row per configured account");
+    cx.run_until_parked();
+
+    let mut after = ids(cx, &dashboard);
+    after.sort();
+    assert_eq!(after, vec!["or-1", "or-2"], "no duplicates");
+    assert_eq!(
+        state(cx, &dashboard, "or-1"),
+        AccountState::Fresh,
+        "a sibling's failure doesn't touch it"
+    );
+    assert!(matches!(state(cx, &dashboard, "or-2"), AccountState::Failed(_)));
+    let handle = cx.windows()[0];
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    let tag = label(cx, handle, "state-or-2").unwrap();
+    assert!(
+        tag.starts_with("Unavailable. Couldn't fetch usage:"),
+        "a failed first fetch isn't stale: {tag}"
+    );
+}
+
+#[gpui_kit::test]
+fn snapshots_of_accounts_no_longer_enabled_are_not_restored(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("lifecycle-restore-filter", "{}");
+    let now = chrono::Utc::now();
+    let kept = AccountSnapshot::new(AccountId::new("claude-1"), Provider::Claude, Vec::new(), now);
+    let gone = AccountSnapshot::new(AccountId::new("cursor-1"), Provider::Cursor, Vec::new(), now);
+    codexbar_store::snapshots::save_snapshots(&settings.0, &[kept, gone]).unwrap();
+    // Only Claude is configured now.
+    let dashboard = open_live(
+        cx,
+        &settings,
+        vec![FakeProvider::new(Provider::Claude, "claude-1", Some(0.2))],
+    );
+    assert_eq!(ids(cx, &dashboard), vec!["claude-1"]);
 }

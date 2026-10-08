@@ -26,4 +26,10 @@ pub trait UsageProvider: Send + Sync {
 
     /// Fetches every account this provider can see at `now`.
     fn fetch(&self, now: DateTime<Utc>) -> Result<Vec<AccountSnapshot>, ProviderError>;
+
+    /// The configured account this adapter reports, when it serves exactly one (several OpenRouter or Moonshot
+    /// accounts each get their own adapter under the same name). Lets the dashboard tell their results apart.
+    fn account_id(&self) -> Option<&str> {
+        None
+    }
 }

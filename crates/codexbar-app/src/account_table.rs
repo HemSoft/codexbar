@@ -85,6 +85,11 @@ impl AccountTable {
         self.compact = compact;
     }
 
+    /// Advances the clock that freshness labels ("Saved 3m ago") read.
+    pub fn set_now(&mut self, now: DateTime<Utc>) {
+        self.now = now;
+    }
+
     pub fn row(&self, ix: usize) -> Option<&AccountSnapshot> {
         self.rows.get(ix)
     }
@@ -215,6 +220,10 @@ impl AccountTable {
                     format::age_label(row.fetched_at(), self.now)
                 ),
             ),
+            // A failed first fetch has no usage to be stale; say it is unavailable instead.
+            AccountState::Failed(error) if row.metrics().is_empty() => {
+                (Tag::danger(), "Unavailable", format!("Couldn't fetch usage: {error}."))
+            }
             AccountState::Failed(error) => (
                 Tag::warning(),
                 "Stale",

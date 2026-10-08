@@ -151,6 +151,10 @@ impl<H: HttpClient> UsageProvider for OpenRouterProvider<H> {
         "OpenRouter"
     }
 
+    fn account_id(&self) -> Option<&str> {
+        self.account.as_ref().map(|(id, _)| id.as_str())
+    }
+
     fn fetch(&self, now: DateTime<Utc>) -> Result<Vec<AccountSnapshot>, ProviderError> {
         let key = self.key.as_deref().ok_or(ProviderError::NotSignedIn {
             hint: OPENROUTER_KEY_HINT,
@@ -199,6 +203,10 @@ impl<H: HttpClient> MoonshotProvider<H> {
 impl<H: HttpClient> UsageProvider for MoonshotProvider<H> {
     fn name(&self) -> &'static str {
         "Moonshot (Kimi)"
+    }
+
+    fn account_id(&self) -> Option<&str> {
+        self.account.as_ref().map(|(id, _)| id.as_str())
     }
 
     fn fetch(&self, now: DateTime<Utc>) -> Result<Vec<AccountSnapshot>, ProviderError> {
