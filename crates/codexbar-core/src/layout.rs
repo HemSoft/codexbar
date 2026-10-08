@@ -71,7 +71,7 @@ impl Layout {
             let mut name = clean(&group.name)
                 .ok()
                 .filter(|name| !is_reserved(name))
-                .unwrap_or_else(|| group.id.clone());
+                .unwrap_or_else(|| "Unnamed group".to_owned());
             let base = name.clone();
             let mut n = 2;
             while layout.name_taken(&name, None) {
@@ -189,6 +189,9 @@ impl Layout {
 
     /// Carries an account's group and place from an old id to a new one. Returns true when something changed.
     pub fn rename_account(&mut self, from: &str, to: &str) -> bool {
+        if from == to {
+            return false;
+        }
         let mut changed = false;
         if let Some(group) = self.members.remove(from) {
             self.members.insert(to.to_owned(), group);
@@ -251,14 +254,16 @@ impl Layout {
             return false;
         };
         section.accounts.swap(ix, target);
-        // Shown accounts the order didn't know join its end; then the shown accounts take the order's slots that shown
-        // accounts held, in their new sequence. Remembered accounts that aren't shown keep their slots.
+        let moved = section.accounts.clone();
+        // Shown accounts the order didn't know join its end, in the order they are shown. Then only this section's
+        // accounts are rewritten, in their new sequence, within the slots they already held; every other account,
+        // shown or hidden, in this group or another, keeps its slot.
         let shown: Vec<String> = sections.into_iter().flat_map(|section| section.accounts).collect();
         let mut order = self.order.clone();
         order.extend(shown.iter().filter(|id| !self.order.contains(id)).cloned());
-        let mut next = shown.iter();
+        let mut next = moved.iter();
         for slot in order.iter_mut() {
-            if shown.contains(slot)
+            if moved.contains(slot)
                 && let Some(id) = next.next()
             {
                 slot.clone_from(id);
@@ -443,6 +448,39 @@ mod tests {
     }
 
     #[test]
+    fn moving_in_one_group_leaves_other_groups_order_alone() {
+        let mut layout = Layout::new(
+            vec![
+                Group {
+                    id: "g1".into(),
+                    name: "One".into(),
+                },
+                Group {
+                    id: "g2".into(),
+                    name: "Two".into(),
+                },
+            ],
+            BTreeMap::from([
+                ("a".to_owned(), "g1".to_owned()),
+                ("b".to_owned(), "g1".to_owned()),
+                ("x".to_owned(), "g2".to_owned()),
+                ("y".to_owned(), "g2".to_owned()),
+            ]),
+            ids(&["a", "y", "x", "b"]),
+        );
+        // x is hidden; b moves above a.
+        assert!(layout.move_account("b", -1, &ids(&["a", "b", "y"])));
+        assert_eq!(layout.order(), ids(&["b", "y", "x", "a"]).as_slice());
+    }
+
+    #[test]
+    fn renaming_an_account_to_itself_changes_nothing() {
+        let mut layout = Layout::new(vec![], BTreeMap::new(), ids(&["a", "openrouter"]));
+        assert!(!layout.rename_account("openrouter", "openrouter"));
+        assert_eq!(layout.order(), ids(&["a", "openrouter"]).as_slice());
+    }
+
+    #[test]
     fn ungrouped_is_a_reserved_name() {
         let mut layout = Layout::default();
         assert_eq!(layout.create_group("ungrouped"), Err(LayoutError::ReservedName));
@@ -459,7 +497,21 @@ mod tests {
             BTreeMap::new(),
             vec![],
         );
-        assert_eq!(names(&stored), vec!["g4"], "a stored group can't take it either");
+        assert_eq!(
+            names(&stored),
+            vec!["Unnamed group"],
+            "a stored group can't take it either"
+        );
+        // Nor through the repair fallback, whatever the stored id.
+        let by_id = Layout::new(
+            vec![Group {
+                id: "Ungrouped".into(),
+                name: String::new(),
+            }],
+            BTreeMap::new(),
+            vec![],
+        );
+        assert_eq!(names(&by_id), vec!["Unnamed group"]);
     }
 
     #[test]
@@ -487,7 +539,7 @@ mod tests {
             BTreeMap::new(),
             ids(&["a", "b", "a"]),
         );
-        assert_eq!(names(&layout), vec!["Work", "work (2)", "g3"]);
+        assert_eq!(names(&layout), vec!["Work", "work (2)", "Unnamed group"]);
         assert_eq!(layout.order(), ids(&["a", "b"]).as_slice());
     }
 
