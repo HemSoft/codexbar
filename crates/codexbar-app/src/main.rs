@@ -41,6 +41,7 @@ fn data_source() -> DataSource {
     let history = HistoryStore::open(default_history_path(), HISTORY_RETENTION, chrono::Utc::now());
     DataSource::Live {
         history: Arc::new(Mutex::new(history)),
+        providers: Arc::new(providers::enabled),
     }
 }
 
@@ -119,6 +120,7 @@ fn main() {
             dashboard.update(cx, |dashboard, cx| dashboard.show_view(DashboardView::Settings, cx));
         }
 
+        let tooltip_source = dashboard.clone();
         let result = tray::init(cx, move |command, cx| match command {
             TrayCommand::Toggle | TrayCommand::Open => {
                 let _ = cx.update_window(handle, |_, window, cx| {
@@ -136,5 +138,7 @@ fn main() {
         if let Err(err) = result {
             eprintln!("codexbar: tray icon unavailable: {err}");
         }
+        // Restored accounts were shown before the tray icon existed; give it their text now.
+        tooltip_source.update(cx, |dashboard, cx| dashboard.publish_tooltip(cx));
     });
 }

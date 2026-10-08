@@ -8,6 +8,7 @@ use codexbar_store::summary::HistorySummary;
 use gpui_kit::component::chart::AreaChart;
 use gpui_kit::component::progress::Progress;
 use gpui_kit::component::table::{Column, TableDelegate, TableState};
+use gpui_kit::component::tag::Tag;
 use gpui_kit::component::tooltip::Tooltip;
 use gpui_kit::component::{ActiveTheme as _, Icon, IconName, Sizable as _, h_flex};
 use gpui_kit::{
@@ -46,20 +47,49 @@ const COLUMNS: [Col; 7] = [
 /// Each account's stored history summary for its primary metric, by account id.
 pub type Compact = HashMap<String, (HistorySummary, ValueKind)>;
 
+/// Where an account's shown usage comes from (#76).
+#[derive(Clone, Debug, PartialEq)]
+pub enum AccountState {
+    /// Saved from an earlier run, waiting for this run's first fetch.
+    Restored,
+    /// Configured, fetch in progress, nothing known yet.
+    Loading,
+    /// From the latest fetch.
+    Fresh,
+    /// The latest fetch failed; the usage shown is the last good one. Holds the error.
+    Failed(String),
+    /// The first fetch failed: there is no usage to show yet. Holds the error.
+    Unavailable(String),
+}
+
+/// Refresh state by account id; accounts not listed are fresh.
+pub type States = HashMap<String, AccountState>;
+
 /// Supplies rows for the gpui-kit `DataTable`. Rows arrive already sorted by urgency.
 pub struct AccountTable {
     rows: Vec<AccountSnapshot>,
     now: DateTime<Utc>,
     compact: Compact,
+    states: States,
 }
 
 impl AccountTable {
-    pub fn new(rows: Vec<AccountSnapshot>, now: DateTime<Utc>, compact: Compact) -> Self {
-        Self { rows, now, compact }
+    pub fn new(rows: Vec<AccountSnapshot>, now: DateTime<Utc>, compact: Compact, states: States) -> Self {
+        Self {
+            rows,
+            now,
+            compact,
+            states,
+        }
     }
 
     pub fn set_compact(&mut self, compact: Compact) {
         self.compact = compact;
+    }
+
+    /// Advances the clock that freshness labels ("Saved 3m ago") read.
+    pub fn set_now(&mut self, now: DateTime<Utc>) {
+        self.now = now;
     }
 
     pub fn row(&self, ix: usize) -> Option<&AccountSnapshot> {
@@ -120,6 +150,7 @@ impl TableDelegate for AccountTable {
                 )
                 .child(div().truncate().child(row.display_name()))
                 .children(severity_tag(severity).map(|tag| div().flex_shrink_0().child(tag)))
+                .children(self.state_tag(row, cx))
                 .into_any_element(),
             Col::Limit => div()
                 .text_color(muted)
@@ -172,6 +203,53 @@ impl TableDelegate for AccountTable {
 }
 
 impl AccountTable {
+    /// "Loading", "Last known" or "Stale" beside an account that isn't fresh; stale names its error on hover and to
+    /// screen readers.
+    fn state_tag(&self, row: &AccountSnapshot, cx: &Context<TableState<AccountTable>>) -> Option<gpui_kit::AnyElement> {
+        let id = row.id().as_str();
+        let (tag, label, detail) = match self.states.get(id)? {
+            AccountState::Fresh => return None,
+            AccountState::Loading => (
+                Tag::secondary(),
+                "Loading",
+                "Fetching usage for the first time.".to_owned(),
+            ),
+            AccountState::Restored => (
+                Tag::secondary(),
+                "Last known",
+                format!(
+                    "Saved {}; refreshing now.",
+                    format::age_label(row.fetched_at(), self.now)
+                ),
+            ),
+            // A failed first fetch has no usage to be stale; say it is unavailable instead.
+            AccountState::Unavailable(error) => {
+                (Tag::danger(), "Unavailable", format!("Couldn't fetch usage: {error}."))
+            }
+            AccountState::Failed(error) => (
+                Tag::warning(),
+                "Stale",
+                format!(
+                    "Refresh failed: {error}. Showing usage from {}.",
+                    format::age_label(row.fetched_at(), self.now)
+                ),
+            ),
+        };
+        let _ = cx;
+        let detail: SharedString = detail.into();
+        Some(
+            div()
+                .id(ElementId::Name(format!("state-{id}").into()))
+                .role(Role::Status)
+                .test_support()
+                .aria_label(format!("{label}. {detail}"))
+                .flex_shrink_0()
+                .tooltip(move |window, cx| Tooltip::new(detail.clone()).build(window, cx))
+                .child(tag.outline().child(label))
+                .into_any_element(),
+        )
+    }
+
     /// The 14-day sparkline with the change over it. Hover (or a screen reader) gives the full compact summary:
     /// latest value, change, range and sample window. Hidden accounts say so instead.
     fn trend_cell(&self, row: &AccountSnapshot, cx: &Context<TableState<AccountTable>>) -> gpui_kit::AnyElement {

@@ -842,3 +842,384 @@ fn alerts_pause_while_preferences_cannot_be_saved(cx: &mut TestAppContext) {
         .unwrap();
     assert!(problem.starts_with("Alerts are paused"), "{problem}");
 }
+
+// --- Refresh lifecycle (#76): a live dashboard over fake providers.
+
+use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use codexbar_core::{AccountId, AccountSnapshot, Metric, Provider};
+use codexbar_providers::{ProviderError, UsageProvider};
+
+use crate::account_table::AccountState;
+
+/// A provider whose next result the test controls: `Some(used)` returns one account, `None` fails.
+struct FakeProvider {
+    name: &'static str,
+    /// The configured account this adapter serves, like a second OpenRouter account.
+    account: Option<&'static str>,
+    kind: Provider,
+    id: &'static str,
+    next: Mutex<Option<f64>>,
+    calls: AtomicUsize,
+    /// A credential the adapter holds; it must never reach snapshots.json.
+    _key: &'static str,
+}
+
+impl FakeProvider {
+    fn new(kind: Provider, id: &'static str, used: Option<f64>) -> Arc<Self> {
+        Arc::new(Self {
+            name: kind.display_name(),
+            account: None,
+            kind,
+            id,
+            next: Mutex::new(used),
+            calls: AtomicUsize::new(0),
+            _key: "sk-test-secret-key",
+        })
+    }
+
+    /// An adapter for one configured account, reporting under that account's id.
+    fn for_account(kind: Provider, id: &'static str, used: Option<f64>) -> Arc<Self> {
+        let mut provider = Arc::try_unwrap(Self::new(kind, id, used)).ok().unwrap();
+        provider.account = Some(id);
+        Arc::new(provider)
+    }
+
+    fn set(&self, used: Option<f64>) {
+        *self.next.lock().unwrap() = used;
+    }
+
+    /// Makes the next fetch succeed with an account that has no metrics (unlimited quotas).
+    fn set_empty(&self) {
+        *self.next.lock().unwrap() = Some(f64::NAN);
+    }
+
+    fn calls(&self) -> usize {
+        self.calls.load(Ordering::SeqCst)
+    }
+}
+
+impl UsageProvider for FakeProvider {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+
+    fn account_id(&self) -> Option<&str> {
+        self.account
+    }
+
+    fn account_label(&self) -> Option<&str> {
+        self.account.map(|id| if id == "or-1" { "Personal" } else { "Team" })
+    }
+
+    fn fetch(&self, now: chrono::DateTime<chrono::Utc>) -> Result<Vec<AccountSnapshot>, ProviderError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        match *self.next.lock().unwrap() {
+            Some(used) if used.is_nan() => Ok(vec![AccountSnapshot::new(
+                AccountId::new(self.id),
+                self.kind,
+                Vec::new(),
+                now,
+            )]),
+            Some(used) => Ok(vec![AccountSnapshot::new(
+                AccountId::new(self.id),
+                self.kind,
+                vec![Metric::Window {
+                    label: "Weekly".into(),
+                    used,
+                    resets_at: now + chrono::Duration::days(3),
+                    pace: None,
+                }],
+                now,
+            )]),
+            None => Err(ProviderError::Network),
+        }
+    }
+}
+
+/// Opens a live dashboard over `providers` without letting its first fetch run yet.
+fn open_live(cx: &mut TestAppContext, settings: &TempSettings, providers: Vec<Arc<FakeProvider>>) -> Entity<Dashboard> {
+    use codexbar_store::HistoryStore;
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        theme::init(cx);
+        SettingsHub::init_with(cx, &settings.0, Arc::new(MemoryCredentialStore::default()));
+        crate::prefs_hub::PrefsHub::init(cx, &settings.0);
+        zoom::init(cx);
+        crate::notifications::Notifications::init(cx, Arc::new(RecordingNotifier::default()), false);
+    });
+    let factory: crate::dashboard::ProviderFactory = Arc::new(move |_| {
+        providers
+            .iter()
+            .map(|provider| provider.clone() as Arc<dyn UsageProvider>)
+            .collect()
+    });
+    let mut dashboard = None;
+    cx.open_window(size(px(1440.), px(960.)), |window, cx| {
+        let source = DataSource::Live {
+            history: Arc::new(Mutex::new(HistoryStore::in_memory(chrono::Duration::days(30)))),
+            providers: factory,
+        };
+        let view = cx.new(|cx| Dashboard::new(source, window, cx));
+        dashboard = Some(view.clone());
+        Root::new(view, window, cx)
+    });
+    dashboard.unwrap()
+}
+
+fn ids(cx: &mut TestAppContext, dashboard: &Entity<Dashboard>) -> Vec<String> {
+    cx.update(|cx| dashboard.read(cx).account_ids())
+}
+
+fn state(cx: &mut TestAppContext, dashboard: &Entity<Dashboard>, id: &str) -> AccountState {
+    cx.update(|cx| dashboard.read(cx).state(id))
+}
+
+#[gpui_kit::test]
+fn restored_snapshots_show_before_the_first_fetch(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("lifecycle-restore", "{}");
+    let saved = AccountSnapshot::new(
+        AccountId::new("claude-1"),
+        Provider::Claude,
+        Vec::new(),
+        chrono::Utc::now(),
+    );
+    codexbar_store::snapshots::save_snapshots(&settings.0, &[saved]).unwrap();
+    let claude = FakeProvider::new(Provider::Claude, "claude-1", Some(0.4));
+    let dashboard = open_live(cx, &settings, vec![claude.clone()]);
+
+    assert_eq!(
+        ids(cx, &dashboard),
+        vec!["claude-1"],
+        "the saved account is shown at once"
+    );
+    assert_eq!(state(cx, &dashboard, "claude-1"), AccountState::Restored);
+    cx.run_until_parked();
+    assert_eq!(claude.calls(), 1);
+    assert_eq!(state(cx, &dashboard, "claude-1"), AccountState::Fresh);
+}
+
+#[gpui_kit::test]
+fn configured_providers_show_a_placeholder_until_their_first_result(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("lifecycle-placeholder", "{}");
+    let cursor = FakeProvider::new(Provider::Cursor, "cursor-1", Some(0.2));
+    let dashboard = open_live(cx, &settings, vec![cursor]);
+
+    assert_eq!(ids(cx, &dashboard), vec!["pending:cursor"]);
+    assert_eq!(state(cx, &dashboard, "pending:cursor"), AccountState::Loading);
+    cx.run_until_parked();
+    assert_eq!(
+        ids(cx, &dashboard),
+        vec!["cursor-1"],
+        "the placeholder is replaced by the real account"
+    );
+}
+
+#[gpui_kit::test]
+fn overlapping_refreshes_run_one_at_a_time_with_one_follow_up(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("lifecycle-coalesce", "{}");
+    let codex = FakeProvider::new(Provider::Codex, "codex-1", Some(0.3));
+    let dashboard = open_live(cx, &settings, vec![codex.clone()]);
+
+    // The startup fetch is running; three more requests coalesce into a single follow-up batch.
+    for _ in 0..3 {
+        cx.update(|cx| dashboard.update(cx, |dashboard, cx| dashboard.refresh(cx)));
+    }
+    cx.run_until_parked();
+    assert_eq!(codex.calls(), 2, "the startup batch plus one queued follow-up");
+}
+
+#[gpui_kit::test]
+fn a_failed_refresh_keeps_last_good_usage_marked_stale(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("lifecycle-failure", "{}");
+    let claude = FakeProvider::new(Provider::Claude, "claude-1", Some(0.6));
+    let dashboard = open_live(cx, &settings, vec![claude.clone()]);
+    cx.run_until_parked();
+
+    claude.set(None);
+    refresh(cx, &dashboard);
+    assert_eq!(ids(cx, &dashboard), vec!["claude-1"], "still shown");
+    match state(cx, &dashboard, "claude-1") {
+        AccountState::Failed(error) => assert!(!error.is_empty()),
+        other => panic!("expected a stale account, got {other:?}"),
+    }
+    assert_eq!(cx.update(|cx| dashboard.read(cx).failed_providers()), vec!["Claude"]);
+    let handle = cx.windows()[0];
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    let tag = label(cx, handle, "state-claude-1").unwrap();
+    assert!(tag.starts_with("Stale. Refresh failed:"), "{tag}");
+}
+
+#[gpui_kit::test]
+fn retry_fetches_only_the_failed_provider(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("lifecycle-retry", "{}");
+    let claude = FakeProvider::new(Provider::Claude, "claude-1", None);
+    let cursor = FakeProvider::new(Provider::Cursor, "cursor-1", Some(0.2));
+    let dashboard = open_live(cx, &settings, vec![claude.clone(), cursor.clone()]);
+    cx.run_until_parked();
+    assert_eq!(cx.update(|cx| dashboard.read(cx).failed_providers()), vec!["Claude"]);
+
+    claude.set(Some(0.5));
+    let handle = cx.windows()[0];
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    click(cx, handle, "retry-Claude");
+    assert_eq!((claude.calls(), cursor.calls()), (2, 1), "only Claude is fetched again");
+    assert!(cx.update(|cx| dashboard.read(cx).failed_providers()).is_empty());
+    let mut shown = ids(cx, &dashboard);
+    shown.sort();
+    assert_eq!(
+        shown,
+        vec!["claude-1", "cursor-1"],
+        "the other provider's account stays"
+    );
+    assert_eq!(state(cx, &dashboard, "claude-1"), AccountState::Fresh);
+}
+
+#[gpui_kit::test]
+fn snapshots_are_saved_after_a_refresh_without_secrets(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("lifecycle-persist", "{}");
+    let codex = FakeProvider::new(Provider::Codex, "codex-1", Some(0.3));
+    let _dashboard = open_live(cx, &settings, vec![codex]);
+    cx.run_until_parked();
+
+    let text = std::fs::read_to_string(settings.0.join("snapshots.json")).unwrap();
+    assert!(text.contains("\"codex-1\""));
+    assert!(!text.contains("sk-test-secret"), "only usage is stored");
+    assert!(!text.contains("pending:"), "placeholders aren't stored");
+    let restored = codexbar_store::snapshots::load_snapshots(&settings.0);
+    assert_eq!(restored.len(), 1);
+}
+
+#[gpui_kit::test]
+fn each_configured_account_of_one_provider_loads_and_fails_on_its_own(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("lifecycle-siblings", "{}");
+    let first = FakeProvider::for_account(Provider::OpenRouter, "or-1", Some(0.4));
+    let second = FakeProvider::for_account(Provider::OpenRouter, "or-2", None);
+    let dashboard = open_live(cx, &settings, vec![first, second]);
+
+    let mut before = ids(cx, &dashboard);
+    before.sort();
+    assert_eq!(before, vec!["or-1", "or-2"], "a Loading row per configured account");
+    cx.run_until_parked();
+
+    let mut after = ids(cx, &dashboard);
+    after.sort();
+    assert_eq!(after, vec!["or-1", "or-2"], "no duplicates");
+    assert_eq!(
+        state(cx, &dashboard, "or-1"),
+        AccountState::Fresh,
+        "a sibling's failure doesn't touch it"
+    );
+    assert!(matches!(state(cx, &dashboard, "or-2"), AccountState::Unavailable(_)));
+    let handle = cx.windows()[0];
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    let tag = label(cx, handle, "state-or-2").unwrap();
+    assert!(
+        tag.starts_with("Unavailable. Couldn't fetch usage:"),
+        "a failed first fetch isn't stale: {tag}"
+    );
+}
+
+#[gpui_kit::test]
+fn snapshots_of_accounts_no_longer_enabled_are_not_restored(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("lifecycle-restore-filter", "{}");
+    let now = chrono::Utc::now();
+    let kept = AccountSnapshot::new(AccountId::new("claude-1"), Provider::Claude, Vec::new(), now);
+    let gone = AccountSnapshot::new(AccountId::new("cursor-1"), Provider::Cursor, Vec::new(), now);
+    codexbar_store::snapshots::save_snapshots(&settings.0, &[kept, gone]).unwrap();
+    // Only Claude is configured now.
+    let dashboard = open_live(
+        cx,
+        &settings,
+        vec![FakeProvider::new(Provider::Claude, "claude-1", Some(0.2))],
+    );
+    assert_eq!(ids(cx, &dashboard), vec!["claude-1"]);
+}
+
+#[gpui_kit::test]
+fn retrying_one_account_leaves_its_siblings_and_the_schedule_alone(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("lifecycle-retry-account", "{}");
+    let first = FakeProvider::for_account(Provider::OpenRouter, "or-1", Some(0.4));
+    let second = FakeProvider::for_account(Provider::OpenRouter, "or-2", None);
+    let dashboard = open_live(cx, &settings, vec![first.clone(), second.clone()]);
+    cx.run_until_parked();
+    let refreshed_at = cx.update(|cx| dashboard.read(cx).last_refresh_for_test());
+
+    second.set(Some(0.3));
+    let handle = cx.windows()[0];
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    click(cx, handle, "retry-OpenRouter-or-2");
+    assert_eq!(
+        (first.calls(), second.calls()),
+        (1, 2),
+        "only the failed account is fetched again"
+    );
+    assert_eq!(state(cx, &dashboard, "or-2"), AccountState::Fresh);
+    assert_eq!(state(cx, &dashboard, "or-1"), AccountState::Fresh);
+    assert_eq!(
+        cx.update(|cx| dashboard.read(cx).last_refresh_for_test()),
+        refreshed_at,
+        "a retry doesn't push back the next full refresh"
+    );
+}
+
+#[gpui_kit::test]
+fn a_real_account_without_metrics_is_saved_like_any_other(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("lifecycle-empty-account", "{}");
+    // Usage `None` makes the fake fail; an account with no metrics is a success with nothing to show.
+    let copilot = FakeProvider::new(Provider::Copilot, "copilot-octocat", Some(0.0));
+    copilot.set_empty();
+    let _dashboard = open_live(cx, &settings, vec![copilot]);
+    cx.run_until_parked();
+    let saved = codexbar_store::snapshots::load_snapshots(&settings.0);
+    assert_eq!(saved.len(), 1, "it is a real account, not a placeholder");
+    assert_eq!(saved[0].id().as_str(), "copilot-octocat");
+}
+
+#[gpui_kit::test]
+fn configured_accounts_fetched_successfully_are_saved(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("lifecycle-save-configured", "{}");
+    let first = FakeProvider::for_account(Provider::OpenRouter, "or-1", Some(0.4));
+    let _dashboard = open_live(cx, &settings, vec![first]);
+    cx.run_until_parked();
+    let saved = codexbar_store::snapshots::load_snapshots(&settings.0);
+    let ids: Vec<&str> = saved.iter().map(|account| account.id().as_str()).collect();
+    assert_eq!(
+        ids,
+        vec!["or-1"],
+        "its placeholder shared the id, but it is a real account now"
+    );
+}
+
+#[gpui_kit::test]
+fn sibling_accounts_are_named_by_their_labels(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("lifecycle-labels", "{}");
+    let first = FakeProvider::for_account(Provider::OpenRouter, "or-1", None);
+    let second = FakeProvider::for_account(Provider::OpenRouter, "or-2", None);
+    let dashboard = open_live(cx, &settings, vec![first, second]);
+    let names = |cx: &mut TestAppContext| {
+        let mut names = cx.update(|cx| dashboard.read(cx).display_names_for_test());
+        names.sort();
+        names
+    };
+    assert_eq!(
+        names(cx),
+        vec!["OpenRouter · Personal", "OpenRouter · Team"],
+        "placeholders carry the labels"
+    );
+    cx.run_until_parked();
+    let handle = cx.windows()[0];
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    let retry = cx
+        .update_window(handle, |_, window, _| {
+            window.find("retry-OpenRouter-or-2").label().map(str::to_owned)
+        })
+        .unwrap();
+    assert_eq!(retry.as_deref(), Some("Retry OpenRouter · Team"));
+}
