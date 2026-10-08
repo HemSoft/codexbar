@@ -2070,3 +2070,32 @@ fn a_moved_key_still_works_after_the_first_account_is_added(cx: &mut TestAppCont
         codexbar_store::credentials::SecretSource::CredentialManager
     ));
 }
+
+#[gpui_kit::test]
+fn removing_the_first_account_also_deletes_the_moved_key(cx: &mut TestAppContext) {
+    use codexbar_store::settings::{AccountRecord, AuthMethod, names};
+    let settings = TempSettings::new("keys-remove-first", PLAINTEXT_KEY);
+    let dashboard = open_live_with(cx, &settings, vec![], MemoryCredentialStore::default());
+    cx.run_until_parked();
+    let implicit = codexbar_store::settings::legacy_id(names::OPENROUTER, "");
+    assert!(secret_of(cx, &implicit).is_some(), "moved under the implicit account");
+    let record = AccountRecord::new(names::OPENROUTER, "Work", AuthMethod::ApiKey);
+    cx.update(|cx| SettingsHub::update(cx, |settings| settings.upsert(record.clone())))
+        .unwrap();
+    let handle = cx.windows()[0];
+    cx.update(|cx| dashboard.update(cx, |dashboard, cx| dashboard.show_view(DashboardView::Settings, cx)));
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    cx.update_window(handle, |_, window, cx| {
+        window.within("settings-sidebar").click("0-1", cx)
+    })
+    .unwrap();
+    cx.run_until_parked();
+    click(cx, handle, format!("remove-{}", record.id));
+    press(cx, handle, "enter");
+    assert!(saved_settings(&settings).accounts().is_empty());
+    assert!(
+        secret_of(cx, &implicit).is_none(),
+        "the provider doesn't go on signing in with it"
+    );
+}

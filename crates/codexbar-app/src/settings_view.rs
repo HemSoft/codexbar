@@ -519,12 +519,28 @@ fn confirm_remove(record: AccountRecord, window: &mut Window, cx: &mut App) {
             )
             .on_ok(move |_, _, cx| {
                 let id = record.id.clone();
+                // The provider's first account also uses the key kept under its implicit account (#74); removing it
+                // deletes that one too, so the provider doesn't go on signing in with it.
+                let first = SettingsHub::global(cx)
+                    .settings()
+                    .accounts_for(&record.provider)
+                    .next()
+                    .is_some_and(|account| account.id == id);
                 let result = SettingsHub::update(cx, |settings| {
                     settings.remove(&id);
                     Ok(())
                 });
+                let mut ids = vec![id.clone()];
+                if first && catalog::info(&record.provider).secret.is_some() {
+                    ids.push(codexbar_store::settings::legacy_id(
+                        catalog::info(&record.provider).id,
+                        "",
+                    ));
+                }
                 if result.is_ok()
-                    && let Err(err) = SettingsHub::global(cx).credentials().delete(&id)
+                    && let Some(err) = ids
+                        .iter()
+                        .find_map(|id| SettingsHub::global(cx).credentials().delete(id).err())
                 {
                     SettingsHub::set_error(
                         cx,
@@ -543,7 +559,14 @@ fn confirm_reset(window: &mut Window, cx: &mut App) {
             .description("Every account and its saved keys are removed. OpenRouter and Moonshot accounts also lose their usage history; providers that fall back to their default sign-in, including Copilot, keep theirs. This can't be undone.")
             .button_props(DialogButtonProps::default().ok_text("Reset accounts").ok_variant(ButtonVariant::Danger).show_cancel(true))
             .on_ok(|_, _, cx| {
-                let ids: Vec<String> = SettingsHub::global(cx).settings().accounts().iter().map(|a| a.id.clone()).collect();
+                // Every account's key, and each key-based provider's implicit one (#74).
+                let mut ids: Vec<String> = SettingsHub::global(cx).settings().accounts().iter().map(|a| a.id.clone()).collect();
+                ids.extend(
+                    PROVIDERS
+                        .iter()
+                        .filter(|info| info.secret.is_some())
+                        .map(|info| codexbar_store::settings::legacy_id(info.id, "")),
+                );
                 if SettingsHub::update(cx, |settings| {
                     settings.clear_accounts();
                     Ok(())

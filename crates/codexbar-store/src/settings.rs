@@ -807,8 +807,11 @@ pub fn move_plaintext_keys(
             Ok(_) => store.write(&account, &key).and_then(|()| match store.read(&account) {
                 Ok(Some(back)) if back == key => Ok(()),
                 other => {
-                    // Never leave a wrong copy behind: Credential Manager is read before the file.
-                    let _ = store.delete(&account);
+                    // Never leave a wrong copy behind: Credential Manager is read before the file. If it can't be
+                    // deleted, blank it: a blank entry is never trusted, so the file's key stays the one in use.
+                    if store.delete(&account).is_err() {
+                        let _ = store.write(&account, "");
+                    }
                     Err(other.err().unwrap_or_else(CredentialError::verification))
                 }
             }),
@@ -1374,6 +1377,37 @@ mod tests {
                 None,
                 "no wrong copy left to be preferred over the file"
             );
+            assert!(file_text(&dir).contains("sk-or-plain"));
+        }
+
+        /// Truncates on write and refuses to delete.
+        #[derive(Default)]
+        struct Stuck(MemoryCredentialStore);
+
+        impl CredentialStore for Stuck {
+            fn read(&self, account: &str) -> Result<Option<String>, CredentialError> {
+                self.0.read(account)
+            }
+
+            fn write(&self, account: &str, secret: &str) -> Result<(), CredentialError> {
+                self.0.write(account, &secret[..secret.len() / 2])
+            }
+
+            fn delete(&self, _: &str) -> Result<(), CredentialError> {
+                Err(CredentialError { code: 5 })
+            }
+        }
+
+        #[test]
+        fn a_bad_copy_that_cannot_be_deleted_is_blanked_so_it_is_never_trusted() {
+            let dir = TempDir::with(PRIMARY_FILE, WITH_KEYS);
+            let store = Stuck::default();
+            let mut settings = Settings::load(&dir.0).unwrap();
+            assert!(move_plaintext_keys(&mut settings, &store, &names::ALL).moved.is_empty());
+            assert_eq!(store.read("acct-or").unwrap().as_deref(), Some(""));
+            // The next start doesn't take the blank entry as already moved, so the file keeps its key.
+            let mut next = Settings::load(&dir.0).unwrap();
+            assert!(move_plaintext_keys(&mut next, &store, &names::ALL).moved.is_empty());
             assert!(file_text(&dir).contains("sk-or-plain"));
         }
 
