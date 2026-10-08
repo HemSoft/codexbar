@@ -44,7 +44,32 @@ fn data_source() -> DataSource {
     }
 }
 
+/// One CodexBar per Windows session, so two instances never send the same alert twice or write history and
+/// preferences over each other. The demo has its own name, so design work can run beside the real app. A second
+/// launch exits; the first one is already in the notification area.
+fn already_running() -> bool {
+    use windows::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError};
+    use windows::Win32::System::Threading::CreateMutexW;
+    use windows::core::HSTRING;
+    let name = if is_demo() {
+        r"Local\HemSoft.CodexBar.Demo"
+    } else {
+        r"Local\HemSoft.CodexBar"
+    };
+    // SAFETY: a named mutex with default security; the handle is kept open for the life of the process.
+    match unsafe { CreateMutexW(None, false, &HSTRING::from(name)) } {
+        // The handle is never closed: Windows releases the mutex when the process exits.
+        Ok(_handle) => (unsafe { GetLastError() }) == ERROR_ALREADY_EXISTS,
+        // Without the mutex, run anyway rather than refuse to start.
+        Err(_) => false,
+    }
+}
+
 fn main() {
+    if already_running() {
+        eprintln!("codexbar: already running; open it from the notification area");
+        return;
+    }
     gpui_kit::application().with_assets(gpui_kit::assets::Assets).run(|cx| {
         gpui_kit::init(cx);
         theme::init(cx);

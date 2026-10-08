@@ -52,7 +52,8 @@ fn open_dashboard(cx: &mut TestAppContext, settings: &TempSettings) -> (AnyWindo
         crate::prefs_hub::PrefsHub::init(cx, &settings.0);
         zoom::init(cx);
         if cx.try_global::<crate::notifications::Notifications>().is_none() {
-            crate::notifications::Notifications::init(cx, Arc::new(RecordingNotifier::default()), true);
+            // Demo data never persists alert state; tests that check the file install their own notifier.
+            crate::notifications::Notifications::init(cx, Arc::new(RecordingNotifier::default()), false);
         }
     });
     let mut dashboard = None;

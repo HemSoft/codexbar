@@ -250,6 +250,26 @@ fn alert(account: &AccountSnapshot, metric: &Metric, kind: AlertKind, key: Strin
             format!("{name}: {value}"),
             format!("{label} is below your ${:.2} alert.", settings.balance_threshold),
         ),
+        // Balances have no reset; their severity comes from how long the credit lasts at the current spend.
+        AlertKind::Warning | AlertKind::Critical if matches!(metric, Metric::Balance { .. }) => {
+            let lasts = metric
+                .days_of_credit()
+                .map(|days| match days {
+                    d if d < 1.0 => "less than a day".to_owned(),
+                    d if d < 1.5 => "about a day".to_owned(),
+                    d => format!("about {d:.0} days"),
+                })
+                .unwrap_or_else(|| "a short while".to_owned());
+            let state = if kind == AlertKind::Critical {
+                "running out"
+            } else {
+                "running low"
+            };
+            (
+                format!("{name}: {label} {state}"),
+                format!("{value} lasts {lasts} at the current spend."),
+            )
+        }
         AlertKind::Warning => (
             format!("{name}: {label} at risk"),
             format!("At {value}, it is on pace to run out before it resets."),
@@ -478,6 +498,39 @@ mod tests {
         let sent = run(&both, &mut active, &[vec![account]]);
         assert!(sent[0].is_empty(), "no downgrade to At risk while Limit soon is active");
         assert!(active.contains("x|5-hour-window|warning"), "At risk is marked handled");
+    }
+
+    #[test]
+    fn balance_severity_alerts_describe_spend_not_a_reset() {
+        let account = AccountSnapshot::new(
+            AccountId::new("o"),
+            Provider::OpenRouter,
+            vec![Metric::Balance {
+                label: "Credits".into(),
+                remaining: Money::from_cents(300),
+                burn_per_day: Some(Money::from_cents(200)),
+            }],
+            now(),
+        );
+        let settings = AlertSettings {
+            balance_threshold: 0.0,
+            ..AlertSettings {
+                enabled: true,
+                ..AlertSettings::default()
+            }
+        };
+        let evaluation = evaluate(&settings, &BTreeSet::new(), &[account], now());
+        let alert = evaluation
+            .notify
+            .iter()
+            .find(|alert| matches!(alert.kind, AlertKind::Warning | AlertKind::Critical))
+            .expect("a day and a half of credit is a severity alert");
+        assert!(!alert.body.contains("reset"), "{}", alert.body);
+        assert!(
+            alert.body.ends_with("lasts about 2 days at the current spend."),
+            "{}",
+            alert.body
+        );
     }
 
     #[test]

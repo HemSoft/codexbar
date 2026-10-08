@@ -102,14 +102,21 @@ impl Notifications {
 }
 
 /// Evaluates the accounts that refreshed successfully and delivers new alerts. Accounts whose provider failed are
-/// not passed in, so their alerts are neither cleared nor repeated.
-pub fn process(cx: &mut App, refreshed: &[AccountSnapshot], now: DateTime<Utc>) {
+/// not passed in, so their alerts are neither cleared nor repeated. `retired` are account ids a successful refresh
+/// no longer returns (removed or disabled); their alerts recover.
+pub fn process(cx: &mut App, refreshed: &[AccountSnapshot], retired: &[String], now: DateTime<Utc>) {
     let Some(notifier) = cx.try_global::<Notifications>().map(|global| global.notifier.clone()) else {
         return;
     };
     let settings = PrefsHub::alert_settings(cx);
     let active = Notifications::active(cx);
-    let evaluation = evaluate(&settings, &active, refreshed, now);
+    let mut evaluation = evaluate(&settings, &active, refreshed, now);
+    for id in retired {
+        let prefix = format!("{id}|");
+        evaluation
+            .recovered
+            .extend(active.iter().filter(|key| key.starts_with(&prefix)).cloned());
+    }
     if evaluation.notify.is_empty() && evaluation.recovered.is_empty() && evaluation.covered.is_empty() {
         // Nothing new; still retry an active-alert save that failed earlier.
         Notifications::set_active(cx, active);
@@ -164,7 +171,10 @@ impl Notifier for RecordingNotifier {
 
 /// Windows toast notifications for the unpackaged app, under a per-user AppUserModelID registered in
 /// `HKCU\Software\Classes\AppUserModelId` so they show CodexBar's name.
-pub struct WindowsNotifier;
+pub struct WindowsNotifier {
+    /// Why the app id couldn't be registered; without it Windows may drop notifications silently.
+    registration: Option<String>,
+}
 
 /// The AppUserModelID notifications are sent under.
 pub const APP_ID: &str = "HemSoft.CodexBar";
@@ -172,14 +182,23 @@ pub const APP_ID: &str = "HemSoft.CodexBar";
 impl WindowsNotifier {
     /// Registers the app id for this user and this process. Registration failures are reported by `status`.
     pub fn new() -> Self {
-        let _ = register_app_id();
-        Self
+        Self {
+            registration: register_app_id().err().map(|err| {
+                format!(
+                    "CodexBar couldn't register for Windows notifications: {}",
+                    err.message()
+                )
+            }),
+        }
     }
 }
 
 impl Notifier for WindowsNotifier {
     fn status(&self) -> NotifierStatus {
         use windows::UI::Notifications::{NotificationSetting, ToastNotificationManager};
+        if let Some(problem) = &self.registration {
+            return NotifierStatus::Blocked(problem.clone());
+        }
         let setting = ToastNotificationManager::CreateToastNotifierWithId(&windows::core::HSTRING::from(APP_ID))
             .and_then(|notifier| notifier.Setting());
         match setting {

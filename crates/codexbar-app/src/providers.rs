@@ -102,6 +102,33 @@ pub fn enabled(hub: &SettingsHub) -> Vec<Arc<dyn UsageProvider>> {
     providers
 }
 
+/// What is switched on right now: provider names and configured account ids, to drop results of a fetch that started
+/// before an account or provider was switched off.
+pub struct Monitored {
+    providers: Vec<&'static str>,
+    disabled_accounts: Vec<String>,
+}
+
+impl Monitored {
+    pub fn covers(&self, account: &codexbar_core::AccountSnapshot) -> bool {
+        self.providers.contains(&account.provider().display_name())
+            && !self.disabled_accounts.iter().any(|id| id == account.id().as_str())
+    }
+}
+
+pub fn monitored(hub: &SettingsHub) -> Monitored {
+    Monitored {
+        providers: enabled(hub).iter().map(|provider| provider.name()).collect(),
+        disabled_accounts: hub
+            .settings()
+            .accounts()
+            .iter()
+            .filter(|account| !account.enabled)
+            .map(|account| account.id.clone())
+            .collect(),
+    }
+}
+
 /// Accounts that used to report under their provider's legacy id: a provider's only OpenRouter or Moonshot account
 /// reported as `openrouter`/`moonshot` before it reported under its configured id. Each pair is (legacy, configured)
 /// for moving stored history and preferences. The one configured account counts whether or not it is enabled now (a
