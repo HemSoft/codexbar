@@ -694,24 +694,6 @@ fn demo_alerts_never_touch_dashboard_json(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn alerts_of_accounts_no_longer_shown_recover(cx: &mut TestAppContext) {
-    use codexbar_core::alerts::{AlertKind, alert_key};
-    let settings = TempSettings::new("alerts-gone", "{}");
-    std::fs::write(settings.0.join("dashboard.json"), ALERTS_ON).unwrap();
-    let (dashboard, _) = open_with_alerts(cx, &settings);
-    // An alert for an account the dashboard doesn't show (removed since) is dropped on the next refresh.
-    let gone = alert_key("removed-account", "weekly", AlertKind::Usage);
-    cx.update(|cx| {
-        let mut active = crate::prefs_hub::PrefsHub::active_alerts(cx);
-        active.insert(gone.clone());
-        crate::prefs_hub::PrefsHub::set_active_alerts(cx, active);
-    });
-    refresh(cx, &dashboard);
-    assert!(!active_on_disk(&settings).contains(&gone));
-    assert!(!active_on_disk(&settings).is_empty(), "shown accounts keep theirs");
-}
-
-#[gpui_kit::test]
 fn a_notification_windows_failed_to_raise_is_sent_again(cx: &mut TestAppContext) {
     let settings = TempSettings::new("alerts-failed", "{}");
     std::fs::write(settings.0.join("dashboard.json"), ALERTS_ON).unwrap();
@@ -730,37 +712,6 @@ fn a_notification_windows_failed_to_raise_is_sent_again(cx: &mut TestAppContext)
 }
 
 #[gpui_kit::test]
-fn alert_keys_for_account_ids_containing_the_separator_stay_active(cx: &mut TestAppContext) {
-    use codexbar_core::alerts::{AlertKind, alert_key};
-    let key = alert_key("team|west", "weekly", AlertKind::Usage);
-    let kept = cx.update(|cx| {
-        crate::notifications::Notifications::init(cx, Arc::new(RecordingNotifier::default()), false);
-        crate::notifications::Notifications::seed_for_test(cx, [key.clone()].into());
-        // Nothing refreshed, and `team|west` is still shown: its alert must stay active.
-        crate::notifications::process(cx, &[], Some(&["team|west".to_owned()]), chrono::Utc::now());
-        crate::notifications::Notifications::active(cx)
-    });
-    assert!(
-        kept.contains(&key),
-        "the whole id `team|west` is matched, not just `team`"
-    );
-}
-
-#[gpui_kit::test]
-fn a_failed_provider_keeps_its_alerts_even_with_no_accounts_known(cx: &mut TestAppContext) {
-    use codexbar_core::alerts::{AlertKind, alert_key};
-    let key = alert_key("claude-1", "weekly", AlertKind::Usage);
-    let kept = cx.update(|cx| {
-        crate::notifications::Notifications::init(cx, Arc::new(RecordingNotifier::default()), false);
-        crate::notifications::Notifications::seed_for_test(cx, [key.clone()].into());
-        // First refresh after a restart: Claude failed, so none of its accounts are known to be shown.
-        crate::notifications::process(cx, &[], None, chrono::Utc::now());
-        crate::notifications::Notifications::active(cx)
-    });
-    assert!(kept.contains(&key), "a failed refresh retires nothing");
-}
-
-#[gpui_kit::test]
 fn changing_a_threshold_judges_held_alerts_afresh(cx: &mut TestAppContext) {
     let settings = TempSettings::new("alerts-threshold", "{}");
     std::fs::write(settings.0.join("dashboard.json"), ALERTS_ON).unwrap();
@@ -774,5 +725,24 @@ fn changing_a_threshold_judges_held_alerts_afresh(cx: &mut TestAppContext) {
     assert!(
         active.iter().any(|key| key.ends_with("|balance")),
         "other kinds keep theirs"
+    );
+}
+
+#[gpui_kit::test]
+fn alerts_of_an_account_that_disappears_stay_until_reset(cx: &mut TestAppContext) {
+    use codexbar_core::alerts::{AlertKind, alert_key};
+    let key = alert_key("removed-account", "weekly", AlertKind::Usage);
+    let kept = cx.update(|cx| {
+        crate::notifications::Notifications::init(cx, Arc::new(RecordingNotifier::default()), false);
+        crate::notifications::Notifications::seed_for_test(cx, [key.clone()].into());
+        // A refresh without that account (removed, disabled or its provider failed) leaves its key alone.
+        crate::notifications::process(cx, &[], chrono::Utc::now());
+        crate::notifications::Notifications::active(cx)
+    });
+    assert!(kept.contains(&key));
+    cx.update(crate::notifications::Notifications::reset);
+    assert!(
+        cx.update(|cx| crate::notifications::Notifications::active(cx))
+            .is_empty()
     );
 }

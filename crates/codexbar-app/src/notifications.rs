@@ -117,10 +117,9 @@ impl Notifications {
 }
 
 /// Evaluates the accounts that refreshed successfully and delivers new alerts. Accounts whose provider failed are
-/// not passed in, so their alerts are neither cleared nor repeated. `shown` lists every account the dashboard now
-/// shows; alerts of any other account (removed, disabled, or its provider switched off) recover. Pass `None` when a
-/// provider failed: its accounts may not be listed (none known yet after a restart), so nothing is retired then.
-pub fn process(cx: &mut App, refreshed: &[AccountSnapshot], shown: Option<&[String]>, now: DateTime<Utc>) {
+/// not passed in, so their alerts are neither cleared nor repeated. Alerts end when their condition recovers or on
+/// Reset; an account that disappears keeps its keys, which can't notify (re-added accounts get new ids).
+pub fn process(cx: &mut App, refreshed: &[AccountSnapshot], now: DateTime<Utc>) {
     let Some(notifier) = cx.try_global::<Notifications>().map(|global| global.notifier.clone()) else {
         return;
     };
@@ -131,21 +130,7 @@ pub fn process(cx: &mut App, refreshed: &[AccountSnapshot], shown: Option<&[Stri
     for key in &failed {
         active.remove(key);
     }
-    let mut evaluation = evaluate(&settings, &active, refreshed, now);
-    if let Some(shown) = shown {
-        evaluation.recovered.extend(
-            active
-                .iter()
-                .filter(|key| {
-                    // Keys are `account|metric|kind`; the account id itself may contain `|`, so split from the right.
-                    let account = key.rsplitn(3, '|').nth(2).unwrap_or_default();
-                    !shown.iter().any(|id| id == account)
-                })
-                .filter(|key| !evaluation.recovered.contains(key))
-                .cloned()
-                .collect::<Vec<_>>(),
-        );
-    }
+    let evaluation = evaluate(&settings, &active, refreshed, now);
     if evaluation.notify.is_empty()
         && evaluation.recovered.is_empty()
         && evaluation.covered.is_empty()
@@ -184,15 +169,16 @@ pub fn process(cx: &mut App, refreshed: &[AccountSnapshot], shown: Option<&[Stri
     Notifications::set_active(cx, next);
 }
 
-/// Sends again, right away, any notification Windows failed to raise, without waiting for the next refresh (which
-/// may never come with automatic refresh off). Called from the dashboard's clock with the accounts it shows; nothing
-/// is retired here.
+/// Handles notifications Windows failed to raise, right away rather than at the next refresh (which may never come
+/// with automatic refresh off). Called from the dashboard's clock with the accounts of the last refresh when settings
+/// haven't changed since, so they are sent again now; otherwise with none, which only forgets them, and the next
+/// refresh judges them under the current settings.
 pub fn retry_failed(cx: &mut App, accounts: &[AccountSnapshot], now: DateTime<Utc>) {
     let waiting = cx
         .try_global::<Notifications>()
         .is_some_and(|global| global.notifier.has_failed());
     if waiting {
-        process(cx, accounts, None, now);
+        process(cx, accounts, now);
     }
 }
 

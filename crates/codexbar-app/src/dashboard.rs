@@ -172,8 +172,13 @@ impl Dashboard {
                     } else if this.now.timestamp() / 60 != this.compact_minute {
                         this.update_compact_history(cx);
                     }
-                    let shown = this.accounts.clone();
-                    crate::notifications::retry_failed(cx, &shown, this.now);
+                    // Resend against the last refresh's accounts only while settings still match it.
+                    let accounts = if SettingsHub::revision(cx) == this.refresh_revision {
+                        this.accounts.clone()
+                    } else {
+                        Vec::new()
+                    };
+                    crate::notifications::retry_failed(cx, &accounts, this.now);
                     cx.notify();
                 });
                 if alive.is_err() {
@@ -266,11 +271,7 @@ impl Dashboard {
                 let now = Utc::now();
                 self.last_refresh = Some(now);
                 let accounts = demo_accounts(now, &Local);
-                let shown: Vec<String> = accounts
-                    .iter()
-                    .map(|account| account.id().as_str().to_owned())
-                    .collect();
-                crate::notifications::process(cx, &accounts, Some(&shown), now);
+                crate::notifications::process(cx, &accounts, now);
                 // Demo history keeps up with the demo accounts, as live history does.
                 let _ = self
                     .history
@@ -351,12 +352,7 @@ impl Dashboard {
         // Settings saved while the fetch ran (an account switched off) make its results stale for alerting; the next
         // refresh judges everything against the current settings.
         if SettingsHub::revision(cx) == self.refresh_revision {
-            let shown: Vec<String> = accounts
-                .iter()
-                .map(|account| account.id().as_str().to_owned())
-                .collect();
-            let shown = self.failures.is_empty().then_some(shown.as_slice());
-            crate::notifications::process(cx, &refreshed, shown, Utc::now());
+            crate::notifications::process(cx, &refreshed, Utc::now());
         } else {
             // Run again under the current settings, so a crossed condition is still noticed even with automatic
             // refresh off.
