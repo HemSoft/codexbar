@@ -1496,3 +1496,32 @@ fn smart_order_keeps_failed_accounts_visible_after_current_ones(cx: &mut TestApp
     refresh(cx, &dashboard);
     assert_eq!(shown_ids(cx, &dashboard), ["claude-1", "codex"]);
 }
+
+#[gpui_kit::test]
+fn smart_order_re_ranks_when_held_alerts_change(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("smart-alerts", "{}");
+    std::fs::write(settings.0.join("dashboard.json"), ALERTS_ON).unwrap();
+    // Both under the 80% alert; Codex is busier, so it leads.
+    let dashboard = open_live(
+        cx,
+        &settings,
+        vec![
+            FakeProvider::new(Provider::Claude, "claude-1", Some(0.77)),
+            FakeProvider::new(Provider::Codex, "codex", Some(0.78)),
+        ],
+    );
+    cx.run_until_parked();
+    assert_eq!(shown_ids(cx, &dashboard), ["codex", "claude-1"]);
+    // Claude's usage alert is held (it dipped inside the recovery margin): it now outranks Codex, without a refresh.
+    let key = cx.update(|cx| {
+        let account = dashboard.read(cx).account("claude-1").unwrap();
+        codexbar_core::alerts::alert_key(
+            "claude-1",
+            &codexbar_core::alerts::metric_slot(&account.metrics()[0]),
+            codexbar_core::alerts::AlertKind::Usage,
+        )
+    });
+    cx.update(|cx| crate::notifications::Notifications::seed_for_test(cx, [key].into_iter().collect()));
+    cx.run_until_parked();
+    assert_eq!(shown_ids(cx, &dashboard), ["claude-1", "codex"]);
+}
