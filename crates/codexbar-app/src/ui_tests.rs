@@ -940,11 +940,21 @@ impl UsageProvider for FakeProvider {
 
 /// Opens a live dashboard over `providers` without letting its first fetch run yet.
 fn open_live(cx: &mut TestAppContext, settings: &TempSettings, providers: Vec<Arc<FakeProvider>>) -> Entity<Dashboard> {
+    open_live_with(cx, settings, providers, MemoryCredentialStore::default())
+}
+
+/// `open_live` with a chosen credential store, such as one that always fails.
+fn open_live_with(
+    cx: &mut TestAppContext,
+    settings: &TempSettings,
+    providers: Vec<Arc<FakeProvider>>,
+    store: MemoryCredentialStore,
+) -> Entity<Dashboard> {
     use codexbar_store::HistoryStore;
     cx.update(|cx| {
         gpui_kit::init(cx);
         theme::init(cx);
-        SettingsHub::init_with(cx, &settings.0, Arc::new(MemoryCredentialStore::default()));
+        SettingsHub::init_with(cx, &settings.0, Arc::new(store));
         crate::prefs_hub::PrefsHub::init(cx, &settings.0);
         zoom::init(cx);
         crate::notifications::Notifications::init(cx, Arc::new(RecordingNotifier::default()), false);
@@ -1524,4 +1534,258 @@ fn smart_order_re_ranks_when_held_alerts_change(cx: &mut TestAppContext) {
     cx.update(|cx| crate::notifications::Notifications::seed_for_test(cx, [key].into_iter().collect()));
     cx.run_until_parked();
     assert_eq!(shown_ids(cx, &dashboard), ["claude-1", "codex"]);
+}
+
+// Settings (#91): navigation, refresh choices, the account dialog by keyboard, cancellation, removal, reset and
+// secure-store failures, all headless.
+
+fn open_settings_page(
+    cx: &mut TestAppContext,
+    settings: &TempSettings,
+    store: MemoryCredentialStore,
+    page: usize,
+) -> AnyWindowHandle {
+    let dashboard = open_live_with(cx, settings, vec![], store);
+    cx.run_until_parked();
+    let handle = cx.windows()[0];
+    cx.update(|cx| dashboard.update(cx, |dashboard, cx| dashboard.show_view(DashboardView::Settings, cx)));
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    cx.update_window(handle, |_, window, cx| {
+        window.within("settings-sidebar").click(format!("0-{page}"), cx)
+    })
+    .unwrap();
+    cx.run_until_parked();
+    handle
+}
+
+fn type_text(cx: &mut TestAppContext, handle: AnyWindowHandle, text: &str) {
+    cx.update_window(handle, |_, window, cx| window.input(text, cx))
+        .unwrap();
+    cx.run_until_parked();
+}
+
+fn saved_settings(settings: &TempSettings) -> codexbar_store::settings::Settings {
+    codexbar_store::settings::Settings::load_or_default(&settings.0)
+}
+
+fn secret_of(cx: &mut TestAppContext, id: &str) -> Option<String> {
+    cx.update(|cx| SettingsHub::global(cx).credentials().read(id)).unwrap()
+}
+
+/// Adds an OpenRouter account through the dialog, by keyboard: the Name field has focus with its text selected, and
+/// Tab moves past the sign-in method to the key.
+fn add_openrouter(cx: &mut TestAppContext, handle: AnyWindowHandle, name: &str, key: &str) {
+    click(cx, handle, "add-OpenRouter");
+    type_text(cx, handle, name);
+    press(cx, handle, "tab");
+    press(cx, handle, "tab");
+    type_text(cx, handle, key);
+    click(cx, handle, "account-save");
+}
+
+fn exists(cx: &mut TestAppContext, handle: AnyWindowHandle, id: impl Into<gpui_kit::ElementId>) -> bool {
+    let id = id.into();
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window.try_find(id).is_some()
+    })
+    .unwrap()
+}
+
+#[gpui_kit::test]
+fn every_settings_section_can_be_opened(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("settings-nav", "{}");
+    let handle = open_settings_page(cx, &settings, MemoryCredentialStore::default(), 0);
+    // General, Accounts, Alerts, Groups, Appearance, Widgets, About: each page shows its own controls.
+    let marks: [(usize, Option<&'static str>); 7] = [
+        (0, None),
+        (1, Some("add-OpenRouter")),
+        (2, Some("alerts-status")),
+        (3, Some("group-new")),
+        (4, None),
+        (5, None),
+        (6, Some("open-repo")),
+    ];
+    for (page, mark) in marks {
+        cx.update_window(handle, |_, window, cx| {
+            window.within("settings-sidebar").click(format!("0-{page}"), cx)
+        })
+        .unwrap();
+        cx.run_until_parked();
+        if let Some(mark) = mark {
+            assert!(exists(cx, handle, mark), "page {page} shows {mark}");
+        }
+    }
+    cx.update_window(handle, |_, window, cx| {
+        window.within("settings-sidebar").click("0-0", cx)
+    })
+    .unwrap();
+    cx.run_until_parked();
+    let refresh = cx
+        .update_window(handle, |_, window, _| {
+            window
+                .within("group-0")
+                .within("item-0")
+                .within("field")
+                .find("btn")
+                .label()
+                .map(str::to_owned)
+        })
+        .unwrap();
+    assert_eq!(
+        refresh.as_deref(),
+        Some("Every 2 minutes"),
+        "General shows auto refresh"
+    );
+}
+
+#[gpui_kit::test]
+fn auto_refresh_offers_the_standard_choices_and_saves_them(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("settings-refresh", "{}");
+    let handle = open_settings_page(cx, &settings, MemoryCredentialStore::default(), 0);
+    let choose = |cx: &mut TestAppContext, downs: usize| {
+        cx.update_window(handle, |_, window, cx| {
+            window
+                .within("group-0")
+                .within("item-0")
+                .within("field")
+                .click("btn", cx)
+        })
+        .unwrap();
+        cx.run_until_parked();
+        for _ in 0..downs {
+            press(cx, handle, "down");
+        }
+        press(cx, handle, "enter");
+    };
+    // The WPF default of 2 minutes is kept as its own choice: Off, 1, 2, 5, 15, 30, 60. The first is Off.
+    choose(cx, 1);
+    assert_eq!(saved_settings(&settings).refresh_interval_secs(), None);
+    // Now the standard six: Off, 1, 5, 15, 30, 60.
+    choose(cx, 6);
+    assert_eq!(saved_settings(&settings).refresh_interval_secs(), Some(3600));
+    choose(cx, 3);
+    assert_eq!(saved_settings(&settings).refresh_interval_secs(), Some(300));
+}
+
+#[gpui_kit::test]
+fn an_account_added_by_keyboard_is_saved_with_its_key(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("settings-add", "{}");
+    let handle = open_settings_page(cx, &settings, MemoryCredentialStore::default(), 1);
+    add_openrouter(cx, handle, "Work", "sk-or-test");
+    let saved = saved_settings(&settings);
+    let record = saved
+        .accounts()
+        .iter()
+        .find(|a| a.provider == "OpenRouter")
+        .expect("saved");
+    assert_eq!(record.label, "Work");
+    assert_eq!(secret_of(cx, &record.id).as_deref(), Some("sk-or-test"));
+    let text = std::fs::read_to_string(settings.0.join("settings.json")).unwrap();
+    assert!(
+        !text.contains("sk-or-test"),
+        "the key is never written to settings.json"
+    );
+    let detail = label(
+        cx,
+        handle,
+        Box::leak(format!("account-detail-{}", record.id).into_boxed_str()),
+    );
+    // An OPENROUTER_API_KEY in the environment wins over the saved key, and the detail says so. Never the key.
+    let expected = if std::env::var_os("OPENROUTER_API_KEY").is_some() {
+        "API key · From the OPENROUTER_API_KEY environment variable"
+    } else {
+        "API key · Saved in Windows Credential Manager"
+    };
+    assert_eq!(detail.as_deref(), Some(expected));
+}
+
+#[gpui_kit::test]
+fn cancelling_the_account_dialog_saves_nothing(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("settings-cancel", "{}");
+    let handle = open_settings_page(cx, &settings, MemoryCredentialStore::default(), 1);
+    click(cx, handle, "add-OpenRouter");
+    type_text(cx, handle, "Draft");
+    press(cx, handle, "escape");
+    assert!(!exists(cx, handle, "account-save"), "the dialog closed");
+    assert!(saved_settings(&settings).accounts().is_empty());
+}
+
+#[gpui_kit::test]
+fn accounts_can_be_renamed_disabled_and_removed_after_confirming(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("settings-edit", "{}");
+    let handle = open_settings_page(cx, &settings, MemoryCredentialStore::default(), 1);
+    add_openrouter(cx, handle, "Work", "sk-or-test");
+    let id = saved_settings(&settings).accounts()[0].id.clone();
+
+    click(cx, handle, format!("edit-{id}"));
+    type_text(cx, handle, "Personal");
+    click(cx, handle, "account-save");
+    assert_eq!(saved_settings(&settings).accounts()[0].label, "Personal");
+    assert_eq!(
+        secret_of(cx, &id).as_deref(),
+        Some("sk-or-test"),
+        "a blank key keeps the saved one"
+    );
+
+    click(cx, handle, format!("enabled-{id}"));
+    assert!(!saved_settings(&settings).accounts()[0].enabled);
+
+    // Removing asks first: Escape keeps the account, Enter removes it and its key.
+    click(cx, handle, format!("remove-{id}"));
+    press(cx, handle, "escape");
+    assert_eq!(saved_settings(&settings).accounts().len(), 1);
+    click(cx, handle, format!("remove-{id}"));
+    press(cx, handle, "enter");
+    assert!(saved_settings(&settings).accounts().is_empty());
+    assert_eq!(secret_of(cx, &id), None);
+}
+
+#[gpui_kit::test]
+fn reset_accounts_asks_first_then_removes_accounts_and_keys(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("settings-reset", "{}");
+    let handle = open_settings_page(cx, &settings, MemoryCredentialStore::default(), 1);
+    add_openrouter(cx, handle, "Work", "sk-one");
+    add_openrouter(cx, handle, "Team", "sk-two");
+    let ids: Vec<String> = saved_settings(&settings)
+        .accounts()
+        .iter()
+        .map(|a| a.id.clone())
+        .collect();
+    assert_eq!(ids.len(), 2);
+    // Reset is the last group on the Accounts page; its sidebar entry scrolls it into view.
+    let show_reset = |cx: &mut TestAppContext| {
+        cx.update_window(handle, |_, window, cx| {
+            window.within("settings-sidebar").click("0-1-8", cx)
+        })
+        .unwrap();
+        cx.run_until_parked();
+    };
+    show_reset(cx);
+    click(cx, handle, "reset-accounts");
+    press(cx, handle, "escape");
+    assert_eq!(saved_settings(&settings).accounts().len(), 2, "cancelled");
+    show_reset(cx);
+    click(cx, handle, "reset-accounts");
+    press(cx, handle, "enter");
+    assert!(saved_settings(&settings).accounts().is_empty());
+    for id in ids {
+        assert_eq!(secret_of(cx, &id), None);
+    }
+}
+
+#[gpui_kit::test]
+fn secure_store_failures_are_shown_and_nothing_is_saved_without_its_key(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("settings-store-fail", "{}");
+    let handle = open_settings_page(cx, &settings, MemoryCredentialStore::failing(), 1);
+    add_openrouter(cx, handle, "Work", "sk-secret-value");
+    let error = label(cx, handle, "account-error").expect("the dialog says why");
+    assert_eq!(error, "Windows Credential Manager failed (error 5).");
+    assert!(!error.contains("sk-secret-value"));
+    assert!(exists(cx, handle, "account-save"), "the dialog stays open");
+    assert!(
+        saved_settings(&settings).accounts().is_empty(),
+        "no account without its key"
+    );
 }

@@ -126,6 +126,7 @@ fn open_name_dialog(existing: Option<Group>, window: &mut Window, cx: &mut App) 
     });
     let error: Rc<RefCell<Option<SharedString>>> = Rc::default();
     let renaming = existing.is_some();
+    let name_field = name.clone();
     window.open_dialog(cx, move |dialog, _, cx| {
         let shown_error = error.borrow().clone();
         let (name_for_ok, error_for_ok, existing) = (name.clone(), error.clone(), existing.clone());
@@ -166,6 +167,7 @@ fn open_name_dialog(existing: Option<Group>, window: &mut Window, cx: &mut App) 
                 }
             })
     });
+    crate::settings_view::focus_and_select(&name_field, window, cx);
 }
 
 fn confirm_delete(group: Group, window: &mut Window, cx: &mut App) {
