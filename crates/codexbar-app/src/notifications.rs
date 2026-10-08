@@ -31,6 +31,11 @@ pub trait Notifier: Send + Sync {
     fn has_failed(&self) -> bool {
         false
     }
+
+    /// Why Windows failed to raise the last notification that failed after `Show`, if one did since the last call.
+    fn take_failure_reason(&self) -> Option<String> {
+        None
+    }
 }
 
 /// The notifier in use and the last delivery problem.
@@ -125,7 +130,12 @@ pub fn process(cx: &mut App, refreshed: &[AccountSnapshot], now: DateTime<Utc>) 
     };
     let settings = PrefsHub::alert_settings(cx);
     // A notification Windows failed to raise after accepting it wasn't delivered: forget it, so it is sent again.
-    let failed = notifier.take_failed();
+    let failed: Vec<String> = notifier
+        .take_failed()
+        .into_iter()
+        .filter(|key| !key.is_empty())
+        .collect();
+    let reason = notifier.take_failure_reason();
     let mut active = Notifications::active(cx);
     for key in &failed {
         active.remove(key);
@@ -136,6 +146,9 @@ pub fn process(cx: &mut App, refreshed: &[AccountSnapshot], now: DateTime<Utc>) 
         && evaluation.covered.is_empty()
         && failed.is_empty()
     {
+        if let Some(reason) = reason {
+            cx.update_global(|global: &mut Notifications, _| global.problem = Some(reason.into()));
+        }
         // Nothing new; still retry an active-alert save that failed earlier.
         Notifications::set_active(cx, active);
         return;
@@ -163,6 +176,7 @@ pub fn process(cx: &mut App, refreshed: &[AccountSnapshot], now: DateTime<Utc>) 
             }
         }
     }
+    let problem = problem.or(reason);
     cx.update_global(|global: &mut Notifications, _| global.problem = problem.map(Into::into));
     // If this save fails (lock busy), the change stays pending and is retried on the next refresh; Settings shows
     // the save error meanwhile.
@@ -189,6 +203,8 @@ pub struct RecordingNotifier {
     pub blocked: Mutex<Option<String>>,
     /// Keys to report as failed after delivery, as Windows' `Failed` event would.
     pub failed: Mutex<Vec<String>>,
+    /// The reason to report with them.
+    pub reason: Mutex<Option<String>>,
 }
 
 impl Notifier for RecordingNotifier {
@@ -211,6 +227,10 @@ impl Notifier for RecordingNotifier {
     fn has_failed(&self) -> bool {
         !self.failed.lock().unwrap().is_empty()
     }
+
+    fn take_failure_reason(&self) -> Option<String> {
+        self.reason.lock().unwrap().take()
+    }
 }
 
 /// Windows toast notifications for the unpackaged app, under a per-user AppUserModelID registered in
@@ -220,6 +240,8 @@ pub struct WindowsNotifier {
     registration: Option<String>,
     /// Keys of notifications Windows reported as failed after `Show` (its `Failed` event).
     failed: Arc<Mutex<Vec<String>>>,
+    /// The error Windows gave for the last such failure.
+    reason: Arc<Mutex<Option<String>>>,
 }
 
 /// The AppUserModelID notifications are sent under.
@@ -236,6 +258,7 @@ impl WindowsNotifier {
                 )
             }),
             failed: Arc::default(),
+            reason: Arc::default(),
         }
     }
 }
@@ -275,14 +298,24 @@ impl Notifier for WindowsNotifier {
             let toast = ToastNotification::CreateToastNotification(&document)?;
             // `Show` can succeed and the toast still fail to appear; Windows reports that through `Failed`.
             let failed = self.failed.clone();
+            let reason = self.reason.clone();
             let keys: Vec<String> = alert.keys().cloned().collect();
-            toast.Failed(&windows::Foundation::TypedEventHandler::new(move |_, _| {
-                failed
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .extend(keys.iter().cloned());
-                Ok(())
-            }))?;
+            toast.Failed(&windows::Foundation::TypedEventHandler::new(
+                move |_, args: windows::core::Ref<windows::UI::Notifications::ToastFailedEventArgs>| {
+                    let code = args.as_ref().and_then(|args| args.ErrorCode().ok());
+                    let message = code.map_or_else(
+                        || "Windows didn't say why".to_owned(),
+                        |code| windows::core::Error::from_hresult(code).message(),
+                    );
+                    *reason.lock().unwrap_or_else(|poisoned| poisoned.into_inner()) =
+                        Some(format!("Windows couldn't show a notification: {message}"));
+                    failed
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner())
+                        .extend(keys.iter().cloned());
+                    Ok(())
+                },
+            ))?;
             ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from(APP_ID))?.Show(&toast)
         })();
         result.map_err(|err| format!("Notification not shown: {}", err.message()))
@@ -298,6 +331,13 @@ impl Notifier for WindowsNotifier {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .is_empty()
+    }
+
+    fn take_failure_reason(&self) -> Option<String> {
+        self.reason
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
     }
 }
 

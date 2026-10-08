@@ -746,3 +746,27 @@ fn alerts_of_an_account_that_disappears_stay_until_reset(cx: &mut TestAppContext
             .is_empty()
     );
 }
+
+#[gpui_kit::test]
+fn a_test_notification_windows_failed_to_raise_shows_why(cx: &mut TestAppContext) {
+    let notifier = Arc::new(RecordingNotifier::default());
+    let recorder = notifier.clone();
+    let problem = cx.update(|cx| {
+        crate::notifications::Notifications::init(cx, recorder, false);
+        crate::notifications::Notifications::send_test(cx);
+        // Windows accepted the sample, then raised `Failed` for it (it has no alert key).
+        notifier.failed.lock().unwrap().push(String::new());
+        *notifier.reason.lock().unwrap() = Some("Windows couldn't show a notification: access denied".into());
+        crate::notifications::retry_failed(cx, &[], chrono::Utc::now());
+        crate::notifications::Notifications::problem(cx)
+    });
+    assert_eq!(
+        problem.as_deref(),
+        Some("Windows couldn't show a notification: access denied")
+    );
+    assert!(
+        cx.update(|cx| crate::notifications::Notifications::active(cx))
+            .is_empty(),
+        "no empty key is kept"
+    );
+}
