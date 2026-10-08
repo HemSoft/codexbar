@@ -74,6 +74,19 @@ const LIMIT_SOON_FRACTION: f64 = 0.95;
 const BALANCE_AT_RISK_DAYS: f64 = 2.0;
 const BALANCE_WATCH_DAYS: f64 = 5.0;
 
+/// The severity from observed usage alone, without the pace projection (#88): what `assess` would say if usage
+/// stopped now. When `assess` is higher, the projection raised it. Balances are judged by days of credit either way.
+pub fn observed_severity(metric: &Metric) -> Severity {
+    if metric.days_of_credit().is_some() {
+        return assess(metric, DateTime::<Utc>::MIN_UTC).severity();
+    }
+    match metric.used_fraction() {
+        Some(used) if used >= LIMIT_SOON_FRACTION => Severity::LimitSoon,
+        Some(used) if used >= WATCH_FRACTION => Severity::Watch,
+        _ => Severity::Normal,
+    }
+}
+
 /// Assesses one metric at `now`.
 pub fn assess(metric: &Metric, now: DateTime<Utc>) -> Assessment {
     if let Some(days) = metric.days_of_credit() {
@@ -174,6 +187,19 @@ mod tests {
             steady.used_fraction(),
             fast.used_fraction(),
             "observed usage is unchanged"
+        );
+    }
+
+    #[test]
+    fn observed_severity_ignores_the_projection() {
+        let fast = window(0.5, Duration::days(5), Some(Pace::per_day(0.2)));
+        assert_eq!(assess(&fast, now()).severity(), Severity::AtRisk);
+        assert_eq!(observed_severity(&fast), Severity::Normal);
+        let full = window(0.96, Duration::days(5), None);
+        assert_eq!(observed_severity(&full), Severity::LimitSoon);
+        assert_eq!(
+            observed_severity(&window(0.85, Duration::days(5), None)),
+            Severity::Watch
         );
     }
 

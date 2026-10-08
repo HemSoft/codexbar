@@ -937,7 +937,21 @@ impl Dashboard {
             .map(|account| focus_cards(account, self.now, cx))
             .unwrap_or_default();
         let heading = focused.map(|account| {
+            // Alerts that hold now (#88), from the current settings and the delivered set, so they stay visible
+            // after their notification was sent or deduplicated.
+            let details = codexbar_core::alerts::account_alerts(
+                &crate::prefs_hub::PrefsHub::alert_settings(cx),
+                &crate::notifications::Notifications::active(cx),
+                account,
+                self.now,
+            );
+            // A held alert (say a 50% usage alert) is at least worth watching, so the status agrees with the block.
             let severity = account.assess(self.now).severity();
+            let severity = if details.is_empty() {
+                severity
+            } else {
+                severity.max(codexbar_core::Severity::Watch)
+            };
             v_flex()
                 .gap_1()
                 .child(
@@ -946,8 +960,10 @@ impl Dashboard {
                         .items_center()
                         .child(div().text_xl().font_semibold().child(account.display_name()))
                         .child(div().size_2().rounded_full().bg(severity_dot_color(severity, cx)))
-                        .children(severity_tag(severity)),
+                        .children(severity_tag(severity))
+                        .children(crate::alert_details::projected_tag(account, self.now)),
                 )
+                .children(crate::alert_details::alert_details(&details, self.now, cx))
                 // What the provider said besides numbers (#75), kept with last-good usage.
                 .children(account.messages().iter().enumerate().map(|(ix, message)| {
                     div()
