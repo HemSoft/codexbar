@@ -122,6 +122,68 @@ fn area_fill(color: Hsla) -> Background {
     )
 }
 
+/// Every metric the account reports, compactly (#82): the cards chart two of them, and a provider like Claude can
+/// return more (model-scoped weekly limits, usage credits, a credit balance). Each says its value, reset and projection.
+pub fn metric_list(account: &AccountSnapshot, now: DateTime<Utc>, cx: &App) -> Option<AnyElement> {
+    use gpui_kit::{InteractiveElement as _, Role, StatefulInteractiveElement as _, TestSupportExt as _};
+    if account.metrics().len() < 2 {
+        return None;
+    }
+    let muted = cx.theme().muted_foreground;
+    let entries = account.metrics().iter().enumerate().map(|(ix, metric)| {
+        let mut detail = Vec::new();
+        if let Some(at) = metric.resets_at().filter(|at| *at > now) {
+            detail.push(format!("resets in {}", format::countdown(at - now)));
+        }
+        if let Some(projected) = metric.projected_at_reset(now) {
+            detail.push(format!("on pace for {:.0}%", projected * 100.0));
+        }
+        // What is left under a spend limit, derived from spend and limit; never presented as a balance.
+        if let Some(headroom) = metric.headroom() {
+            detail.push(format!("{} left to the limit", headroom.display()));
+        }
+        let detail = detail.join(" · ");
+        let spoken = if detail.is_empty() {
+            format!("{}: {}", metric.label(), metric.used_display())
+        } else {
+            format!("{}: {}, {detail}", metric.label(), metric.used_display())
+        };
+        let severity = codexbar_core::assess(metric, now).severity();
+        v_flex()
+            .id(("account-metric", ix))
+            .role(Role::Note)
+            .test_support()
+            .aria_label(spoken)
+            .min_w(gpui_kit::rems(9.))
+            .px_2()
+            .py_1()
+            .rounded(cx.theme().radius)
+            .border_1()
+            .border_color(cx.theme().border)
+            .child(div().text_xs().text_color(muted).child(metric.label().to_owned()))
+            .child(
+                h_flex()
+                    .gap_1p5()
+                    .items_center()
+                    .when(severity >= Severity::Watch, |this| {
+                        this.child(div().size_2().rounded_full().bg(severity_color(severity, cx)))
+                    })
+                    .child(div().text_sm().font_semibold().child(metric.used_display())),
+            )
+            .when(!detail.is_empty(), |this| {
+                this.child(div().text_xs().text_color(muted).child(detail))
+            })
+    });
+    Some(
+        h_flex()
+            .id("account-metrics")
+            .flex_wrap()
+            .gap_2()
+            .children(entries)
+            .into_any_element(),
+    )
+}
+
 /// The three cards for `account`, left to right.
 pub fn focus_cards(account: &AccountSnapshot, now: DateTime<Utc>, cx: &App) -> Vec<AnyElement> {
     vec![

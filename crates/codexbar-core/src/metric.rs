@@ -1,6 +1,6 @@
 use chrono::{DateTime, Duration, Utc};
 
-/// The currency a provider bills in (#75). Every current provider bills in US dollars.
+/// The currency a provider bills in (#75). Claude bills extra usage in the account's local currency (#82).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Currency {
     #[default]
@@ -9,10 +9,44 @@ pub enum Currency {
     Gbp,
     Cny,
     Jpy,
+    Cad,
+    Aud,
+    Nzd,
+    Sgd,
+    Hkd,
+    Chf,
+    Inr,
+    Brl,
+    Mxn,
+    Krw,
+    Sek,
+    Nok,
+    Dkk,
+    Pln,
 }
 
 impl Currency {
-    pub const ALL: [Self; 5] = [Self::Usd, Self::Eur, Self::Gbp, Self::Cny, Self::Jpy];
+    pub const ALL: [Self; 19] = [
+        Self::Usd,
+        Self::Eur,
+        Self::Gbp,
+        Self::Cny,
+        Self::Jpy,
+        Self::Cad,
+        Self::Aud,
+        Self::Nzd,
+        Self::Sgd,
+        Self::Hkd,
+        Self::Chf,
+        Self::Inr,
+        Self::Brl,
+        Self::Mxn,
+        Self::Krw,
+        Self::Sek,
+        Self::Nok,
+        Self::Dkk,
+        Self::Pln,
+    ];
 
     /// The ISO 4217 code ("USD").
     pub fn code(self) -> &'static str {
@@ -22,6 +56,20 @@ impl Currency {
             Self::Gbp => "GBP",
             Self::Cny => "CNY",
             Self::Jpy => "JPY",
+            Self::Cad => "CAD",
+            Self::Aud => "AUD",
+            Self::Nzd => "NZD",
+            Self::Sgd => "SGD",
+            Self::Hkd => "HKD",
+            Self::Chf => "CHF",
+            Self::Inr => "INR",
+            Self::Brl => "BRL",
+            Self::Mxn => "MXN",
+            Self::Krw => "KRW",
+            Self::Sek => "SEK",
+            Self::Nok => "NOK",
+            Self::Dkk => "DKK",
+            Self::Pln => "PLN",
         }
     }
 
@@ -31,6 +79,7 @@ impl Currency {
             .find(|currency| currency.code().eq_ignore_ascii_case(code))
     }
 
+    /// What precedes an amount: a symbol, or the code and a space where symbols are ambiguous.
     pub fn symbol(self) -> &'static str {
         match self {
             Self::Usd => "$",
@@ -38,13 +87,27 @@ impl Currency {
             Self::Gbp => "£",
             Self::Cny => "CN¥",
             Self::Jpy => "¥",
+            Self::Cad => "CA$",
+            Self::Aud => "A$",
+            Self::Nzd => "NZ$",
+            Self::Sgd => "S$",
+            Self::Hkd => "HK$",
+            Self::Chf => "CHF ",
+            Self::Inr => "₹",
+            Self::Brl => "R$",
+            Self::Mxn => "MX$",
+            Self::Krw => "₩",
+            Self::Sek => "SEK ",
+            Self::Nok => "NOK ",
+            Self::Dkk => "DKK ",
+            Self::Pln => "PLN ",
         }
     }
 
-    /// Digits after the decimal point in its minor unit (yen has none).
+    /// Digits after the decimal point in its minor unit (yen and won have none).
     pub fn minor_digits(self) -> u32 {
         match self {
-            Self::Jpy => 0,
+            Self::Jpy | Self::Krw => 0,
             _ => 2,
         }
     }
