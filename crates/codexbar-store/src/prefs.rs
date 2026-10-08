@@ -128,6 +128,34 @@ impl DashboardPrefs {
         self.pending.insert(account.to_owned(), show);
     }
 
+    /// Forgets a removed account (#85): its hidden-history choice, its held alerts, and its group and place in the
+    /// order. Returns true when something changed.
+    pub fn forget_account(&mut self, account: &str) -> bool {
+        let mut changed = false;
+        if self.hidden_history.contains(account) {
+            self.set_shows_history(account, true);
+            changed = true;
+        }
+        let kept: BTreeSet<String> = self
+            .active_alerts
+            .iter()
+            .filter(|key| {
+                let mut parts = key.rsplitn(3, '|');
+                let (_, _, owner) = (parts.next(), parts.next(), parts.next());
+                owner != Some(account)
+            })
+            .cloned()
+            .collect();
+        if kept != self.active_alerts {
+            self.set_active_alerts(kept);
+            changed = true;
+        }
+        if self.update_layout(|layout| layout.forget_account(account)) {
+            changed = true;
+        }
+        changed
+    }
+
     /// Carries a preference from an account's old id to its new one. Returns true when something changed.
     pub fn rename_account(&mut self, from: &str, to: &str) -> bool {
         let mut changed = false;
@@ -597,6 +625,28 @@ mod tests {
         prefs.save(&dir.0).unwrap();
         assert_eq!(dir.read()["groupMembers"], json!({ "claude": "g1" }));
         assert_eq!(dir.read()["manualOrder"], json!(["codex", "claude"]));
+    }
+
+    #[test]
+    fn forgetting_an_account_drops_its_preferences_alerts_and_layout() {
+        let dir = Dir::new("forget");
+        let mut prefs = DashboardPrefs::load(&dir.0);
+        prefs.set_shows_history("gone", false);
+        prefs.set_active_alerts(["gone|weekly@1|usage".to_owned(), "kept|weekly@1|usage".to_owned()].into());
+        prefs.update_layout(|layout| {
+            let work = layout.create_group("Work").unwrap();
+            layout.assign("gone", Some(&work)).unwrap();
+        });
+        assert!(prefs.forget_account("gone"));
+        prefs.save(&dir.0).unwrap();
+        let loaded = DashboardPrefs::load(&dir.0);
+        assert!(loaded.shows_history("gone"));
+        assert_eq!(
+            loaded.active_alerts(),
+            &BTreeSet::from(["kept|weekly@1|usage".to_owned()])
+        );
+        assert_eq!(loaded.layout().group_of("gone"), None);
+        assert!(!prefs.forget_account("gone"));
     }
 
     #[test]

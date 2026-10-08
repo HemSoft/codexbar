@@ -173,6 +173,12 @@ pub struct Dashboard {
     layout: codexbar_core::layout::Layout,
     /// The alert settings and held alerts the Smart order was ranked with; a change re-ranks it.
     ranked_with: (codexbar_core::alerts::AlertSettings, std::collections::BTreeSet<String>),
+    /// The dashboard account each configured record owns, by record id (#85); a record that disappears takes its
+    /// account's history, snapshot and preferences with it.
+    owned_ids: HashMap<String, String>,
+    /// Removed accounts, with whether their history is deleted on disk yet. A refresh that started before the removal
+    /// can still write them back, and a failed rewrite needs another try, so each refresh checks them again.
+    forgotten: HashMap<String, bool>,
     _clock: Task<()>,
     _subscriptions: Vec<Subscription>,
 }
@@ -269,6 +275,7 @@ impl Dashboard {
         let layout_changes = cx.observe_global::<crate::prefs_hub::PrefsHub>(|this, cx| this.rearrange_if_changed(cx));
         let alert_changes =
             cx.observe_global::<crate::notifications::Notifications>(|this, cx| this.rearrange_if_changed(cx));
+        let settings_changes = cx.observe_global::<SettingsHub>(|this, cx| this.forget_removed_accounts(cx));
         let mut dashboard = Self {
             source,
             history,
@@ -294,8 +301,10 @@ impl Dashboard {
             view_tab_focus: DashboardView::ALL.iter().map(|_| cx.focus_handle()).collect(),
             layout: crate::prefs_hub::PrefsHub::layout(cx),
             ranked_with: Default::default(),
+            owned_ids: crate::providers::owned_account_ids(SettingsHub::global(cx)),
+            forgotten: HashMap::new(),
             _clock: clock,
-            _subscriptions: vec![selection, activation, layout_changes, alert_changes],
+            _subscriptions: vec![selection, activation, layout_changes, alert_changes, settings_changes],
         };
         if matches!(dashboard.source, DataSource::Live { .. }) {
             dashboard.restore_snapshots(cx);
@@ -308,6 +317,12 @@ impl Dashboard {
     pub fn should_hide_on_toggle(&self, window: &Window) -> bool {
         crate::tray::is_shown(window)
             && (window.is_window_active() || self.deactivated_at.is_some_and(|at| at.elapsed() < TOGGLE_GRACE))
+    }
+
+    /// The history store, for the headless UI tests.
+    #[cfg(test)]
+    pub fn history(&self) -> Arc<Mutex<HistoryStore>> {
+        self.history.clone()
     }
 
     /// A shown account, for the headless UI tests.
@@ -641,6 +656,20 @@ impl Dashboard {
             // refresh off.
             self.refresh_queued = true;
         }
+        // A fetch that started before an account was removed still returns it, and recorded its history: take it out
+        // again (#85).
+        if !self.forgotten.is_empty() {
+            let returned: Vec<String> = accounts
+                .iter()
+                .map(|account| account.id().as_str().to_owned())
+                .filter(|id| self.forgotten.contains_key(id))
+                .collect();
+            for id in &returned {
+                self.forgotten.insert(id.clone(), false);
+            }
+            accounts.retain(|account| !self.forgotten.contains_key(account.id().as_str()));
+            self.delete_forgotten_history(cx);
+        }
         self.set_accounts(accounts, cx);
         self.save_snapshots(cx);
         if std::mem::take(&mut self.refresh_queued) {
@@ -746,6 +775,85 @@ impl Dashboard {
                 (id.to_owned(), urgency)
             })
             .collect()
+    }
+
+    /// When accounts are removed in Settings (one at a time or by Reset), deletes what was kept for them: stored history,
+    /// the last-good snapshot, preferences, held alerts and their place in groups (#85). Accounts that keep showing
+    /// through a provider's own sign-in own no id here, so their history stays. Nothing is deleted while the settings
+    /// are read-only, or in the demo.
+    fn forget_removed_accounts(&mut self, cx: &mut Context<Self>) {
+        if !matches!(self.source, DataSource::Live { .. }) {
+            return;
+        }
+        let hub = SettingsHub::global(cx);
+        if hub.is_read_only() {
+            return;
+        }
+        let owned = crate::providers::owned_account_ids(hub);
+        // A Copilot account still shows through discovery when Copilot isn't limited to usernames.
+        let discovers_all = crate::providers::copilot_discovers_all(hub);
+        let removed: Vec<String> = self
+            .owned_ids
+            .values()
+            .filter(|id| !owned.values().any(|still| still == *id))
+            .filter(|id| !(discovers_all && id.starts_with("copilot-")))
+            .cloned()
+            .collect();
+        // An account configured again is no longer forgotten.
+        self.forgotten.retain(|id, _| !owned.values().any(|still| still == id));
+        self.owned_ids = owned;
+        if removed.is_empty() {
+            return;
+        }
+        self.forgotten.extend(removed.iter().map(|id| (id.clone(), false)));
+        self.delete_forgotten_history(cx);
+        crate::prefs_hub::PrefsHub::forget_accounts(cx, &removed);
+        for id in &removed {
+            self.states.remove(id);
+            self.placeholders.remove(id);
+        }
+        // Its failure row would otherwise stay, with a Retry that finds no adapter.
+        self.failures.retain(|failure| {
+            failure
+                .account
+                .as_ref()
+                .is_none_or(|account| !removed.contains(account))
+        });
+        let accounts: Vec<AccountSnapshot> = self
+            .accounts
+            .iter()
+            .filter(|account| !removed.iter().any(|id| id == account.id().as_str()))
+            .cloned()
+            .collect();
+        self.set_accounts(accounts, cx);
+        self.save_snapshots(cx);
+    }
+
+    /// Deletes removed accounts' history that isn't deleted on disk yet (a failed rewrite) or that a refresh started
+    /// before the removal wrote back. A failure is shown in Settings and retried on the next refresh.
+    fn delete_forgotten_history(&mut self, cx: &mut Context<Self>) {
+        let DataSource::Live { history, .. } = &self.source else {
+            return;
+        };
+        let mut failed = None;
+        {
+            let mut store = history.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            for (id, deleted) in self.forgotten.iter_mut().filter(|(_, deleted)| !**deleted) {
+                match store.remove_account(id) {
+                    Ok(()) => *deleted = true,
+                    Err(err) => failed = Some(err),
+                }
+            }
+        }
+        if let Some(err) = failed {
+            SettingsHub::set_error(
+                cx,
+                Some(
+                    format!("A removed account's usage history couldn't be deleted yet: {err}. CodexBar tries again.")
+                        .into(),
+                ),
+            );
+        }
     }
 
     /// Smart order ranks by time-dependent signals (projections, resets), so it is rechecked each minute; the table is

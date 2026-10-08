@@ -284,6 +284,14 @@ impl Layout {
     }
 
     /// Carries an account's group and place from an old id to a new one. Returns true when something changed.
+    /// Drops a removed account's group membership and place in the order (#85). Returns true when something changed.
+    pub fn forget_account(&mut self, account: &str) -> bool {
+        let member = self.members.remove(account).is_some();
+        let before = self.order.len();
+        self.order.retain(|id| id != account);
+        member || self.order.len() != before
+    }
+
     pub fn rename_account(&mut self, from: &str, to: &str) -> bool {
         if from == to {
             return false;
@@ -693,6 +701,19 @@ mod tests {
                 "failed"
             ]),
         );
+    }
+
+    #[test]
+    fn a_forgotten_account_leaves_its_group_and_the_order() {
+        let mut layout = Layout::default();
+        let work = layout.create_group("Work").unwrap();
+        layout.assign("gone", Some(&work)).unwrap();
+        layout.assign("kept", Some(&work)).unwrap();
+        assert!(layout.move_account("gone", 1, &ids(&["gone", "kept"])));
+        assert!(layout.forget_account("gone"));
+        assert_eq!(layout.group_of("gone"), None);
+        assert_eq!(layout.order(), ids(&["kept"]).as_slice());
+        assert!(!layout.forget_account("gone"), "nothing left to forget");
     }
 
     #[test]

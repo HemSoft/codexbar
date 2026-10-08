@@ -229,12 +229,19 @@ impl HistoryStore {
     }
 
     /// Deletes every sample of an account.
+    /// Deletes every sample of `account`. If the file can't be rewritten, the samples are kept in memory too, so a
+    /// retry rewrites the file rather than finding nothing left to delete.
     pub fn remove_account(&mut self, account: &str) -> io::Result<()> {
-        let before = self.samples.len();
+        if !self.samples.iter().any(|sample| sample.a == account) {
+            return Ok(());
+        }
+        let kept = self.samples.clone();
         self.samples.retain(|sample| sample.a != account);
-        if self.samples.len() != before {
+        self.reindex();
+        if let Err(err) = self.rewrite() {
+            self.samples = kept;
             self.reindex();
-            self.rewrite()?;
+            return Err(err);
         }
         Ok(())
     }
@@ -472,6 +479,22 @@ mod tests {
         fs::write(dir.file(), "{\"codexbar_history\":99}\n").unwrap();
         assert!(HistoryStore::open(dir.file(), retention(), now()).is_empty());
         assert!(!dir.file().exists());
+    }
+
+    #[test]
+    fn a_failed_removal_keeps_the_samples_for_a_retry() {
+        let dir = TempDir::new();
+        // The history file's folder is a file, so the rewrite fails.
+        let blocker = dir.file().with_extension("blocker");
+        std::fs::write(&blocker, "not a folder").unwrap();
+        let mut store = HistoryStore::open(blocker.join("history.jsonl"), retention(), now());
+        store.insert_points("a", "5-hour-window", &[Point::new(now(), 0.4)]);
+        assert!(store.remove_account("a").is_err());
+        assert_eq!(
+            store.series("a", "5-hour-window").count(),
+            1,
+            "still there to delete on the retry"
+        );
     }
 
     #[test]
