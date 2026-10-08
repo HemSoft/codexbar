@@ -710,3 +710,36 @@ fn alerts_of_accounts_no_longer_shown_recover(cx: &mut TestAppContext) {
     assert!(!active_on_disk(&settings).contains(&gone));
     assert!(!active_on_disk(&settings).is_empty(), "shown accounts keep theirs");
 }
+
+#[gpui_kit::test]
+fn a_notification_windows_failed_to_raise_is_sent_again(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("alerts-failed", "{}");
+    std::fs::write(settings.0.join("dashboard.json"), ALERTS_ON).unwrap();
+    let (dashboard, notifier) = open_with_alerts(cx, &settings);
+    let first = notifier.shown.lock().unwrap().len();
+    let lost = notifier.shown.lock().unwrap()[0].clone();
+
+    // Windows accepted the first toast but later raised `Failed` for it.
+    notifier.failed.lock().unwrap().extend(lost.keys().cloned());
+    refresh(cx, &dashboard);
+    let shown = notifier.shown.lock().unwrap();
+    assert_eq!(shown.len(), first + 1, "only the failed one is sent again");
+    assert_eq!(shown.last().unwrap().title, lost.title);
+}
+
+#[gpui_kit::test]
+fn alert_keys_for_account_ids_containing_the_separator_stay_active(cx: &mut TestAppContext) {
+    use codexbar_core::alerts::{AlertKind, alert_key};
+    let key = alert_key("team|west", "weekly", AlertKind::Usage);
+    let kept = cx.update(|cx| {
+        crate::notifications::Notifications::init(cx, Arc::new(RecordingNotifier::default()), false);
+        crate::notifications::Notifications::seed_for_test(cx, [key.clone()].into());
+        // Nothing refreshed, and `team|west` is still shown: its alert must stay active.
+        crate::notifications::process(cx, &[], &["team|west".to_owned()], chrono::Utc::now());
+        crate::notifications::Notifications::active(cx)
+    });
+    assert!(
+        kept.contains(&key),
+        "the whole id `team|west` is matched, not just `team`"
+    );
+}

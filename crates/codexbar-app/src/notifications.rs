@@ -22,6 +22,10 @@ pub enum NotifierStatus {
 pub trait Notifier: Send + Sync {
     fn status(&self) -> NotifierStatus;
     fn show(&self, alert: &Alert) -> Result<(), String>;
+    /// Alert keys whose notification Windows accepted but then failed to raise, since the last call.
+    fn take_failed(&self) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 /// The notifier in use and the last delivery problem.
@@ -43,6 +47,12 @@ impl Notifications {
             problem: None,
             memory: (!persist).then(BTreeSet::new),
         });
+    }
+
+    /// Replaces the in-memory active set, for the headless UI tests.
+    #[cfg(test)]
+    pub fn seed_for_test(cx: &mut App, active: BTreeSet<String>) {
+        Self::set_active(cx, active);
     }
 
     /// The alerts already notified and not yet recovered.
@@ -110,26 +120,39 @@ pub fn process(cx: &mut App, refreshed: &[AccountSnapshot], shown: &[String], no
         return;
     };
     let settings = PrefsHub::alert_settings(cx);
-    let active = Notifications::active(cx);
+    // A notification Windows failed to raise after accepting it wasn't delivered: forget it, so it is sent again.
+    let failed = notifier.take_failed();
+    let mut active = Notifications::active(cx);
+    for key in &failed {
+        active.remove(key);
+    }
     let mut evaluation = evaluate(&settings, &active, refreshed, now);
     evaluation.recovered.extend(
         active
             .iter()
             .filter(|key| {
-                let account = key.split('|').next().unwrap_or_default();
+                // Keys are `account|metric|kind`; the account id itself may contain `|`, so split from the right.
+                let account = key.rsplitn(3, '|').nth(2).unwrap_or_default();
                 !shown.iter().any(|id| id == account)
             })
             .filter(|key| !evaluation.recovered.contains(key))
             .cloned()
             .collect::<Vec<_>>(),
     );
-    if evaluation.notify.is_empty() && evaluation.recovered.is_empty() && evaluation.covered.is_empty() {
+    if evaluation.notify.is_empty()
+        && evaluation.recovered.is_empty()
+        && evaluation.covered.is_empty()
+        && failed.is_empty()
+    {
         // Nothing new; still retry an active-alert save that failed earlier.
         Notifications::set_active(cx, active);
         return;
     }
 
     let mut next = active;
+    for key in &failed {
+        next.remove(key);
+    }
     for key in &evaluation.recovered {
         next.remove(key);
     }
@@ -159,6 +182,8 @@ pub fn process(cx: &mut App, refreshed: &[AccountSnapshot], shown: &[String], no
 pub struct RecordingNotifier {
     pub shown: Mutex<Vec<Alert>>,
     pub blocked: Mutex<Option<String>>,
+    /// Keys to report as failed after delivery, as Windows' `Failed` event would.
+    pub failed: Mutex<Vec<String>>,
 }
 
 impl Notifier for RecordingNotifier {
@@ -173,6 +198,10 @@ impl Notifier for RecordingNotifier {
         self.shown.lock().unwrap().push(alert.clone());
         Ok(())
     }
+
+    fn take_failed(&self) -> Vec<String> {
+        std::mem::take(&mut *self.failed.lock().unwrap())
+    }
 }
 
 /// Windows toast notifications for the unpackaged app, under a per-user AppUserModelID registered in
@@ -180,6 +209,8 @@ impl Notifier for RecordingNotifier {
 pub struct WindowsNotifier {
     /// Why the app id couldn't be registered; without it Windows may drop notifications silently.
     registration: Option<String>,
+    /// Keys of notifications Windows reported as failed after `Show` (its `Failed` event).
+    failed: Arc<Mutex<Vec<String>>>,
 }
 
 /// The AppUserModelID notifications are sent under.
@@ -195,6 +226,7 @@ impl WindowsNotifier {
                     err.message()
                 )
             }),
+            failed: Arc::default(),
         }
     }
 }
@@ -232,6 +264,16 @@ impl Notifier for WindowsNotifier {
             let document = XmlDocument::new()?;
             document.LoadXml(&HSTRING::from(xml))?;
             let toast = ToastNotification::CreateToastNotification(&document)?;
+            // `Show` can succeed and the toast still fail to appear; Windows reports that through `Failed`.
+            let failed = self.failed.clone();
+            let keys: Vec<String> = alert.keys().cloned().collect();
+            toast.Failed(&windows::Foundation::TypedEventHandler::new(move |_, _| {
+                failed
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .extend(keys.iter().cloned());
+                Ok(())
+            }))?;
             ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from(APP_ID))?.Show(&toast)
         })();
         result.map_err(|err| format!("Notification not shown: {}", err.message()))
