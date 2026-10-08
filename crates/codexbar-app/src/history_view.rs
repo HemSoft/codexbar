@@ -1,13 +1,11 @@
 //! The History view (#86): one account's stored history for a chosen metric and range, with a summary, a chart that
 //! can be read with the keyboard, and a per-account switch that hides history without deleting it.
 
-use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use chrono::{Duration, Local, Utc};
 use codexbar_core::{AccountId, AccountSnapshot, Metric};
 use codexbar_store::HistoryStore;
-use codexbar_store::prefs::DashboardPrefs;
 use codexbar_store::summary::{ChartPoint, GAP_THRESHOLD, HistorySummary, chart_series, summarize};
 use gpui_kit::TestSupportExt as _;
 use gpui_kit::component::button::{Button, ButtonGroup, ButtonVariants as _};
@@ -17,11 +15,12 @@ use gpui_kit::component::{
     ActiveTheme as _, Icon, IconName, Selectable as _, Sizable as _, StyledExt as _, h_flex, v_flex,
 };
 use gpui_kit::{
-    App, BorrowAppContext as _, Context, FocusHandle, Global, InteractiveElement as _, IntoElement, KeyDownEvent,
-    ParentElement as _, Render, Role, SharedString, StatefulInteractiveElement as _, Styled as _, Window, div,
-    linear_color_stop, linear_gradient, prelude::FluentBuilder as _, rems,
+    App, Context, FocusHandle, InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, Render, Role,
+    SharedString, StatefulInteractiveElement as _, Styled as _, Window, div, linear_color_stop, linear_gradient,
+    prelude::FluentBuilder as _, rems,
 };
 
+use crate::prefs_hub::PrefsHub;
 use crate::status::severity_dot_color;
 
 /// The most points a history chart draws; longer ranges are reduced, keeping spikes.
@@ -137,66 +136,6 @@ pub fn describe(summary: &HistorySummary, kind: ValueKind) -> String {
         text.push_str(&format!(" No new data for {}.", span_label(stale)));
     }
     text
-}
-
-/// Which accounts show history, saved in `dashboard.json` next to the settings file.
-pub struct HistoryPrefs {
-    prefs: DashboardPrefs,
-    dir: PathBuf,
-    error: Option<SharedString>,
-}
-
-impl Global for HistoryPrefs {}
-
-impl HistoryPrefs {
-    pub fn init(cx: &mut App, dir: &Path) {
-        cx.set_global(Self {
-            prefs: DashboardPrefs::load(dir),
-            dir: dir.to_owned(),
-            error: None,
-        });
-    }
-
-    pub fn shows(cx: &App, account: &str) -> bool {
-        cx.try_global::<Self>()
-            .is_none_or(|prefs| prefs.prefs.shows_history(account))
-    }
-
-    /// Shows or hides an account's history and saves at once. Hiding never deletes stored samples.
-    pub fn set(cx: &mut App, account: &str, show: bool) {
-        cx.update_global(|hub: &mut Self, _| {
-            // Applies now; a failed save keeps the change pending for the next save and says so.
-            hub.prefs.set_shows_history(account, show);
-            hub.error = hub
-                .prefs
-                .save(&hub.dir)
-                .err()
-                .map(|err| format!("History setting not saved: {err}").into());
-        });
-        cx.refresh_windows();
-    }
-
-    /// Moves preferences saved under old account ids to the new ones, saving once if anything moved.
-    pub fn rename_accounts(cx: &mut App, renames: &[(&str, String)]) {
-        cx.update_global(|hub: &mut Self, _| {
-            let mut changed = false;
-            for (from, to) in renames {
-                changed |= hub.prefs.rename_account(from, to);
-            }
-            if !changed {
-                return;
-            }
-            hub.error = hub
-                .prefs
-                .save(&hub.dir)
-                .err()
-                .map(|err| format!("History setting not saved: {err}").into());
-        });
-    }
-
-    fn error(cx: &App) -> Option<SharedString> {
-        cx.try_global::<Self>().and_then(|prefs| prefs.error.clone())
-    }
 }
 
 /// The selected account and metric, with their history over the selected range.
@@ -389,7 +328,7 @@ impl HistoryView {
             .children(self.accounts.iter().enumerate().map(|(ix, account)| {
                 let id = account.id().clone();
                 let selected = self.account.as_ref() == Some(account.id());
-                let shown = HistoryPrefs::shows(cx, account.id().as_str());
+                let shown = PrefsHub::shows(cx, account.id().as_str());
                 let severity = account.assess(Utc::now()).severity();
                 Button::new(("history-account", ix))
                     .ghost()
@@ -422,7 +361,7 @@ impl HistoryView {
 
     fn render_detail(&self, selection: Selection<'_>, cx: &mut Context<Self>) -> impl IntoElement {
         let account_id = selection.account.id().as_str().to_owned();
-        let shown = HistoryPrefs::shows(cx, &account_id);
+        let shown = PrefsHub::shows(cx, &account_id);
         let metrics: Vec<&Metric> = charted_metrics(selection.account).collect();
         let metric_ix = metrics
             .iter()
@@ -446,7 +385,7 @@ impl HistoryView {
                     .checked(shown)
                     .on_click({
                         let account_id = account_id.clone();
-                        move |show, _, cx| HistoryPrefs::set(cx, &account_id, *show)
+                        move |show, _, cx| PrefsHub::set(cx, &account_id, *show)
                     }),
             );
 
@@ -521,7 +460,7 @@ impl HistoryView {
             .gap_4()
             .child(header)
             .child(controls)
-            .children(HistoryPrefs::error(cx).map(|error| {
+            .children(crate::prefs_hub::PrefsHub::error(cx).map(|error| {
                 h_flex()
                     .gap_2()
                     .items_center()

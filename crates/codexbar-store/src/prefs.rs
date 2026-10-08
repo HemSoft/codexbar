@@ -1,4 +1,5 @@
-//! Dashboard preferences that only the Rust app uses, such as which accounts show history (#86).
+//! Dashboard preferences that only the Rust app uses: which accounts show history (#86), alert settings and the
+//! alerts currently active (#87).
 //!
 //! They live in `dashboard.json`, not `settings.json`: the WPF app reads `settings.json` into typed settings and writes
 //! them back, so a key it doesn't know would be dropped on its next save. Keys this version doesn't know are kept, and
@@ -8,6 +9,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::io;
 use std::path::Path;
 
+use codexbar_core::alerts::AlertSettings;
 use serde_json::{Map, Value, json};
 
 pub const PREFS_FILE: &str = "dashboard.json";
@@ -20,6 +22,14 @@ pub struct DashboardPrefs {
     /// Changes not yet saved, by account: true shows history, false hides it. A save applies only these to the
     /// file's current contents, so another process's changes made meanwhile are kept.
     pending: BTreeMap<String, bool>,
+    alerts: AlertSettings,
+    /// Alert conditions already notified and not yet recovered, so a restart doesn't notify them again.
+    active_alerts: BTreeSet<String>,
+    /// Alert-setting fields changed and not yet saved, by JSON name. A save merges these into the file's `alerts`,
+    /// so two processes editing different fields don't undo each other.
+    pending_alert_fields: BTreeMap<&'static str, Value>,
+    /// Active-alert changes not yet saved: true adds a key, false removes it. Merged like `pending`.
+    pending_active: BTreeMap<String, bool>,
     /// The file came from a newer version: read what we understand, never write it.
     read_only: bool,
 }
@@ -39,8 +49,49 @@ impl DashboardPrefs {
         Self {
             hidden_history,
             pending: BTreeMap::new(),
+            alerts: doc.get("alerts").map(alerts_from_json).unwrap_or_default(),
+            active_alerts: doc
+                .get("activeAlerts")
+                .and_then(Value::as_array)
+                .map(|keys| keys.iter().filter_map(Value::as_str).map(str::to_owned).collect())
+                .unwrap_or_default(),
+            pending_alert_fields: BTreeMap::new(),
+            pending_active: BTreeMap::new(),
             read_only: version > VERSION,
         }
+    }
+
+    pub fn alert_settings(&self) -> &AlertSettings {
+        &self.alerts
+    }
+
+    pub fn set_alert_settings(&mut self, alerts: AlertSettings) {
+        let (old, new) = (alerts_to_json(&self.alerts), alerts_to_json(&alerts));
+        for name in ALERT_FIELDS {
+            if old[name] != new[name] {
+                self.pending_alert_fields.insert(name, new[name].clone());
+            }
+        }
+        self.alerts = alerts;
+    }
+
+    pub fn active_alerts(&self) -> &BTreeSet<String> {
+        &self.active_alerts
+    }
+
+    pub fn set_active_alerts(&mut self, active: BTreeSet<String>) {
+        for removed in self.active_alerts.difference(&active) {
+            self.pending_active.insert(removed.clone(), false);
+        }
+        for added in active.difference(&self.active_alerts) {
+            self.pending_active.insert(added.clone(), true);
+        }
+        self.active_alerts = active;
+    }
+
+    /// True when there are changes to save.
+    pub fn is_dirty(&self) -> bool {
+        !self.pending.is_empty() || !self.pending_alert_fields.is_empty() || !self.pending_active.is_empty()
     }
 
     pub fn shows_history(&self, account: &str) -> bool {
@@ -54,13 +105,33 @@ impl DashboardPrefs {
 
     /// Carries a preference from an account's old id to its new one. Returns true when something changed.
     pub fn rename_account(&mut self, from: &str, to: &str) -> bool {
+        let mut changed = false;
         if self.hidden_history.contains(from) {
             self.set_shows_history(from, true);
             self.set_shows_history(to, false);
-            true
-        } else {
-            false
+            changed = true;
         }
+        // Active alerts are keyed `account|metric|kind`; they follow the account so a held condition doesn't
+        // notify again under the new id.
+        // The account is everything before the last two parts, so ids containing `|` are compared whole and a key
+        // already under `to` (whose id may start with `from|`) is never rewritten again.
+        let moved: BTreeSet<String> = self
+            .active_alerts
+            .iter()
+            .map(|key| {
+                let mut parts = key.rsplitn(3, '|');
+                let (kind, metric, account) = (parts.next(), parts.next(), parts.next());
+                match (account, metric, kind) {
+                    (Some(account), Some(metric), Some(kind)) if account == from => format!("{to}|{metric}|{kind}"),
+                    _ => key.clone(),
+                }
+            })
+            .collect();
+        if moved != self.active_alerts {
+            self.set_active_alerts(moved);
+            changed = true;
+        }
+        changed
     }
 
     pub fn is_read_only(&self) -> bool {
@@ -99,18 +170,75 @@ impl DashboardPrefs {
         for (account, show) in &self.pending {
             apply(&mut hidden, account, *show);
         }
+        let mut alerts = match doc.get("alerts") {
+            Some(Value::Object(fields)) => fields.clone(),
+            _ => Map::new(),
+        };
+        for (name, value) in &self.pending_alert_fields {
+            alerts.insert((*name).into(), value.clone());
+        }
+        let mut active: BTreeSet<String> = string_set(doc.get("activeAlerts"));
+        for (key, add) in &self.pending_active {
+            apply(&mut active, key, !add);
+        }
         doc.insert("version".into(), json!(VERSION));
         doc.insert("hiddenHistory".into(), json!(hidden));
+        doc.insert("alerts".into(), Value::Object(alerts.clone()));
+        doc.insert("activeAlerts".into(), json!(active));
         let text = serde_json::to_string_pretty(&Value::Object(doc)).map_err(io::Error::other)?;
         std::fs::create_dir_all(dir)?;
         let path = dir.join(PREFS_FILE);
         let tmp = path.with_extension("json.tmp");
         std::fs::write(&tmp, text)?;
         std::fs::rename(&tmp, &path)?;
+        // This instance now holds the merged result, including other writers' changes.
         self.hidden_history = hidden;
+        self.alerts = alerts_from_json(&Value::Object(alerts));
+        self.active_alerts = active;
         self.pending.clear();
+        self.pending_alert_fields.clear();
+        self.pending_active.clear();
         Ok(())
     }
+}
+
+/// The JSON names of the alert settings, as `alerts_to_json` writes them.
+const ALERT_FIELDS: [&str; 5] = ["enabled", "usageThreshold", "balanceThreshold", "warning", "critical"];
+
+fn string_set(value: Option<&Value>) -> BTreeSet<String> {
+    value
+        .and_then(Value::as_array)
+        .map(|items| items.iter().filter_map(Value::as_str).map(str::to_owned).collect())
+        .unwrap_or_default()
+}
+
+fn alerts_from_json(value: &Value) -> AlertSettings {
+    let defaults = AlertSettings::default();
+    let flag = |name: &str, default: bool| value.get(name).and_then(Value::as_bool).unwrap_or(default);
+    let number = |name: &str, default: f64| {
+        value
+            .get(name)
+            .and_then(Value::as_f64)
+            .filter(|number| number.is_finite() && *number >= 0.0)
+            .unwrap_or(default)
+    };
+    AlertSettings {
+        enabled: flag("enabled", defaults.enabled),
+        usage_threshold: number("usageThreshold", defaults.usage_threshold).clamp(0.05, 1.0),
+        balance_threshold: number("balanceThreshold", defaults.balance_threshold),
+        warning: flag("warning", defaults.warning),
+        critical: flag("critical", defaults.critical),
+    }
+}
+
+fn alerts_to_json(alerts: &AlertSettings) -> Value {
+    json!({
+        "enabled": alerts.enabled,
+        "usageThreshold": alerts.usage_threshold,
+        "balanceThreshold": alerts.balance_threshold,
+        "warning": alerts.warning,
+        "critical": alerts.critical,
+    })
 }
 
 fn apply(hidden: &mut BTreeSet<String>, account: &str, show: bool) {
@@ -227,6 +355,87 @@ mod tests {
             json!(["cursor"]),
             "the pending change was kept and saved"
         );
+    }
+
+    #[test]
+    fn alert_settings_and_active_alerts_round_trip() {
+        let dir = Dir::new("alerts");
+        let mut prefs = DashboardPrefs::load(&dir.0);
+        assert_eq!(prefs.alert_settings(), &AlertSettings::default());
+        let settings = AlertSettings {
+            enabled: true,
+            usage_threshold: 0.9,
+            balance_threshold: 2.0,
+            warning: false,
+            critical: true,
+        };
+        prefs.set_alert_settings(settings.clone());
+        prefs.set_active_alerts(["a|weekly|usage".to_owned()].into());
+        assert!(prefs.is_dirty());
+        prefs.save(&dir.0).unwrap();
+        assert!(!prefs.is_dirty());
+
+        let loaded = DashboardPrefs::load(&dir.0);
+        assert_eq!(loaded.alert_settings(), &settings);
+        assert!(loaded.active_alerts().contains("a|weekly|usage"));
+        assert_eq!(dir.read()["alerts"]["usageThreshold"], json!(0.9));
+    }
+
+    #[test]
+    fn concurrent_alert_edits_merge_by_field_and_key() {
+        let dir = Dir::new("alerts-merge");
+        let mut first = DashboardPrefs::load(&dir.0);
+        let mut second = DashboardPrefs::load(&dir.0);
+        let mut enabled = first.alert_settings().clone();
+        enabled.enabled = true;
+        first.set_alert_settings(enabled);
+        first.set_active_alerts(["a|weekly|usage".to_owned()].into());
+        first.save(&dir.0).unwrap();
+
+        // The second process loaded before; it changes another field and another key.
+        let mut balance = second.alert_settings().clone();
+        balance.balance_threshold = 20.0;
+        second.set_alert_settings(balance);
+        second.set_active_alerts(["b|credits|balance".to_owned()].into());
+        second.save(&dir.0).unwrap();
+
+        let merged = DashboardPrefs::load(&dir.0);
+        assert!(merged.alert_settings().enabled, "the first process's change survives");
+        assert_eq!(merged.alert_settings().balance_threshold, 20.0);
+        assert_eq!(merged.active_alerts().len(), 2);
+        assert_eq!(
+            second.alert_settings(),
+            merged.alert_settings(),
+            "the saver holds the merged result"
+        );
+        assert_eq!(second.active_alerts(), merged.active_alerts());
+    }
+
+    #[test]
+    fn rename_account_compares_whole_ids_and_runs_once() {
+        let mut prefs = DashboardPrefs::default();
+        prefs.set_active_alerts(["openrouter|credits|balance".to_owned()].into());
+        assert!(prefs.rename_account("openrouter", "openrouter|team"));
+        // The migrated key starts with `openrouter|`, but its account is `openrouter|team`: leave it alone.
+        assert!(!prefs.rename_account("openrouter", "openrouter|team"));
+        let keys: Vec<&str> = prefs.active_alerts().iter().map(String::as_str).collect();
+        assert_eq!(keys, vec!["openrouter|team|credits|balance"]);
+    }
+
+    #[test]
+    fn rename_account_moves_active_alert_keys() {
+        let mut prefs = DashboardPrefs::default();
+        prefs.set_active_alerts(["openrouter|credits|balance".to_owned(), "c|weekly|usage".to_owned()].into());
+        assert!(prefs.rename_account("openrouter", "or-1"));
+        let keys: Vec<&str> = prefs.active_alerts().iter().map(String::as_str).collect();
+        assert_eq!(keys, vec!["c|weekly|usage", "or-1|credits|balance"]);
+    }
+
+    #[test]
+    fn unreadable_alert_values_fall_back_to_defaults() {
+        let dir = Dir::new("alerts-bad");
+        dir.write(r#"{ "version": 1, "alerts": { "enabled": "yes", "usageThreshold": -3, "balanceThreshold": "x" } }"#);
+        assert_eq!(DashboardPrefs::load(&dir.0).alert_settings(), &AlertSettings::default());
     }
 
     #[test]

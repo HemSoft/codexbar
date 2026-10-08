@@ -6,6 +6,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use codexbar_store::settings::{AccountRecord, AuthMethod, names};
+use gpui_kit::TestSupportExt as _;
 use gpui_kit::component::Disableable as _;
 use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants as _};
 use gpui_kit::component::dialog::{DialogAction, DialogButtonProps, DialogClose, DialogFooter};
@@ -17,11 +18,13 @@ use gpui_kit::component::{
     ActiveTheme as _, IconName, IndexPath, Sizable as _, StyledExt as _, WindowExt as _, h_flex, v_flex,
 };
 use gpui_kit::{
-    AnyElement, App, AppContext as _, Entity, IntoElement, ParentElement as _, SharedString, Styled as _, Window, div,
-    prelude::FluentBuilder as _,
+    AnyElement, App, AppContext as _, Entity, InteractiveElement as _, IntoElement, ParentElement as _, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Window, div, prelude::FluentBuilder as _,
 };
 
 use crate::catalog::{self, PROVIDERS};
+use crate::notifications::{Notifications, NotifierStatus};
+use crate::prefs_hub::PrefsHub;
 use crate::settings_hub::{SettingsHub, describe_source};
 
 /// Refresh choices required by #91, in minutes; 0 is Off.
@@ -56,7 +59,7 @@ pub fn render(_: &mut Window, cx: &mut App) -> impl IntoElement {
                 .pages(vec![
                     general_page(cx),
                     accounts_page(cx),
-                    alerts_page(),
+                    alerts_page(cx),
                     appearance_page(),
                     widgets_page(),
                     about_page(),
@@ -539,11 +542,187 @@ fn info_item(title: &'static str, body: &'static str) -> SettingItem {
     })
 }
 
-fn alerts_page() -> SettingPage {
-    SettingPage::new("Alerts").icon(IconName::Bell).group(SettingGroup::new().title("Usage alerts").item(info_item(
-        "Not available yet",
-        "Threshold alerts with Windows notifications arrive with #87. Status tags on the dashboard already mark accounts at risk.",
-    )))
+/// Usage alert choices, in percent used.
+const USAGE_ALERT_CHOICES: [u32; 10] = [50, 55, 60, 65, 70, 75, 80, 85, 90, 95];
+/// Balance alert choices, in dollars left.
+const BALANCE_ALERT_CHOICES: [u32; 6] = [1, 2, 5, 10, 20, 50];
+
+fn usage_percent(settings: &codexbar_core::alerts::AlertSettings) -> u32 {
+    (settings.usage_threshold * 100.0).round() as u32
+}
+
+/// The balance threshold as its option value: whole dollars without decimals, others with cents.
+fn balance_value(settings: &codexbar_core::alerts::AlertSettings) -> String {
+    let dollars = settings.balance_threshold;
+    if dollars.fract() == 0.0 {
+        format!("{dollars:.0}")
+    } else {
+        format!("{dollars:.2}")
+    }
+}
+
+fn alerts_page(cx: &App) -> SettingPage {
+    let settings = PrefsHub::alert_settings(cx);
+    let off = !settings.enabled;
+    // A stored value that isn't a standard choice (written by hand or an older build) is kept and shown as its own
+    // option rather than misreported, as the refresh interval does.
+    let mut usage_choices: Vec<u32> = USAGE_ALERT_CHOICES.to_vec();
+    let usage_current = usage_percent(&settings);
+    if !usage_choices.contains(&usage_current) {
+        usage_choices.push(usage_current);
+        usage_choices.sort_unstable();
+    }
+    let usage_options = usage_choices
+        .iter()
+        .map(|percent| {
+            (
+                SharedString::from(percent.to_string()),
+                SharedString::from(format!("{percent}% used")),
+            )
+        })
+        .collect();
+    let mut balance_choices: Vec<String> = BALANCE_ALERT_CHOICES
+        .iter()
+        .map(|dollars| dollars.to_string())
+        .collect();
+    let balance_current = balance_value(&settings);
+    if !balance_choices.contains(&balance_current) {
+        balance_choices.push(balance_current);
+        balance_choices.sort_by(|a, b| {
+            a.parse::<f64>()
+                .unwrap_or(0.0)
+                .total_cmp(&b.parse::<f64>().unwrap_or(0.0))
+        });
+    }
+    let balance_options = balance_choices
+        .iter()
+        .map(|dollars| {
+            (
+                SharedString::from(dollars.clone()),
+                SharedString::from(format!("Under ${dollars}")),
+            )
+        })
+        .collect();
+    SettingPage::new("Alerts")
+        .icon(IconName::Bell)
+        .group(
+            SettingGroup::new()
+                .title("Usage alerts")
+                .description("Windows notifications when an account needs attention. Each one notifies once, and again only after it recovers.")
+                .item(
+                    SettingItem::new(
+                        "Alerts",
+                        SettingField::switch(
+                            |cx: &App| PrefsHub::alert_settings(cx).enabled,
+                            |on: bool, cx: &mut App| PrefsHub::update_alert_settings(cx, |s| s.enabled = on),
+                        ),
+                    )
+                    .description("Checked after every successful refresh."),
+                )
+                .item(
+                    SettingItem::new(
+                        "Usage alert",
+                        SettingField::dropdown(
+                            usage_options,
+                            |cx: &App| SharedString::from(usage_percent(&PrefsHub::alert_settings(cx)).to_string()),
+                            |value: SharedString, cx: &mut App| {
+                                if let Ok(percent) = value.parse::<f64>() {
+                                    PrefsHub::update_alert_settings(cx, |s| s.usage_threshold = percent / 100.0);
+                                }
+                            },
+                        ),
+                    )
+                    .description("Notify when a limit reaches this much of its allowance.")
+                    .disabled(off),
+                )
+                .item(
+                    SettingItem::new(
+                        "Balance alert",
+                        SettingField::dropdown(
+                            balance_options,
+                            |cx: &App| SharedString::from(balance_value(&PrefsHub::alert_settings(cx))),
+                            |value: SharedString, cx: &mut App| {
+                                if let Ok(dollars) = value.parse::<f64>() {
+                                    PrefsHub::update_alert_settings(cx, |s| s.balance_threshold = dollars);
+                                }
+                            },
+                        ),
+                    )
+                    .description("Notify when prepaid credit drops below this.")
+                    .disabled(off),
+                )
+                .item(
+                    SettingItem::new(
+                        "At risk",
+                        SettingField::switch(
+                            |cx: &App| PrefsHub::alert_settings(cx).warning,
+                            |on: bool, cx: &mut App| PrefsHub::update_alert_settings(cx, |s| s.warning = on),
+                        ),
+                    )
+                    .description("Warning: a limit is on pace to run out before it resets.")
+                    .disabled(off),
+                )
+                .item(
+                    SettingItem::new(
+                        "Limit soon",
+                        SettingField::switch(
+                            |cx: &App| PrefsHub::alert_settings(cx).critical,
+                            |on: bool, cx: &mut App| PrefsHub::update_alert_settings(cx, |s| s.critical = on),
+                        ),
+                    )
+                    .description("Critical: a limit is about to run out.")
+                    .disabled(off),
+                ),
+        )
+        .group(SettingGroup::new().title("Notifications").item(SettingItem::render(|_, _, cx| {
+            let status = match Notifications::status(cx) {
+                Some(NotifierStatus::Ready) | None => None,
+                Some(NotifierStatus::Blocked(reason)) => Some(reason),
+            };
+            let problem = PrefsHub::error(cx)
+                .or_else(|| Notifications::problem(cx))
+                .map(|problem| problem.to_string())
+                .or(status);
+            let active = Notifications::active(cx).len();
+            let summary = match (&problem, active) {
+                (Some(problem), _) => problem.clone(),
+                (None, 0) => "Windows notifications are on. No alerts are active.".to_owned(),
+                (None, 1) => "Windows notifications are on. 1 alert is active until it recovers.".to_owned(),
+                (None, n) => format!("Windows notifications are on. {n} alerts are active until they recover."),
+            };
+            v_flex()
+                .w_full()
+                .gap_2()
+                .child(
+                    div()
+                        .id("alerts-status")
+                        .role(gpui_kit::Role::Status)
+                        .test_support()
+                        .aria_label(summary.clone())
+                        .text_sm()
+                        .when(problem.is_some(), |this| this.text_color(cx.theme().warning))
+                        .child(summary),
+                )
+                .child(
+                    h_flex()
+                        .gap_2()
+                        .child(
+                            Button::new("alerts-test")
+                                .label("Send a test notification")
+                                .outline()
+                                .small()
+                                .on_click(|_, _, cx| Notifications::send_test(cx)),
+                        )
+                        .child(
+                            Button::new("alerts-reset")
+                                .label("Reset active alerts")
+                                .outline()
+                                .small()
+                                .disabled(active == 0)
+                                .on_click(|_, _, cx| Notifications::reset(cx)),
+                        ),
+                )
+        })))
 }
 
 fn appearance_page() -> SettingPage {

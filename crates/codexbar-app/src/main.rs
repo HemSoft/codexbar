@@ -5,6 +5,8 @@ mod catalog;
 mod dashboard;
 mod focus_cards;
 mod history_view;
+mod notifications;
+mod prefs_hub;
 mod providers;
 mod settings_hub;
 mod settings_view;
@@ -27,9 +29,12 @@ use crate::tray::TrayCommand;
 /// How long usage history is kept (#85).
 const HISTORY_RETENTION: chrono::Duration = chrono::Duration::days(30);
 
+fn is_demo() -> bool {
+    std::env::var_os("CODEXBAR_DEMO").is_some_and(|value| value == "1") || std::env::args().any(|arg| arg == "--demo")
+}
+
 fn data_source() -> DataSource {
-    let demo = std::env::var_os("CODEXBAR_DEMO").is_some_and(|value| value == "1")
-        || std::env::args().any(|arg| arg == "--demo");
+    let demo = is_demo();
     if demo {
         return DataSource::Demo;
     }
@@ -39,13 +44,58 @@ fn data_source() -> DataSource {
     }
 }
 
+/// One CodexBar per Windows user, across sessions (two Remote Desktop sessions share one profile), so two instances
+/// never send the same alert twice or write history and preferences over each other. The mutex is in the global
+/// namespace and named per user, so other users on the machine run their own. The demo has its own name, so design
+/// work can run beside the real app. A second launch exits; the first one is already in the notification area.
+fn already_running() -> bool {
+    use windows::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError};
+    use windows::Win32::System::Threading::CreateMutexW;
+    use windows::core::HSTRING;
+    let user: String = format!(
+        "{}.{}",
+        std::env::var("USERDOMAIN").unwrap_or_default(),
+        std::env::var("USERNAME").unwrap_or_default()
+    )
+    .chars()
+    .filter(|ch| *ch != '\\')
+    .collect();
+    let name = if is_demo() {
+        format!(r"Global\HemSoft.CodexBar.Demo.{user}")
+    } else {
+        format!(r"Global\HemSoft.CodexBar.{user}")
+    };
+    // SAFETY: a named mutex with default security; the handle is kept open for the life of the process.
+    match unsafe { CreateMutexW(None, false, &HSTRING::from(name)) } {
+        // The handle is never closed: Windows releases the mutex when the process exits.
+        Ok(_handle) => (unsafe { GetLastError() }) == ERROR_ALREADY_EXISTS,
+        // Without the mutex, run anyway rather than refuse to start.
+        Err(_) => false,
+    }
+}
+
 fn main() {
+    if already_running() {
+        eprintln!("codexbar: already running; open it from the notification area");
+        return;
+    }
     gpui_kit::application().with_assets(gpui_kit::assets::Assets).run(|cx| {
         gpui_kit::init(cx);
         theme::init(cx);
         settings_hub::SettingsHub::init(cx);
         let dir = settings_hub::SettingsHub::global(cx).dir().to_owned();
-        history_view::HistoryPrefs::init(cx, &dir);
+        if is_demo() {
+            prefs_hub::PrefsHub::init_in_memory(cx);
+        } else {
+            prefs_hub::PrefsHub::init(cx, &dir);
+        }
+        // The demo never pops real notifications; its alerts are kept in memory.
+        let notifier: std::sync::Arc<dyn notifications::Notifier> = if is_demo() {
+            std::sync::Arc::new(notifications::RecordingNotifier::default())
+        } else {
+            std::sync::Arc::new(notifications::WindowsNotifier::new())
+        };
+        notifications::Notifications::init(cx, notifier, !is_demo());
         zoom::init(cx);
 
         let bounds = Bounds::centered(None, size(px(1440.), px(960.)), cx);

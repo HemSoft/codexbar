@@ -90,7 +90,7 @@ pub fn migrate_legacy_ids(history: &Mutex<HistoryStore>, cx: &mut gpui_kit::App)
             let _ = store.rename_account(from, to);
         }
     }
-    crate::history_view::HistoryPrefs::rename_accounts(cx, &renames);
+    crate::prefs_hub::PrefsHub::rename_accounts(cx, &renames);
 }
 
 /// A provider whose last fetch failed. Its last good accounts stay on screen.
@@ -117,6 +117,11 @@ pub struct Dashboard {
     table_zoom: f64,
     /// A refresh was requested while one was running; it runs when that one finishes.
     refresh_queued: bool,
+    /// The settings revision the running live fetch started under.
+    refresh_revision: u64,
+    /// The settings revision the shown accounts were fetched under, or `None` when they came from a fetch that
+    /// settings changed during; failed notifications are only resent from accounts that are current.
+    accounts_revision: Option<u64>,
     /// The minute the table's compact history was computed for; it is recomputed as the 14-day window moves.
     compact_minute: i64,
     /// One focus handle per view tab. Only the selected tab is a Tab-key stop (a roving tab stop); the arrow keys
@@ -170,6 +175,14 @@ impl Dashboard {
                     } else if this.now.timestamp() / 60 != this.compact_minute {
                         this.update_compact_history(cx);
                     }
+                    // Resend against the last refresh's accounts while settings still match it; otherwise refresh,
+                    // so the failed alert is judged under the current settings rather than dropped.
+                    if this.accounts_revision == Some(SettingsHub::revision(cx)) {
+                        let accounts = this.accounts.clone();
+                        crate::notifications::retry_failed(cx, &accounts, this.now);
+                    } else if crate::notifications::has_failed(cx) {
+                        this.refresh(cx);
+                    }
                     cx.notify();
                 });
                 if alive.is_err() {
@@ -202,6 +215,8 @@ impl Dashboard {
             deactivated_at: None,
             table_zoom: crate::zoom::level(cx),
             refresh_queued: false,
+            refresh_revision: 0,
+            accounts_revision: None,
             compact_minute: 0,
             view_tab_focus: DashboardView::ALL.iter().map(|_| cx.focus_handle()).collect(),
             _clock: clock,
@@ -261,6 +276,8 @@ impl Dashboard {
                 let now = Utc::now();
                 self.last_refresh = Some(now);
                 let accounts = demo_accounts(now, &Local);
+                self.accounts_revision = Some(SettingsHub::revision(cx));
+                crate::notifications::process(cx, &accounts, now);
                 // Demo history keeps up with the demo accounts, as live history does.
                 let _ = self
                     .history
@@ -276,6 +293,7 @@ impl Dashboard {
         migrate_legacy_ids(&providers, cx);
         let history = providers;
         let providers = crate::providers::enabled(SettingsHub::global(cx));
+        self.refresh_revision = SettingsHub::revision(cx);
         self.loading = true;
         cx.notify();
         cx.spawn(async move |this, cx| {
@@ -311,10 +329,15 @@ impl Dashboard {
         cx: &mut Context<Self>,
     ) {
         let mut accounts = Vec::new();
+        // Only accounts that refreshed are checked for alerts: a failed provider's alerts neither clear nor repeat.
+        let mut refreshed = Vec::new();
         self.failures.clear();
         for (provider, result) in results {
             match result {
-                Ok(fresh) => accounts.extend(fresh),
+                Ok(fresh) => {
+                    refreshed.extend(fresh.iter().cloned());
+                    accounts.extend(fresh);
+                }
                 Err(error) => {
                     // Keep last good snapshots from this provider; their age shows they are stale.
                     accounts.extend(
@@ -332,6 +355,17 @@ impl Dashboard {
         }
         self.loading = false;
         self.last_refresh = Some(Utc::now());
+        // Settings saved while the fetch ran (an account switched off) make its results stale for alerting; the next
+        // refresh judges everything against the current settings.
+        if SettingsHub::revision(cx) == self.refresh_revision {
+            self.accounts_revision = Some(self.refresh_revision);
+            crate::notifications::process(cx, &refreshed, Utc::now());
+        } else {
+            self.accounts_revision = None;
+            // Run again under the current settings, so a crossed condition is still noticed even with automatic
+            // refresh off.
+            self.refresh_queued = true;
+        }
         self.set_accounts(accounts, cx);
         if std::mem::take(&mut self.refresh_queued) {
             self.refresh(cx);
