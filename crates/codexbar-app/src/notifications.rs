@@ -128,6 +128,20 @@ pub fn process(cx: &mut App, refreshed: &[AccountSnapshot], now: DateTime<Utc>) 
     let Some(notifier) = cx.try_global::<Notifications>().map(|global| global.notifier.clone()) else {
         return;
     };
+    // Which alerts were sent must be saved, or every restart would send them again. A `dashboard.json` from a newer
+    // CodexBar can't be written, so alerts pause until that version (or a fixed file) takes over.
+    let persists = cx
+        .try_global::<Notifications>()
+        .is_some_and(|global| global.memory.is_none());
+    if persists && PrefsHub::is_read_only(cx) && PrefsHub::alert_settings(cx).enabled {
+        cx.update_global(|global: &mut Notifications, _| {
+            global.problem = Some(
+                "Alerts are paused: dashboard.json is from a newer CodexBar, so sent alerts can't be remembered."
+                    .into(),
+            );
+        });
+        return;
+    }
     let settings = PrefsHub::alert_settings(cx);
     // A notification Windows failed to raise after accepting it wasn't delivered: forget it, so it is sent again.
     let failed: Vec<String> = notifier

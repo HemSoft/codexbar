@@ -106,6 +106,12 @@ impl PrefsHub {
         }
     }
 
+    /// True when `dashboard.json` is from a newer CodexBar: settings are read, but nothing can be saved.
+    pub fn is_read_only(cx: &App) -> bool {
+        cx.try_global::<Self>()
+            .is_some_and(|hub| hub.dir.is_some() && hub.prefs.is_read_only())
+    }
+
     /// The last save problem, for the Settings and History views.
     pub fn error(cx: &App) -> Option<SharedString> {
         cx.try_global::<Self>().and_then(|hub| hub.error.clone())

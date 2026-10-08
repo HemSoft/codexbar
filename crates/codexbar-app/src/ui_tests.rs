@@ -823,3 +823,22 @@ fn demo_preferences_stay_in_memory(cx: &mut TestAppContext) {
     );
     assert!(!dir.0.join("dashboard.json").exists(), "nothing is written");
 }
+
+#[gpui_kit::test]
+fn alerts_pause_while_preferences_cannot_be_saved(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("alerts-readonly", "{}");
+    std::fs::write(
+        settings.0.join("dashboard.json"),
+        r#"{ "version": 2, "alerts": { "enabled": true, "usageThreshold": 0.8, "balanceThreshold": 10 } }"#,
+    )
+    .unwrap();
+    let (_, notifier) = open_with_alerts(cx, &settings);
+    assert!(
+        notifier.shown.lock().unwrap().is_empty(),
+        "nothing is sent that couldn't be remembered"
+    );
+    let problem = cx
+        .update(|cx| crate::notifications::Notifications::problem(cx))
+        .unwrap();
+    assert!(problem.starts_with("Alerts are paused"), "{problem}");
+}
