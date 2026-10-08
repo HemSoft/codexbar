@@ -938,6 +938,14 @@ impl Dashboard {
             .unwrap_or_default();
         let heading = focused.map(|account| {
             let severity = account.assess(self.now).severity();
+            // Alerts that hold now (#88), from the current settings and the delivered set, so they stay visible
+            // after their notification was sent or deduplicated.
+            let details = codexbar_core::alerts::account_alerts(
+                &crate::prefs_hub::PrefsHub::alert_settings(cx),
+                &crate::notifications::Notifications::active(cx),
+                account,
+                self.now,
+            );
             v_flex()
                 .gap_1()
                 .child(
@@ -946,8 +954,10 @@ impl Dashboard {
                         .items_center()
                         .child(div().text_xl().font_semibold().child(account.display_name()))
                         .child(div().size_2().rounded_full().bg(severity_dot_color(severity, cx)))
-                        .children(severity_tag(severity)),
+                        .children(severity_tag(severity))
+                        .children(crate::alert_details::projected_tag(account, self.now)),
                 )
+                .children(crate::alert_details::alert_details(&details, self.now, cx))
                 // What the provider said besides numbers (#75), kept with last-good usage.
                 .children(account.messages().iter().enumerate().map(|(ix, message)| {
                     div()

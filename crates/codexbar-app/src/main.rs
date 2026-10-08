@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod account_table;
+mod alert_details;
 mod catalog;
 mod dashboard;
 mod focus_cards;

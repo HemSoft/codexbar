@@ -220,6 +220,144 @@ pub fn evaluate(
     out
 }
 
+/// An alert that holds on an account right now, with its context, for the account's card (#88).
+#[derive(Clone, Debug, PartialEq)]
+pub struct AlertDetail {
+    pub key: String,
+    pub kind: AlertKind,
+    /// The affected metric's label ("Weekly").
+    pub metric: String,
+    /// Its current value ("82%", "$3.10 left").
+    pub value: String,
+    /// What the alert compares against ("Alert at 80%").
+    pub threshold: String,
+    pub resets_at: Option<DateTime<Utc>>,
+    /// The fraction of the limit used by the reset at the current pace, when it can be projected.
+    pub projected_at_reset: Option<f64>,
+    /// Effective severity (with the projection) and the severity from observed usage alone.
+    pub severity: Severity,
+    pub observed: Severity,
+    /// Whether a notification was delivered for it. Details show either way: a held alert that was already
+    /// notified (or deduplicated) stays visible while it holds.
+    pub notified: bool,
+}
+
+impl AlertDetail {
+    /// True when the projection, not observed usage, raised the severity.
+    pub fn is_projected(&self) -> bool {
+        self.severity > self.observed
+    }
+
+    /// One line of context: "82% · Alert at 80% · resets in 2d 4h · on pace for 130% by the reset".
+    pub fn summary(&self, now: DateTime<Utc>) -> String {
+        let mut parts = vec![self.value.clone(), self.threshold.clone()];
+        if let Some(resets_at) = self.resets_at.filter(|at| *at > now) {
+            parts.push(format!("resets in {}", crate::format::countdown(resets_at - now)));
+        }
+        if let Some(projected) = self.projected_at_reset {
+            parts.push(format!("on pace for {:.0}% by the reset", projected * 100.0));
+        }
+        parts.join(" · ")
+    }
+
+    fn rank(&self) -> u8 {
+        match self.kind {
+            AlertKind::Critical => 3,
+            AlertKind::Warning => 2,
+            AlertKind::Usage | AlertKind::Balance => 1,
+        }
+    }
+}
+
+/// The alerts that hold on `account` now, strongest first: Limit soon, then At risk, then threshold alerts; ties by
+/// severity, then pressure, then provider metric order, so the list is stable across refreshes. An alert holds when
+/// its condition triggers, or sits inside its recovery margin while already active. Limit soon hides At risk on the
+/// same metric, as notifications do. Nothing while alerts are off.
+pub fn account_alerts(
+    settings: &AlertSettings,
+    active: &BTreeSet<String>,
+    account: &AccountSnapshot,
+    now: DateTime<Utc>,
+) -> Vec<AlertDetail> {
+    if !settings.enabled {
+        return Vec::new();
+    }
+    let id = account.id().as_str();
+    let mut found: Vec<(usize, f64, AlertDetail)> = Vec::new();
+    for (ix, metric) in account.metrics().iter().enumerate() {
+        let current = metric_slot(metric);
+        let mut kinds: Vec<AlertDetail> = Vec::new();
+        for kind in [
+            AlertKind::Critical,
+            AlertKind::Warning,
+            AlertKind::Usage,
+            AlertKind::Balance,
+        ] {
+            let notified = active
+                .iter()
+                .filter_map(|key| split_key(key))
+                .any(|(account, slot, slug)| account == id && slug == kind.slug() && same_window(slot, &current));
+            let holds = match condition(settings, metric, kind, now) {
+                Condition::Triggered => true,
+                Condition::Holding => notified,
+                Condition::Clear | Condition::NotApplicable => false,
+            };
+            if !holds || (kind == AlertKind::Warning && kinds.iter().any(|d| d.kind == AlertKind::Critical)) {
+                continue;
+            }
+            kinds.push(detail(
+                metric,
+                kind,
+                alert_key(id, &current, kind),
+                settings,
+                notified,
+                now,
+            ));
+        }
+        let pressure = assess(metric, now).pressure();
+        found.extend(kinds.into_iter().map(|detail| (ix, pressure, detail)));
+    }
+    found.sort_by(|(ix_a, pressure_a, a), (ix_b, pressure_b, b)| {
+        b.rank()
+            .cmp(&a.rank())
+            .then(b.severity.cmp(&a.severity))
+            .then(pressure_b.total_cmp(pressure_a))
+            .then(ix_a.cmp(ix_b))
+            .then(a.key.cmp(&b.key))
+    });
+    found.into_iter().map(|(_, _, detail)| detail).collect()
+}
+
+fn detail(
+    metric: &Metric,
+    kind: AlertKind,
+    key: String,
+    settings: &AlertSettings,
+    notified: bool,
+    now: DateTime<Utc>,
+) -> AlertDetail {
+    let threshold = match kind {
+        AlertKind::Usage => format!("Alert at {:.0}%", settings.usage_threshold * 100.0),
+        AlertKind::Balance => format!("Alert below ${:.2}", settings.balance_threshold),
+        AlertKind::Warning if metric.days_of_credit().is_some() => "Running low".to_owned(),
+        AlertKind::Critical if metric.days_of_credit().is_some() => "Running out".to_owned(),
+        AlertKind::Warning => "At risk: on pace to run out before the reset".to_owned(),
+        AlertKind::Critical => "Limit soon: nearly used up or running out within hours".to_owned(),
+    };
+    AlertDetail {
+        key,
+        kind,
+        metric: metric.label().to_owned(),
+        value: metric.used_display(),
+        threshold,
+        resets_at: metric.resets_at(),
+        projected_at_reset: metric.projected_at_reset(now),
+        severity: assess(metric, now).severity(),
+        observed: crate::observed_severity(metric),
+        notified,
+    }
+}
+
 enum Condition {
     Triggered,
     /// Inside the margin between triggering and recovery.
@@ -819,5 +957,124 @@ mod window_tests {
         let legacy: BTreeSet<String> = ["c|weekly|usage".to_owned()].into();
         let evaluation = evaluate(&settings, &legacy, &[weekly(0.9, 3)], now());
         assert_eq!(evaluation.recovered, vec!["c|weekly|usage".to_owned()]);
+    }
+}
+
+#[cfg(test)]
+mod detail_tests {
+    use super::*;
+    use crate::{AccountId, Pace, Provider};
+    use chrono::{Duration, TimeZone};
+
+    fn now() -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(2026, 10, 7, 12, 0, 0).unwrap()
+    }
+
+    fn metric(label: &str, used: f64, resets_in: Duration, per_hour: Option<f64>) -> Metric {
+        Metric::Window {
+            label: label.into(),
+            used,
+            resets_at: now() + resets_in,
+            pace: per_hour.map(Pace::per_hour),
+        }
+    }
+
+    fn account(metrics: Vec<Metric>) -> AccountSnapshot {
+        AccountSnapshot::new(AccountId::new("c"), Provider::Claude, metrics, now())
+    }
+
+    fn all_on() -> AlertSettings {
+        AlertSettings {
+            enabled: true,
+            ..AlertSettings::default()
+        }
+    }
+
+    fn kinds_and_metrics(details: &[AlertDetail]) -> Vec<(AlertKind, &str)> {
+        details
+            .iter()
+            .map(|detail| (detail.kind, detail.metric.as_str()))
+            .collect()
+    }
+
+    #[test]
+    fn strongest_alert_comes_first_in_a_stable_order() {
+        let snapshot = account(vec![
+            metric("Weekly", 0.85, Duration::days(3), None),
+            metric("5-hour window", 0.97, Duration::hours(2), None),
+        ]);
+        let details = account_alerts(&all_on(), &BTreeSet::new(), &snapshot, now());
+        assert_eq!(
+            kinds_and_metrics(&details),
+            vec![
+                (AlertKind::Critical, "5-hour window"),
+                (AlertKind::Usage, "5-hour window"),
+                (AlertKind::Usage, "Weekly"),
+            ]
+        );
+        // The same input always gives the same list.
+        assert_eq!(account_alerts(&all_on(), &BTreeSet::new(), &snapshot, now()), details);
+    }
+
+    #[test]
+    fn limit_soon_hides_at_risk_on_the_same_metric() {
+        // 90% used, running out within the hour: both At risk and Limit soon hold; only Limit soon shows.
+        let snapshot = account(vec![metric("Weekly", 0.9, Duration::hours(5), Some(0.2))]);
+        let details = account_alerts(&all_on(), &BTreeSet::new(), &snapshot, now());
+        assert_eq!(details[0].kind, AlertKind::Critical);
+        assert!(!details.iter().any(|detail| detail.kind == AlertKind::Warning));
+    }
+
+    #[test]
+    fn details_stay_while_active_without_a_new_notification() {
+        let settings = all_on();
+        let snapshot = account(vec![metric("Weekly", 0.82, Duration::days(3), None)]);
+        let mut active = BTreeSet::new();
+        let first = evaluate(&settings, &active, std::slice::from_ref(&snapshot), now());
+        active.extend(first.notify.iter().flat_map(|alert| alert.keys().cloned()));
+        // The next refresh sends nothing new, but the card still shows the alert, now as notified.
+        assert!(
+            evaluate(&settings, &active, std::slice::from_ref(&snapshot), now())
+                .notify
+                .is_empty()
+        );
+        let details = account_alerts(&settings, &active, &snapshot, now());
+        assert_eq!(kinds_and_metrics(&details), vec![(AlertKind::Usage, "Weekly")]);
+        assert!(details[0].notified);
+        // Inside the recovery margin it holds only while active.
+        let dipped = account(vec![metric("Weekly", 0.77, Duration::days(3), None)]);
+        assert_eq!(account_alerts(&settings, &active, &dipped, now()).len(), 1);
+        assert!(account_alerts(&settings, &BTreeSet::new(), &dipped, now()).is_empty());
+    }
+
+    #[test]
+    fn projected_severity_is_told_apart_from_observed_usage() {
+        // 50% used, but at this pace it runs out about two days before the weekly reset.
+        let snapshot = account(vec![metric("Weekly", 0.5, Duration::days(5), Some(0.2 / 24.0))]);
+        let details = account_alerts(&all_on(), &BTreeSet::new(), &snapshot, now());
+        let at_risk = &details[0];
+        assert_eq!(at_risk.kind, AlertKind::Warning);
+        assert_eq!(at_risk.severity, Severity::AtRisk);
+        assert_eq!(at_risk.observed, Severity::Normal);
+        assert!(at_risk.is_projected());
+        assert_eq!(at_risk.value, "50%", "observed usage is unchanged");
+        assert_eq!(
+            at_risk.summary(now()),
+            "50% · At risk: on pace to run out before the reset · resets in 5d · on pace for 150% by the reset"
+        );
+    }
+
+    #[test]
+    fn details_name_threshold_and_reset() {
+        let snapshot = account(vec![metric("Weekly", 0.82, Duration::hours(26), None)]);
+        let detail = &account_alerts(&all_on(), &BTreeSet::new(), &snapshot, now())[0];
+        assert_eq!(detail.summary(now()), "82% · Alert at 80% · resets in 1d 2h");
+        assert!(!detail.is_projected());
+    }
+
+    #[test]
+    fn no_details_while_alerts_are_off() {
+        let snapshot = account(vec![metric("Weekly", 0.99, Duration::hours(1), None)]);
+        assert!(account_alerts(&AlertSettings::default(), &BTreeSet::new(), &snapshot, now()).is_empty());
     }
 }

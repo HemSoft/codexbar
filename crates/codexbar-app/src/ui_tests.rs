@@ -1356,3 +1356,42 @@ fn provider_messages_show_with_the_focused_account(cx: &mut TestAppContext) {
         .unwrap();
     assert_eq!(message.as_deref(), Some("Usage is delayed by up to an hour"));
 }
+
+/// The aria label of the element with `id` in the first window, after a fresh frame.
+fn label_of(cx: &mut TestAppContext, id: impl Into<gpui_kit::ElementId> + Clone) -> Option<String> {
+    let handle = cx.windows()[0];
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    cx.update_window(handle, |_, window, _| {
+        window
+            .try_find(id.clone())
+            .and_then(|found| found.label().map(str::to_owned))
+    })
+    .unwrap()
+}
+
+#[gpui_kit::test]
+fn the_focused_account_shows_its_alert_and_keeps_it_after_notifying(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("alert-details", "{}");
+    std::fs::write(settings.0.join("dashboard.json"), ALERTS_ON).unwrap();
+    let provider = FakeProvider::new(Provider::Claude, "claude-1", Some(0.86));
+    let dashboard = open_live(cx, &settings, vec![provider.clone()]);
+    cx.run_until_parked();
+    let strongest = label_of(cx, "alert-strongest").expect("an alert is shown");
+    assert!(
+        strongest.starts_with("Usage alert: Weekly. 86% · Alert at 80% · resets in "),
+        "{strongest}"
+    );
+    // A refresh that sends no new notification keeps the alert on screen.
+    refresh(cx, &dashboard);
+    assert!(label_of(cx, "alert-strongest").is_some());
+    // Once usage falls below the recovery line, it goes.
+    provider.set(Some(0.4));
+    refresh(cx, &dashboard);
+    assert_eq!(label_of(cx, "alert-strongest"), None);
+    assert_eq!(
+        label_of(cx, "projected-status"),
+        None,
+        "observed usage, not a projection"
+    );
+}
