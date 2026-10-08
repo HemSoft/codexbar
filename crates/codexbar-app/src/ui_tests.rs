@@ -2013,3 +2013,89 @@ fn copilot_history_is_kept_while_discovery_still_shows_the_account(cx: &mut Test
     assert_eq!(history_points(cx, &dashboard, "copilot-bob", "premium-requests"), 0);
     assert_eq!(history_points(cx, &dashboard, "copilot-alice", "premium-requests"), 1);
 }
+
+const PLAINTEXT_KEY: &str = r#"{
+    "accountConfigurationVersion": 1,
+    "accounts": [],
+    "providers": { "OpenRouter": { "enabled": true, "apiKey": "sk-or-plaintext" } }
+}"#;
+
+#[gpui_kit::test]
+fn plaintext_keys_move_to_credential_manager_at_start(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("keys-move", PLAINTEXT_KEY);
+    let _dashboard = open_live_with(cx, &settings, vec![], MemoryCredentialStore::default());
+    cx.run_until_parked();
+    let text = std::fs::read_to_string(settings.0.join("settings.json")).unwrap();
+    assert!(!text.contains("sk-or-plaintext"), "the file no longer holds the key");
+    let implicit = codexbar_store::settings::legacy_id("OpenRouter", "");
+    assert_eq!(secret_of(cx, &implicit).as_deref(), Some("sk-or-plaintext"));
+    assert_eq!(cx.update(|cx| SettingsHub::global(cx).notice()), None);
+}
+
+#[gpui_kit::test]
+fn a_key_that_cannot_move_stays_usable_and_says_so(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("keys-stay", PLAINTEXT_KEY);
+    let _dashboard = open_live_with(cx, &settings, vec![], MemoryCredentialStore::failing());
+    cx.run_until_parked();
+    let text = std::fs::read_to_string(settings.0.join("settings.json")).unwrap();
+    assert!(text.contains("sk-or-plaintext"), "kept until it can move");
+    let notice = cx.update(|cx| SettingsHub::global(cx).notice()).expect("a notice");
+    assert_eq!(
+        notice.as_ref(),
+        "Keys for OpenRouter are still in the settings file: Windows Credential Manager failed (error 5). \
+         CodexBar tries again at the next start."
+    );
+    assert!(!notice.contains("sk-or"), "never the key itself");
+}
+
+#[gpui_kit::test]
+fn a_moved_key_still_works_after_the_first_account_is_added(cx: &mut TestAppContext) {
+    use codexbar_store::settings::{AccountRecord, AuthMethod, names};
+    let settings = TempSettings::new("keys-first-account", PLAINTEXT_KEY);
+    let _dashboard = open_live_with(cx, &settings, vec![], MemoryCredentialStore::default());
+    cx.run_until_parked();
+    // The key moved under the implicit account; now the first explicit account is added without a key.
+    let record = AccountRecord::new(names::OPENROUTER, "Work", AuthMethod::ApiKey);
+    cx.update(|cx| SettingsHub::update(cx, |settings| settings.upsert(record.clone())))
+        .unwrap();
+    // An OPENROUTER_API_KEY in the environment would win over every stored key; this case needs it unset.
+    if std::env::var_os("OPENROUTER_API_KEY").is_some() {
+        return;
+    }
+    let (secret, source) = cx.update(|cx| SettingsHub::global(cx).secret_for(&record));
+    // Compared without printing: a failure must never put a secret in the test output.
+    assert!(secret.as_deref() == Some("sk-or-plaintext"), "the moved key is found");
+    assert!(matches!(
+        source,
+        codexbar_store::credentials::SecretSource::CredentialManager
+    ));
+}
+
+#[gpui_kit::test]
+fn removing_the_first_account_also_deletes_the_moved_key(cx: &mut TestAppContext) {
+    use codexbar_store::settings::{AccountRecord, AuthMethod, names};
+    let settings = TempSettings::new("keys-remove-first", PLAINTEXT_KEY);
+    let dashboard = open_live_with(cx, &settings, vec![], MemoryCredentialStore::default());
+    cx.run_until_parked();
+    let implicit = codexbar_store::settings::legacy_id(names::OPENROUTER, "");
+    assert!(secret_of(cx, &implicit).is_some(), "moved under the implicit account");
+    let record = AccountRecord::new(names::OPENROUTER, "Work", AuthMethod::ApiKey);
+    cx.update(|cx| SettingsHub::update(cx, |settings| settings.upsert(record.clone())))
+        .unwrap();
+    let handle = cx.windows()[0];
+    cx.update(|cx| dashboard.update(cx, |dashboard, cx| dashboard.show_view(DashboardView::Settings, cx)));
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    cx.update_window(handle, |_, window, cx| {
+        window.within("settings-sidebar").click("0-1", cx)
+    })
+    .unwrap();
+    cx.run_until_parked();
+    click(cx, handle, format!("remove-{}", record.id));
+    press(cx, handle, "enter");
+    assert!(saved_settings(&settings).accounts().is_empty());
+    assert!(
+        secret_of(cx, &implicit).is_none(),
+        "the provider doesn't go on signing in with it"
+    );
+}

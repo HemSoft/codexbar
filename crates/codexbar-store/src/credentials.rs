@@ -13,11 +13,24 @@ pub struct CredentialError {
 
 impl fmt::Display for CredentialError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.code == VERIFY_FAILED {
+            return f.write_str("Windows Credential Manager didn't return the saved secret.");
+        }
         write!(f, "Windows Credential Manager failed (error {}).", self.code)
     }
 }
 
 impl std::error::Error for CredentialError {}
+
+impl CredentialError {
+    /// Credential Manager accepted a secret but returned something else when read back.
+    pub fn verification() -> Self {
+        Self { code: VERIFY_FAILED }
+    }
+}
+
+/// Not a Windows error code: the code `CredentialError::verification` reports.
+const VERIFY_FAILED: u32 = 0xC0DE_0001;
 
 /// Read, add/replace and delete secrets by account id.
 pub trait CredentialStore: Send + Sync {

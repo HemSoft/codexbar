@@ -30,16 +30,37 @@ impl SettingsHub {
     /// Loads settings from `dir` with the given credential store; tests pass a temporary folder and an in-memory
     /// store, so they never touch `~/.codexbar` or Windows Credential Manager.
     pub fn init_with(cx: &mut App, dir: &std::path::Path, credentials: Arc<dyn CredentialStore>) {
-        let (settings, load_error) = match Settings::load(dir) {
+        let (mut settings, load_error) = match Settings::load(dir) {
             Ok(settings) => (settings, None),
             Err(err) => (Settings::load_or_default(dir), Some(err)),
         };
+        // Plaintext keys an older CodexBar left in the file move to Credential Manager (#74). Only from a file this
+        // version can save; a key that couldn't move stays usable and is tried again at the next start.
+        let error = load_error
+            .is_none()
+            .then(|| {
+                let providers: Vec<&str> = crate::catalog::PROVIDERS
+                    .iter()
+                    .filter(|info| info.secret.is_some())
+                    .map(|info| info.id)
+                    .collect();
+                codexbar_store::settings::move_plaintext_keys(&mut settings, credentials.as_ref(), &providers)
+            })
+            .filter(|outcome| !outcome.failed.is_empty())
+            .map(|outcome| {
+                let providers: Vec<&str> = outcome.failed.iter().map(|(provider, _)| *provider).collect();
+                let reason = &outcome.failed[0].1;
+                SharedString::from(format!(
+                    "Keys for {} are still in the settings file: {reason} CodexBar tries again at the next start.",
+                    providers.join(", ")
+                ))
+            });
         cx.set_global(Self {
             settings,
             dir: dir.to_owned(),
             load_error,
             credentials,
-            error: None,
+            error,
             revision: 0,
         });
     }
@@ -141,10 +162,21 @@ impl SettingsHub {
             return (None, SecretSource::Missing);
         };
         let first = self.settings.accounts_for(info.id).next().map(|a| a.id.as_str());
-        let legacy = (first.is_none_or(|id| id == account.id))
-            .then(|| self.settings.api_key(info.id))
-            .flatten();
-        resolve_secret(Some(spec.env), self.credentials.as_ref(), &account.id, legacy)
+        let is_first = first.is_none_or(|id| id == account.id);
+        let legacy = is_first.then(|| self.settings.api_key(info.id)).flatten();
+        let resolved = resolve_secret(Some(spec.env), self.credentials.as_ref(), &account.id, legacy);
+        // A key moved from the file before the provider had accounts (#74) is kept under its implicit account; the
+        // provider's first account goes on using it until a key is saved for that account.
+        let implicit = codexbar_store::settings::legacy_id(info.id, "");
+        if matches!(resolved.1, SecretSource::Missing)
+            && is_first
+            && account.id != implicit
+            && let Ok(Some(secret)) = self.credentials.read(&implicit)
+            && !secret.trim().is_empty()
+        {
+            return (Some(secret), SecretSource::CredentialManager);
+        }
+        resolved
     }
 }
 
@@ -153,9 +185,7 @@ pub fn describe_source(source: &SecretSource) -> SharedString {
     match source {
         SecretSource::Environment(name) => format!("From the {name} environment variable").into(),
         SecretSource::CredentialManager => "Saved in Windows Credential Manager".into(),
-        SecretSource::SettingsFile => {
-            "In the settings file; moves to Credential Manager when the WPF app retires".into()
-        }
+        SecretSource::SettingsFile => "In the settings file; moves to Credential Manager at the next start".into(),
         SecretSource::Missing => "Not set".into(),
         SecretSource::StoreUnavailable(err) => format!("Credential Manager unavailable: {err}").into(),
     }
