@@ -1821,18 +1821,33 @@ impl UsageProvider for FixedProvider {
 }
 
 #[gpui_kit::test]
-fn claude_extra_usage_near_its_limit_shows_as_the_alert_in_its_currency(cx: &mut TestAppContext) {
+fn every_claude_limit_and_credit_shows_on_the_dashboard(cx: &mut TestAppContext) {
     let settings = TempSettings::new("claude-extra", "{}");
     std::fs::write(settings.0.join("dashboard.json"), ALERTS_ON).unwrap();
     let now = chrono::Utc::now();
     let resets = (now + chrono::Duration::days(3)).to_rfc3339();
     let payload = format!(
-        r#"{{"five_hour":{{"utilization":10,"resets_at":"{resets}"}},"seven_day":{{"utilization":20,"resets_at":"{resets}"}},
-            "extra_usage":{{"is_enabled":true,"monthly_limit":6000,"used_credits":5760,"currency":"SGD","decimal_places":2}}}}"#
+        r#"{{"limits":[
+            {{"kind":"session","percent":10,"resets_at":"{resets}"}},
+            {{"kind":"weekly_all","percent":20,"resets_at":"{resets}"}},
+            {{"kind":"weekly_scoped","percent":30,"resets_at":"{resets}","scope":{{"model":{{"display_name":"Fable"}}}}}}],
+          "spend":{{"enabled":true,"used":{{"amount_minor":5760,"currency":"SGD","exponent":2}},
+            "limit":{{"amount_minor":6000,"currency":"SGD","exponent":2}},
+            "balance":{{"amount_minor":10000,"currency":"SGD","exponent":2}}}}}}"#
     );
     let account = codexbar_providers::claude::parse_usage(&payload, Some("max"), now).unwrap();
     let _dashboard = open_live_fixed(cx, &settings, vec![Arc::new(FixedProvider(vec![account]))]);
     cx.run_until_parked();
+    // Every metric is listed with its value; windows also with their reset.
+    let listed: Vec<String> = (0..5usize)
+        .map(|ix| label_of(cx, ("account-metric", ix)).unwrap_or_default())
+        .collect();
+    assert!(listed[0].starts_with("5-hour window: 10%, resets in "), "{listed:?}");
+    assert!(listed[1].starts_with("Weekly: 20%, resets in "), "{listed:?}");
+    assert!(listed[2].starts_with("Weekly Fable: 30%, resets in "), "{listed:?}");
+    assert_eq!(listed[3], "Extra usage: S$57.60 of S$60.00");
+    assert_eq!(listed[4], "Credit balance: S$100.00 left");
+    // The credits near their cap are what raised the status, and the alert says so in the account's currency.
     let strongest = label_of(cx, "alert-strongest").expect("an alert is shown");
     assert!(
         strongest.starts_with("Limit soon: Extra usage. S$57.60 of S$60.00"),

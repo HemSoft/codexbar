@@ -33,11 +33,17 @@ fn claude_results_keep_their_id_and_metric_keys() {
     let account = claude::parse_usage(include_str!("fixtures/claude-usage.json"), None, now()).unwrap();
     assert_eq!(account.id().as_str(), "claude");
     assert_eq!(keys(&account), vec!["5-hour-window", "weekly"]);
-    // The current payload adds model-scoped weekly windows and extra usage (#82).
+    // The structured payload adds model-scoped weekly windows and usage credits (#82).
     let current = claude::parse_usage(include_str!("fixtures/claude-usage-current.json"), None, now()).unwrap();
     assert_eq!(
         keys(&current),
-        vec!["5-hour-window", "weekly", "weekly-opus", "weekly-fable", "extra-usage"]
+        vec![
+            "5-hour-window",
+            "weekly",
+            "weekly-fable",
+            "extra-usage",
+            "credit-balance"
+        ]
     );
 }
 

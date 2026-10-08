@@ -1214,6 +1214,7 @@ impl Dashboard {
                 )
                 .child(self.group_controls(account, cx))
                 .children(crate::alert_details::alert_details(&details, self.now, cx))
+                .children(crate::focus_cards::metric_list(account, self.now, cx))
                 // What the provider said besides numbers (#75), kept with last-good usage.
                 .children(account.messages().iter().enumerate().map(|(ix, message)| {
                     div()
