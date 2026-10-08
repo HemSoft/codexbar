@@ -121,6 +121,23 @@ pub fn metric_slot(metric: &Metric) -> String {
     }
 }
 
+/// True when two slots are the same window of the same metric. Reset times derived from a countdown move with request
+/// latency, so reset hours within an hour of each other are one window; windows last at least five hours.
+fn same_window(a: &str, b: &str) -> bool {
+    if a == b {
+        return true;
+    }
+    match (a.split_once('@'), b.split_once('@')) {
+        (Some((metric_a, hour_a)), Some((metric_b, hour_b))) if metric_a == metric_b => {
+            match (hour_a.parse::<i64>(), hour_b.parse::<i64>()) {
+                (Ok(hour_a), Ok(hour_b)) => (hour_a - hour_b).abs() <= 1,
+                _ => false,
+            }
+        }
+        _ => false,
+    }
+}
+
 /// Evaluates the accounts that refreshed successfully against the settings and the active keys.
 pub fn evaluate(
     settings: &AlertSettings,
@@ -133,7 +150,14 @@ pub fn evaluate(
         let id = account.id().as_str();
         for metric in account.metrics() {
             let first_new = out.notify.len();
-            let slot = metric_slot(metric);
+            let current = metric_slot(metric);
+            // An alert already held for this window keeps its slot, so a reset estimate that drifts by a few seconds
+            // across an hour boundary doesn't look like a new window.
+            let slot = active
+                .iter()
+                .filter_map(|key| split_key(key))
+                .find(|(account, key_slot, _)| *account == id && same_window(key_slot, &current))
+                .map_or(current, |(_, key_slot, _)| key_slot.to_owned());
             // Keys from an earlier window of this metric (or from before windows were part of the key) recover: that
             // window is over.
             let base = metric.key();
@@ -146,7 +170,7 @@ pub fn evaluate(
                             return false;
                         };
                         let key_metric = key_slot.split_once('@').map_or(key_slot, |(metric, _)| metric);
-                        account == id && key_metric == base && key_slot != slot
+                        account == id && key_metric == base && !same_window(key_slot, &slot)
                     })
                     .cloned(),
             );
@@ -696,6 +720,40 @@ mod window_tests {
             now(),
         );
         assert!(evaluate(&settings, &other, &[account], now()).recovered.is_empty());
+    }
+
+    #[test]
+    fn a_reset_estimate_drifting_across_an_hour_stays_one_window() {
+        let settings = AlertSettings {
+            enabled: true,
+            warning: false,
+            critical: false,
+            ..AlertSettings::default()
+        };
+        let at = |resets_at: DateTime<Utc>| {
+            AccountSnapshot::new(
+                AccountId::new("c"),
+                Provider::OpenCode,
+                vec![Metric::Window {
+                    label: "Go usage".into(),
+                    used: 0.9,
+                    resets_at,
+                    pace: None,
+                }],
+                now(),
+            )
+        };
+        // The countdown puts the reset a second before the hour, then (one slow request later) a second after.
+        let boundary = Utc.with_ymd_and_hms(2026, 10, 9, 15, 0, 0).unwrap();
+        let mut active = BTreeSet::new();
+        let first = evaluate(&settings, &active, &[at(boundary - Duration::seconds(1))], now());
+        assert_eq!(first.notify.len(), 1);
+        active.extend(first.notify[0].keys().cloned());
+        let drifted = evaluate(&settings, &active, &[at(boundary + Duration::seconds(1))], now());
+        assert!(
+            drifted.notify.is_empty() && drifted.recovered.is_empty(),
+            "same window, no repeat"
+        );
     }
 
     #[test]
