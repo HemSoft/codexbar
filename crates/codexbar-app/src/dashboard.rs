@@ -268,7 +268,7 @@ impl Dashboard {
                     .iter()
                     .map(|account| account.id().as_str().to_owned())
                     .collect();
-                crate::notifications::process(cx, &accounts, &shown, now);
+                crate::notifications::process(cx, &accounts, Some(&shown), now);
                 // Demo history keeps up with the demo accounts, as live history does.
                 let _ = self
                     .history
@@ -353,7 +353,12 @@ impl Dashboard {
                 .iter()
                 .map(|account| account.id().as_str().to_owned())
                 .collect();
-            crate::notifications::process(cx, &refreshed, &shown, Utc::now());
+            let shown = self.failures.is_empty().then_some(shown.as_slice());
+            crate::notifications::process(cx, &refreshed, shown, Utc::now());
+        } else {
+            // Run again under the current settings, so a crossed condition is still noticed even with automatic
+            // refresh off.
+            self.refresh_queued = true;
         }
         self.set_accounts(accounts, cx);
         if std::mem::take(&mut self.refresh_queued) {

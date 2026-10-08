@@ -112,10 +112,10 @@ impl Notifications {
 }
 
 /// Evaluates the accounts that refreshed successfully and delivers new alerts. Accounts whose provider failed are
-/// not passed in, so their alerts are neither cleared nor repeated. `shown` are all accounts the dashboard now
-/// shows, including a failed provider's last good ones; alerts of any other account (removed, disabled, or its
-/// provider switched off) recover.
-pub fn process(cx: &mut App, refreshed: &[AccountSnapshot], shown: &[String], now: DateTime<Utc>) {
+/// not passed in, so their alerts are neither cleared nor repeated. `shown` lists every account the dashboard now
+/// shows; alerts of any other account (removed, disabled, or its provider switched off) recover. Pass `None` when a
+/// provider failed: its accounts may not be listed (none known yet after a restart), so nothing is retired then.
+pub fn process(cx: &mut App, refreshed: &[AccountSnapshot], shown: Option<&[String]>, now: DateTime<Utc>) {
     let Some(notifier) = cx.try_global::<Notifications>().map(|global| global.notifier.clone()) else {
         return;
     };
@@ -127,18 +127,20 @@ pub fn process(cx: &mut App, refreshed: &[AccountSnapshot], shown: &[String], no
         active.remove(key);
     }
     let mut evaluation = evaluate(&settings, &active, refreshed, now);
-    evaluation.recovered.extend(
-        active
-            .iter()
-            .filter(|key| {
-                // Keys are `account|metric|kind`; the account id itself may contain `|`, so split from the right.
-                let account = key.rsplitn(3, '|').nth(2).unwrap_or_default();
-                !shown.iter().any(|id| id == account)
-            })
-            .filter(|key| !evaluation.recovered.contains(key))
-            .cloned()
-            .collect::<Vec<_>>(),
-    );
+    if let Some(shown) = shown {
+        evaluation.recovered.extend(
+            active
+                .iter()
+                .filter(|key| {
+                    // Keys are `account|metric|kind`; the account id itself may contain `|`, so split from the right.
+                    let account = key.rsplitn(3, '|').nth(2).unwrap_or_default();
+                    !shown.iter().any(|id| id == account)
+                })
+                .filter(|key| !evaluation.recovered.contains(key))
+                .cloned()
+                .collect::<Vec<_>>(),
+        );
+    }
     if evaluation.notify.is_empty()
         && evaluation.recovered.is_empty()
         && evaluation.covered.is_empty()

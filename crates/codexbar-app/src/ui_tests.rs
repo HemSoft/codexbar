@@ -735,11 +735,25 @@ fn alert_keys_for_account_ids_containing_the_separator_stay_active(cx: &mut Test
         crate::notifications::Notifications::init(cx, Arc::new(RecordingNotifier::default()), false);
         crate::notifications::Notifications::seed_for_test(cx, [key.clone()].into());
         // Nothing refreshed, and `team|west` is still shown: its alert must stay active.
-        crate::notifications::process(cx, &[], &["team|west".to_owned()], chrono::Utc::now());
+        crate::notifications::process(cx, &[], Some(&["team|west".to_owned()]), chrono::Utc::now());
         crate::notifications::Notifications::active(cx)
     });
     assert!(
         kept.contains(&key),
         "the whole id `team|west` is matched, not just `team`"
     );
+}
+
+#[gpui_kit::test]
+fn a_failed_provider_keeps_its_alerts_even_with_no_accounts_known(cx: &mut TestAppContext) {
+    use codexbar_core::alerts::{AlertKind, alert_key};
+    let key = alert_key("claude-1", "weekly", AlertKind::Usage);
+    let kept = cx.update(|cx| {
+        crate::notifications::Notifications::init(cx, Arc::new(RecordingNotifier::default()), false);
+        crate::notifications::Notifications::seed_for_test(cx, [key.clone()].into());
+        // First refresh after a restart: Claude failed, so none of its accounts are known to be shown.
+        crate::notifications::process(cx, &[], None, chrono::Utc::now());
+        crate::notifications::Notifications::active(cx)
+    });
+    assert!(kept.contains(&key), "a failed refresh retires nothing");
 }
