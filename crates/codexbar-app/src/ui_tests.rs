@@ -1845,7 +1845,7 @@ fn every_claude_limit_and_credit_shows_on_the_dashboard(cx: &mut TestAppContext)
     assert!(listed[0].starts_with("5-hour window: 10%, resets in "), "{listed:?}");
     assert!(listed[1].starts_with("Weekly: 20%, resets in "), "{listed:?}");
     assert!(listed[2].starts_with("Weekly Fable: 30%, resets in "), "{listed:?}");
-    assert_eq!(listed[3], "Extra usage: S$57.60 of S$60.00");
+    assert_eq!(listed[3], "Extra usage: S$57.60 of S$60.00, S$2.40 left to the limit");
     assert_eq!(listed[4], "Credit balance: S$100.00 left");
     // The credits near their cap are what raised the status, and the alert says so in the account's currency.
     let strongest = label_of(cx, "alert-strongest").expect("an alert is shown");

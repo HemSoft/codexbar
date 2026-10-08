@@ -96,10 +96,9 @@ pub fn parse_usage(
     let json: Value = serde_json::from_str(payload).map_err(|_| ProviderError::Unexpected { detail: "not JSON" })?;
     let mut metrics = windows(&json, now);
     let mut messages = Vec::new();
-    match money(&json) {
-        Ok(found) => metrics.extend(found),
-        Err(message) => messages.push(message),
-    }
+    let (found, notes) = money(&json);
+    metrics.extend(found);
+    messages.extend(notes);
     if metrics.is_empty() {
         return Err(ProviderError::Unexpected {
             detail: "no usage windows or credits for this account",
@@ -246,50 +245,65 @@ fn to_money(minor: f64, code: Option<&str>, places: Option<u32>) -> Result<Money
 }
 
 /// Usage credits: month-to-date spend against the monthly limit, and the prepaid balance when reported. From `spend`
-/// when present, else from `extra_usage`. Nothing while credits are off or not reported.
-fn money(json: &Value) -> Result<Vec<Metric>, String> {
+/// when present, else from `extra_usage`. Nothing while credits are off or not reported. Each amount stands alone: one
+/// that can't be read (say, a limit in an unknown currency) is left out with a message, and the others still show.
+fn money(json: &Value) -> (Vec<Metric>, Vec<String>) {
+    let mut metrics = Vec::new();
+    let mut messages: Vec<String> = Vec::new();
+    let mut keep = |result: Result<Money, String>| match result {
+        Ok(money) => Some(money),
+        Err(message) => {
+            if !messages.contains(&message) {
+                messages.push(message);
+            }
+            None
+        }
+    };
     if let Some(spend) = json.get("spend").filter(|spend| spend.is_object()) {
         if !spend.get("enabled").and_then(Value::as_bool).unwrap_or(false) {
-            return Ok(Vec::new());
+            return (metrics, messages);
         }
-        let mut metrics = Vec::new();
-        if let Some(used) = spend.get("used").and_then(amount) {
-            let used = used?;
-            let limit = match spend.get("limit").and_then(amount) {
-                Some(limit) => Some(limit?).filter(|limit| limit.cents() > 0),
-                None => None,
-            };
+        if let Some(used) = spend.get("used").and_then(amount).and_then(&mut keep) {
+            let limit = spend
+                .get("limit")
+                .and_then(amount)
+                .and_then(&mut keep)
+                .filter(|limit| limit.cents() > 0);
             metrics.push(credits(used, limit));
         }
-        if let Some(balance) = spend.get("balance").and_then(amount) {
+        if let Some(balance) = spend.get("balance").and_then(amount).and_then(&mut keep) {
             metrics.push(Metric::Balance {
                 label: "Credit balance".to_owned(),
-                remaining: balance?,
+                remaining: balance,
                 burn_per_day: None,
             });
         }
-        return Ok(metrics);
+        return (metrics, messages);
     }
     let Some(extra) = json.get("extra_usage").filter(|extra| extra.is_object()) else {
-        return Ok(Vec::new());
+        return (metrics, messages);
     };
     if !extra.get("is_enabled").and_then(Value::as_bool).unwrap_or(false) {
-        return Ok(Vec::new());
+        return (metrics, messages);
     }
-    let Some(used) = extra.get("used_credits").and_then(Value::as_f64) else {
-        return Ok(Vec::new());
-    };
     let code = extra.get("currency").and_then(Value::as_str);
     let places = extra
         .get("decimal_places")
         .and_then(Value::as_u64)
         .map(|places| places as u32);
-    let used = to_money(used, code, places)?;
-    let limit = match extra.get("monthly_limit").and_then(Value::as_f64) {
-        Some(limit) => Some(to_money(limit, code, places)?).filter(|limit| limit.cents() > 0),
-        None => None,
+    let reading = |field: &str| {
+        extra
+            .get(field)
+            .and_then(Value::as_f64)
+            .map(|value| to_money(value, code, places))
     };
-    Ok(vec![credits(used, limit)])
+    if let Some(used) = reading("used_credits").and_then(&mut keep) {
+        let limit = reading("monthly_limit")
+            .and_then(&mut keep)
+            .filter(|limit| limit.cents() > 0);
+        metrics.push(credits(used, limit));
+    }
+    (metrics, messages)
 }
 
 fn credits(used: Money, limit: Option<Money>) -> Metric {
@@ -555,6 +569,24 @@ mod tests {
         assert_eq!(unknown.metrics().len(), 1);
         assert_eq!(
             unknown.messages(),
+            ["Usage credits are billed in XAU, which CodexBar can't show yet."]
+        );
+    }
+
+    #[test]
+    fn a_bad_optional_amount_leaves_the_others() {
+        // The limit's currency is unknown: the spend shows without a cap, the balance still shows.
+        let account = with(
+            r#""spend":{"enabled":true,
+                "used":{"amount_minor":2500,"currency":"USD","exponent":2},
+                "limit":{"amount_minor":10000,"currency":"XAU","exponent":2},
+                "balance":{"amount_minor":4000,"currency":"USD","exponent":2}}"#,
+        )
+        .unwrap();
+        let shown: Vec<String> = account.metrics().iter().map(Metric::used_display).collect();
+        assert_eq!(shown, ["$25.00 spent", "$40.00 left"]);
+        assert_eq!(
+            account.messages(),
             ["Usage credits are billed in XAU, which CodexBar can't show yet."]
         );
     }

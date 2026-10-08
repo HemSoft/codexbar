@@ -138,6 +138,10 @@ pub fn metric_list(account: &AccountSnapshot, now: DateTime<Utc>, cx: &App) -> O
         if let Some(projected) = metric.projected_at_reset(now) {
             detail.push(format!("on pace for {:.0}%", projected * 100.0));
         }
+        // What is left under a spend limit, derived from spend and limit; never presented as a balance.
+        if let Some(headroom) = metric.headroom() {
+            detail.push(format!("{} left to the limit", headroom.display()));
+        }
         let detail = detail.join(" · ");
         let spoken = if detail.is_empty() {
             format!("{}: {}", metric.label(), metric.used_display())
