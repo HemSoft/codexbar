@@ -2168,3 +2168,44 @@ fn windows_high_contrast_overrides_the_choice_and_hands_back(cx: &mut TestAppCon
     cx.update(|cx| apply_with(cx, Appearance::Light, false, None));
     assert_eq!(cx.update(|cx| applied(cx)).unwrap().theme, "CodexBar Light");
 }
+
+#[gpui_kit::test]
+fn changing_themes_keeps_the_zoom_and_follows_a_new_contrast_scheme(cx: &mut TestAppContext) {
+    use crate::theme::{Appearance, SystemColors, apply_with};
+    use gpui_kit::component::ActiveTheme as _;
+    let settings = TempSettings::new("appearance-zoom", r#"{ "zoomLevel": 1.5 }"#);
+    let _dashboard = open_live(cx, &settings, vec![]);
+    cx.run_until_parked();
+    let zoomed = cx.update(|cx| cx.theme().font_size);
+    assert_eq!(zoomed, gpui_kit::px(24.0), "150% of 16");
+    cx.update(|cx| apply_with(cx, Appearance::Light, false, None));
+    assert_eq!(
+        cx.update(|cx| cx.theme().font_size),
+        zoomed,
+        "a theme change keeps the zoom"
+    );
+
+    let black = SystemColors {
+        window: "#000000".into(),
+        text: "#FFFFFF".into(),
+        highlight: "#1AEBFF".into(),
+        highlight_text: "#000000".into(),
+        disabled_text: "#3FF23F".into(),
+        hotlight: "#FFFF00".into(),
+    };
+    let white = SystemColors {
+        window: "#FFFFFF".into(),
+        text: "#000000".into(),
+        highlight: "#37006E".into(),
+        highlight_text: "#FFFFFF".into(),
+        disabled_text: "#600000".into(),
+        hotlight: "#00009F".into(),
+    };
+    cx.update(|cx| apply_with(cx, Appearance::Light, false, Some(black)));
+    assert_eq!(cx.update(|cx| cx.theme().background), gpui_kit::rgb(0x000000).into());
+    // The user switches high-contrast schemes while CodexBar runs.
+    cx.update(|cx| apply_with(cx, Appearance::Light, false, Some(white)));
+    assert_eq!(cx.update(|cx| cx.theme().background), gpui_kit::rgb(0xFFFFFF).into());
+    assert_eq!(cx.update(|cx| cx.theme().primary), gpui_kit::rgb(0x37006E).into());
+    assert_eq!(cx.update(|cx| cx.theme().font_size), zoomed);
+}

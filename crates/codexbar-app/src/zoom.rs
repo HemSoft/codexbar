@@ -217,6 +217,11 @@ fn flush(cx: &mut App) {
     }
 }
 
+/// The base font size at the current zoom, for a theme being applied (a theme resets it to 100%).
+pub fn font_size(cx: &App) -> gpui_kit::Pixels {
+    px(BASE_FONT_SIZE * level(cx) as f32)
+}
+
 fn apply(level: f64, cx: &mut App) {
     Theme::update(cx, |theme| theme.font_size = px(BASE_FONT_SIZE * level as f32));
 }

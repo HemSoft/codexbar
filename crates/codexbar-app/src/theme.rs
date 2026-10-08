@@ -5,7 +5,7 @@
 //! chose for it, whatever the choice here, as Windows apps are expected to.
 
 use gpui_kit::App;
-use gpui_kit::component::{Theme, ThemeRegistry};
+use gpui_kit::component::{Theme, ThemeRegistry, ThemeSet};
 
 const THEME_FILE: &str = include_str!("../themes/codexbar.json");
 const DARK: &str = "CodexBar Dark";
@@ -101,20 +101,26 @@ pub fn apply_with(cx: &mut App, appearance: Appearance, system_dark: bool, contr
         return;
     }
     let config = match &contrast {
-        Some(colors) => {
-            let json = high_contrast_json(colors);
-            if let Err(err) = ThemeRegistry::global_mut(cx).load_themes_from_str(&json) {
+        // Parsed here rather than registered: any change to the registry makes gpui-kit re-apply the current theme
+        // afterwards, which would undo the zoom set below.
+        Some(colors) => match serde_json::from_str::<ThemeSet>(&high_contrast_json(colors)) {
+            Ok(set) => set.themes.into_iter().next().map(std::rc::Rc::new),
+            Err(err) => {
                 eprintln!("codexbar: high contrast theme failed to load: {err}");
                 return;
             }
-            ThemeRegistry::global(cx).themes().get(HIGH_CONTRAST).cloned()
-        }
+        },
         None => ThemeRegistry::global(cx).themes().get(theme).cloned(),
     };
     let Some(config) = config else {
         return;
     };
-    Theme::update(cx, |current| current.apply_config(&config));
+    // A theme carries a 100% font size; keep the user's zoom (#116).
+    let font_size = crate::zoom::font_size(cx);
+    Theme::update(cx, |current| {
+        current.apply_config(&config);
+        current.font_size = font_size;
+    });
     let state = cx.global_mut::<State>();
     state.applied = Some(wanted);
     state.contrast = contrast;
@@ -191,8 +197,27 @@ fn system_high_contrast() -> Option<SystemColors> {
     None
 }
 
-/// A theme made of the user's high-contrast colors: window and text everywhere, the highlight for anything selected or
-/// primary, and the text color for every boundary. Status keeps its words and icons; its colors become the highlight.
+/// The registry name of the theme for one high-contrast scheme.
+fn high_contrast_name(colors: &SystemColors) -> String {
+    let id: String = [
+        &colors.window,
+        &colors.text,
+        &colors.highlight,
+        &colors.highlight_text,
+        &colors.disabled_text,
+        &colors.hotlight,
+    ]
+    .iter()
+    .map(|color| color.trim_start_matches('#'))
+    .collect();
+    format!("{HIGH_CONTRAST} {id}")
+}
+
+/// A theme made of the user's high-contrast colors, always in Windows' pairs: window text on the window, highlight
+/// text on the highlight. Marks on the window (focus ring, caret, charts, progress) use the window text, which is
+/// guaranteed to show there; filled controls (buttons, status) use the highlight with its text. Hovered and selected
+/// rows keep the window background and show a highlight border, since a row's text doesn't change color. Supporting
+/// and disabled text use the scheme's disabled-text color. Status keeps its words and icons.
 fn high_contrast_json(colors: &SystemColors) -> String {
     let dark = luminance(&colors.window) < 0.5;
     let (window, text, highlight, highlight_text) =
@@ -210,9 +235,13 @@ fn high_contrast_json(colors: &SystemColors) -> String {
         "secondary.active.background",
         "skeleton.background",
         "list.head.background",
+        "list.hover.background",
+        "list.active.background",
         "table.background",
         "table.head.background",
         "table.even.background",
+        "table.hover.background",
+        "table.active.background",
         "sidebar.background",
         "sidebar.accent.background",
         "tab_bar.segmented.background",
@@ -222,8 +251,6 @@ fn high_contrast_json(colors: &SystemColors) -> String {
     let transparent = [
         "list.background",
         "list.even.background",
-        "list.active.border",
-        "table.active.border",
         "tab.background",
         "tab.active.background",
         "tab_bar.background",
@@ -232,7 +259,6 @@ fn high_contrast_json(colors: &SystemColors) -> String {
     let foreground = [
         "foreground",
         "accent.foreground",
-        "muted.foreground",
         "group_box.foreground",
         "group_box.title.foreground",
         "popover.foreground",
@@ -242,9 +268,9 @@ fn high_contrast_json(colors: &SystemColors) -> String {
         "sidebar.accent.foreground",
         "tab.foreground",
         "tab.active.foreground",
-        "chart.4",
     ];
-    let lines = [
+    // Marks drawn straight on the window.
+    let marks = [
         "border",
         "window.border",
         "input.border",
@@ -254,10 +280,24 @@ fn high_contrast_json(colors: &SystemColors) -> String {
         "status_bar.border",
         "chart.grid",
         "scrollbar.thumb.background",
-    ];
-    let emphasis = [
+        "scrollbar.thumb.hover.background",
         "ring",
         "caret",
+        "chart.1",
+        "chart.2",
+        "chart.4",
+        "chart.bullish",
+        "chart.bearish",
+        "progress.bar.background",
+        "base.cyan",
+        "base.green",
+        "base.yellow",
+        "base.red",
+        "base.blue",
+        "base.magenta",
+    ];
+    // Filled controls: the highlight, with its own text on top.
+    let filled = [
         "primary.background",
         "primary.hover.background",
         "primary.active.background",
@@ -274,25 +314,11 @@ fn high_contrast_json(colors: &SystemColors) -> String {
         "info.background",
         "info.hover.background",
         "info.active.background",
-        "chart.1",
-        "chart.2",
-        "chart.bullish",
-        "chart.bearish",
-        "progress.bar.background",
-        "list.hover.background",
-        "list.active.background",
-        "table.hover.background",
-        "table.active.background",
         "selection.background",
-        "scrollbar.thumb.hover.background",
-        "base.cyan",
-        "base.green",
-        "base.yellow",
-        "base.red",
-        "base.blue",
-        "base.magenta",
+        "list.active.border",
+        "table.active.border",
     ];
-    let on_emphasis = [
+    let on_filled = [
         "primary.foreground",
         "sidebar.primary.foreground",
         "danger.foreground",
@@ -307,17 +333,19 @@ fn high_contrast_json(colors: &SystemColors) -> String {
     put(&surface, window);
     put(&transparent, "#00000000");
     put(&foreground, text);
-    put(&lines, text);
-    put(&emphasis, highlight);
-    put(&on_emphasis, highlight_text);
+    put(&marks, text);
+    put(&filled, highlight);
+    put(&on_filled, highlight_text);
+    // Supporting and disabled text: gpui-kit draws disabled controls in `muted.foreground`.
+    put(&["muted.foreground", "chart.5"], disabled);
     put(&["chart.3"], link);
-    put(&["chart.5"], disabled);
     put(&["overlay"], "#00000099");
     format!(
         r#"{{"name": "CodexBar High Contrast", "author": "HemSoft", "themes": [{{
-            "name": "{HIGH_CONTRAST}", "mode": "{mode}", "font.size": 16, "font.family": "Segoe UI Variable Text",
+            "name": "{name}", "mode": "{mode}", "font.size": 16, "font.family": "Segoe UI Variable Text",
             "mono_font.family": "Cascadia Mono", "radius": 6, "radius.lg": 10, "shadow": false,
             "colors": {{ {colors} }} }}]}}"#,
+        name = high_contrast_name(colors),
         mode = if dark { "dark" } else { "light" },
         colors = entries.join(", ")
     )
@@ -411,6 +439,18 @@ mod tests {
         assert_eq!(c["foreground"], "#FFFFFF");
         assert_eq!(c["primary.background"], "#1AEBFF");
         assert_eq!(c["border"], "#FFFFFF");
+        // Pairs only: marks on the window use its text, hovered rows keep the window, disabled text its own color.
+        assert_eq!(c["ring"], "#FFFFFF");
+        assert_eq!(c["chart.1"], "#FFFFFF");
+        assert_eq!(c["table.hover.background"], "#000000");
+        assert_eq!(c["table.active.border"], "#1AEBFF");
+        assert_eq!(c["primary.foreground"], "#000000");
+        assert_eq!(c["muted.foreground"], "#3FF23F");
+        assert_ne!(
+            high_contrast_name(&scheme),
+            HIGH_CONTRAST,
+            "each scheme has its own name"
+        );
         // Every brand token is covered, so nothing keeps a brand color under high contrast.
         let brand = colors(DARK);
         let missing: Vec<&String> = brand.keys().filter(|key| !c.contains_key(*key)).collect();
