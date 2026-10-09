@@ -2305,6 +2305,15 @@ fn sign_in_tokens_are_kept_in_and_replaced_through_credential_manager(cx: &mut T
         .unwrap();
     let stored = cx.update(|cx| SettingsHub::global(cx).tokens_for("acct")).unwrap();
     assert!(stored == Some(long), "long tokens round-trip");
+    // Removing the account's secret removes every part.
+    cx.update(|cx| codexbar_store::credentials::delete_long(SettingsHub::global(cx).credentials().as_ref(), "acct"))
+        .unwrap();
+    assert!(
+        cx.update(|cx| SettingsHub::global(cx).tokens_for("acct"))
+            .unwrap()
+            .is_none()
+    );
+    assert!(secret_of(cx, "acct#part1.0").is_none() && secret_of(cx, "acct#part2.0").is_none());
     // Nothing goes to the settings file.
     let text = std::fs::read_to_string(settings.0.join("settings.json")).unwrap_or_default();
     assert!(!text.contains("at-2") && !text.contains("rt-1"));

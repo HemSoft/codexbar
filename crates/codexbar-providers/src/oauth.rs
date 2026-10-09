@@ -484,8 +484,9 @@ fn token_request(
     let expires_at = match value
         .get("expires_in")
         .and_then(|seconds| seconds.as_i64().or_else(|| seconds.as_str()?.parse().ok()))
-        .filter(|seconds| *seconds > 0)
     {
+        // A negative lifetime is malformed; zero means the token is already expired, so it is renewed at once.
+        Some(seconds) if seconds < 0 => return Err(OAuthError::InvalidResponse),
         Some(seconds) => Some(
             chrono::Duration::try_seconds(seconds)
                 .and_then(|lifetime| now.checked_add_signed(lifetime))
@@ -784,6 +785,16 @@ mod tests {
             exchange(&huge, &client(), &callback(), now()).err(),
             Some(OAuthError::InvalidResponse)
         );
+        let negative = Token::new(200, r#"{"access_token":"at","expires_in":-5}"#);
+        assert_eq!(
+            exchange(&negative, &client(), &callback(), now()).err(),
+            Some(OAuthError::InvalidResponse)
+        );
+        // Zero is "already expired": renew before use, never "doesn't expire".
+        let zero = Token::new(200, r#"{"access_token":"at","expires_in":0}"#);
+        let tokens = exchange(&zero, &client(), &callback(), now()).unwrap();
+        assert_eq!(tokens.expires_at, Some(now()));
+        assert!(tokens.expires_within(chrono::Duration::zero(), now()));
     }
 
     #[test]
