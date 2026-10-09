@@ -141,7 +141,7 @@ pub fn copilot_discovers_all(hub: &SettingsHub) -> bool {
 /// reports under the legacy id, so nothing moves until the first account is configured; with several configured
 /// accounts the legacy history's owner is unknown, so nothing moves.
 pub fn legacy_ids(hub: &SettingsHub) -> Vec<(&'static str, String)> {
-    [("openrouter", names::OPENROUTER), ("moonshot", names::MOONSHOT)]
+    let mut renames: Vec<(&'static str, String)> = [("openrouter", names::OPENROUTER), ("moonshot", names::MOONSHOT)]
         .into_iter()
         .filter_map(|(legacy, provider)| {
             let records: Vec<&AccountRecord> = hub.settings().accounts_for(provider).collect();
@@ -150,7 +150,16 @@ pub fn legacy_ids(hub: &SettingsHub) -> Vec<(&'static str, String)> {
                 _ => None,
             }
         })
-        .collect()
+        .collect();
+    // Cursor reported as one `cursor` account before accounts were told apart (#81); that history belongs to the
+    // account signed in when this version first runs. Tests never read the real Cursor sign-in.
+    if !cfg!(test)
+        && let Some(account) = cursor::signed_in_account(&cursor::default_auth_path())
+            .filter(|account| account.as_str() != cursor::LEGACY_ID)
+    {
+        renames.push((cursor::LEGACY_ID, account.as_str().to_owned()));
+    }
+    renames
 }
 
 /// Go and Zen share one dashboard account; either half can be switched off. Zen falls back to Go's cookie.

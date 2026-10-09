@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use chrono::{DateTime, Months, Utc};
 use codexbar_core::{AccountId, AccountSnapshot, Metric, Money, Provider};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 use crate::pace::elapsed_pace;
 use crate::{HttpClient, ProviderError, UsageProvider};
@@ -80,11 +81,71 @@ pub fn parse_usage(payload: &str, now: DateTime<Utc>) -> Result<AccountSnapshot,
     }
     metrics.extend(on_demand(&json, resets_at));
     Ok(AccountSnapshot::new(
-        AccountId::new("cursor"),
+        AccountId::new(LEGACY_ID),
         Provider::Cursor,
         metrics,
         now,
     ))
+}
+
+/// The id Cursor reported under before accounts were told apart (#81); still used when a token carries no identity.
+pub const LEGACY_ID: &str = "cursor";
+
+/// The account a Cursor sign-in belongs to (#81): `cursor-` and a short hash of the token's subject, so each Cursor
+/// account keeps its own history, label and alerts, and signing in to another account never inherits them. The token
+/// is only read, never validated: this names the account, it doesn't authenticate anything. A token that isn't a
+/// readable JWT keeps the legacy id.
+pub fn account_id_for_token(token: &str) -> AccountId {
+    match token_subject(token) {
+        Some(subject) => {
+            let digest = Sha256::digest(subject.as_bytes());
+            let short: String = digest.iter().take(6).map(|byte| format!("{byte:02x}")).collect();
+            AccountId::new(format!("cursor-{short}"))
+        }
+        None => AccountId::new(LEGACY_ID),
+    }
+}
+
+/// The account the sign-in in `path` belongs to, when there is one.
+pub fn signed_in_account(path: &Path) -> Option<AccountId> {
+    read_access_token(path).ok().map(|token| account_id_for_token(&token))
+}
+
+/// The `sub` claim of a JWT's payload.
+fn token_subject(token: &str) -> Option<String> {
+    let payload = token.split('.').nth(1)?;
+    let bytes = base64url_decode(payload)?;
+    let claims: Value = serde_json::from_slice(&bytes).ok()?;
+    claims
+        .get("sub")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|subject| !subject.is_empty())
+        .map(str::to_owned)
+}
+
+fn base64url_decode(text: &str) -> Option<Vec<u8>> {
+    let value = |ch: u8| -> Option<u32> {
+        Some(match ch {
+            b'A'..=b'Z' => ch - b'A',
+            b'a'..=b'z' => ch - b'a' + 26,
+            b'0'..=b'9' => ch - b'0' + 52,
+            b'-' | b'+' => 62,
+            b'_' | b'/' => 63,
+            _ => return None,
+        } as u32)
+    };
+    let digits: Vec<u32> = text.trim_end_matches('=').bytes().map(value).collect::<Option<_>>()?;
+    let mut out = Vec::with_capacity(digits.len() * 3 / 4);
+    for chunk in digits.chunks(4) {
+        let n = chunk
+            .iter()
+            .enumerate()
+            .fold(0u32, |acc, (ix, digit)| acc | digit << (18 - 6 * ix));
+        let bytes = [(n >> 16) as u8, (n >> 8) as u8, n as u8];
+        out.extend_from_slice(&bytes[..chunk.len().saturating_sub(1)]);
+    }
+    Some(out)
 }
 
 /// Unix milliseconds, as a number or a numeric string.
@@ -128,11 +189,17 @@ fn on_demand(json: &Value, resets_at: DateTime<Utc>) -> Vec<Metric> {
 pub struct CursorProvider<H: HttpClient> {
     http: H,
     auth_path: PathBuf,
+    /// The account the last fetch was for, to say so when the Cursor app is signed in to another one.
+    last_account: std::sync::Mutex<Option<AccountId>>,
 }
 
 impl<H: HttpClient> CursorProvider<H> {
     pub fn new(http: H, auth_path: PathBuf) -> Self {
-        Self { http, auth_path }
+        Self {
+            http,
+            auth_path,
+            last_account: std::sync::Mutex::default(),
+        }
     }
 }
 
@@ -152,7 +219,22 @@ impl<H: HttpClient> UsageProvider for CursorProvider<H> {
         ];
         let response = self.http.post_json(USAGE_ENDPOINT, &headers, "{}")?;
         match response.status {
-            200..=299 => parse_usage(&response.body, now).map(|account| vec![account]),
+            200..=299 => {
+                let id = account_id_for_token(&token);
+                let usage = parse_usage(&response.body, now)?;
+                let mut account = AccountSnapshot::new(id.clone(), Provider::Cursor, usage.metrics().to_vec(), now);
+                let mut last = self
+                    .last_account
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                if last.as_ref().is_some_and(|previous| *previous != id) {
+                    account = account.with_message(
+                        "The Cursor app is signed in to a different account. The previous account's usage stays with it.",
+                    );
+                }
+                *last = Some(id);
+                Ok(vec![account])
+            }
             401 | 403 => Err(ProviderError::Expired { hint: SIGN_IN_HINT }),
             status => Err(ProviderError::Http { status }),
         }
@@ -309,6 +391,90 @@ mod tests {
         let numeric = r#"{"billingCycleEnd":1792540800000,"planUsage":{"totalPercentUsed":10}}"#;
         assert_eq!(parse_usage(numeric, now()).unwrap().metrics().len(), 1);
         assert!(parse_usage(r#"{"billingCycleEnd":1792540800000}"#, now()).is_err());
+    }
+
+    /// An unsigned JWT with the given subject, shaped like Cursor's.
+    fn token(subject: &str) -> String {
+        let encode = |text: &str| {
+            const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+            let bytes = text.as_bytes();
+            let mut out = String::new();
+            for chunk in bytes.chunks(3) {
+                let n = ((chunk[0] as u32) << 16)
+                    | ((chunk.get(1).copied().unwrap_or(0) as u32) << 8)
+                    | (chunk.get(2).copied().unwrap_or(0) as u32);
+                for ix in 0..=chunk.len() {
+                    out.push(ALPHABET[((n >> (18 - 6 * ix)) & 63) as usize] as char);
+                }
+            }
+            out
+        };
+        format!(
+            "{}.{}.signature",
+            encode(r#"{"alg":"HS256","typ":"JWT"}"#),
+            encode(&format!(r#"{{"sub":"{subject}","type":"session","scope":"openid"}}"#))
+        )
+    }
+
+    #[test]
+    fn each_cursor_sign_in_is_its_own_account() {
+        let alice = account_id_for_token(&token("google-oauth2|111"));
+        let bob = account_id_for_token(&token("google-oauth2|222"));
+        assert!(alice.as_str().starts_with("cursor-") && alice.as_str().len() == "cursor-".len() + 12);
+        assert_ne!(alice, bob);
+        assert_eq!(
+            alice,
+            account_id_for_token(&token("google-oauth2|111")),
+            "stable for one account"
+        );
+        assert!(!alice.as_str().contains("111"), "the subject itself isn't exposed");
+        // A token that isn't a readable JWT keeps the legacy id.
+        assert_eq!(account_id_for_token("opaque-token").as_str(), LEGACY_ID);
+        assert_eq!(account_id_for_token("a.%%%.c").as_str(), LEGACY_ID);
+    }
+
+    struct Auth(PathBuf);
+
+    impl Auth {
+        fn new(name: &str, subject: &str) -> Self {
+            let path = std::env::temp_dir().join(format!("codexbar-cursor-{}-{name}.json", std::process::id()));
+            let auth = Self(path);
+            auth.sign_in(subject);
+            auth
+        }
+
+        fn sign_in(&self, subject: &str) {
+            std::fs::write(&self.0, format!(r#"{{"accessToken":"{}"}}"#, token(subject))).unwrap();
+        }
+    }
+
+    impl Drop for Auth {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    #[test]
+    fn switching_cursor_accounts_starts_a_separate_account_and_says_so() {
+        let auth = Auth::new("switch", "google-oauth2|111");
+        let provider = CursorProvider::new(Fixed(HttpResponse::new(200, USAGE)), auth.0.clone());
+        let first = provider.fetch(now()).unwrap().remove(0);
+        assert_eq!(first.id(), &account_id_for_token(&token("google-oauth2|111")));
+        assert!(first.messages().is_empty());
+        assert_eq!(signed_in_account(&auth.0), Some(first.id().clone()));
+        // The Cursor app signs in to another account.
+        auth.sign_in("google-oauth2|222");
+        let second = provider.fetch(now()).unwrap().remove(0);
+        assert_ne!(second.id(), first.id(), "nothing carries over");
+        assert_eq!(second.metrics().len(), first.metrics().len());
+        assert_eq!(
+            second.messages(),
+            ["The Cursor app is signed in to a different account. The previous account's usage stays with it."]
+        );
+        // Signed out: no account at all.
+        std::fs::remove_file(&auth.0).unwrap();
+        assert!(matches!(provider.fetch(now()), Err(ProviderError::NotSignedIn { .. })));
+        assert_eq!(signed_in_account(&auth.0), None);
     }
 
     #[test]
