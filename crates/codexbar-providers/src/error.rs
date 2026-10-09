@@ -17,6 +17,19 @@ pub enum ProviderError {
     Unexpected { detail: &'static str },
 }
 
+impl ProviderError {
+    /// The message, with any time in it formatted by `time` (the app passes the user's locale, #84). `Display` uses
+    /// a 24-hour clock in the local timezone.
+    pub fn describe_with(&self, time: &dyn Fn(chrono::DateTime<chrono::Utc>) -> String) -> String {
+        match self {
+            Self::RateLimited { retry_at } => {
+                format!("Rate-limited by the provider; retrying at {}.", time(*retry_at))
+            }
+            other => other.to_string(),
+        }
+    }
+}
+
 impl fmt::Display for ProviderError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

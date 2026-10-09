@@ -11,6 +11,11 @@ pub fn style() -> &'static dyn DateStyle {
     if cfg!(test) { &English } else { &WindowsLocale }
 }
 
+/// A provider error's message with any time in the user's locale and timezone.
+pub fn describe(error: &codexbar_providers::ProviderError) -> String {
+    error.describe_with(&|at| style().time(at.with_timezone(&chrono::Local).naive_local()))
+}
+
 /// The Windows user locale, through `GetDateFormatEx` and `GetTimeFormatEx`; English if a call fails.
 pub struct WindowsLocale;
 
@@ -22,7 +27,14 @@ mod win {
     };
     use windows::core::{HSTRING, PCWSTR};
 
-    fn read(buffer: &[u16], written: i32) -> Option<String> {
+    /// Runs a Windows formatting call twice: first to learn the length it needs, then into a buffer of that size.
+    fn sized(call: impl Fn(Option<&mut [u16]>) -> i32) -> Option<String> {
+        let needed = call(None);
+        if needed <= 1 {
+            return None;
+        }
+        let mut buffer = vec![0u16; needed as usize];
+        let written = call(Some(&mut buffer));
         // `written` counts the terminating NUL.
         (written > 1).then(|| String::from_utf16_lossy(&buffer[..written as usize - 1]))
     }
@@ -31,34 +43,17 @@ mod win {
     pub fn date(when: &SYSTEMTIME, flags: ENUM_DATE_FORMATS_FLAGS, picture: Option<&str>) -> Option<String> {
         let picture = picture.map(HSTRING::from);
         let format = picture.as_ref().map_or(PCWSTR::null(), |p| PCWSTR(p.as_ptr()));
-        let mut buffer = [0u16; 80];
-        // SAFETY: `when` and `buffer` outlive the call; a null locale name means the user default locale.
-        let written = unsafe {
-            GetDateFormatEx(
-                PCWSTR::null(),
-                flags,
-                Some(when),
-                format,
-                Some(&mut buffer),
-                PCWSTR::null(),
-            )
-        };
-        read(&buffer, written)
+        sized(|buffer| {
+            // SAFETY: `when`, `format` and `buffer` outlive the call; a null locale name is the user default locale.
+            unsafe { GetDateFormatEx(PCWSTR::null(), flags, Some(when), format, buffer, PCWSTR::null()) }
+        })
     }
 
     pub fn time(when: &SYSTEMTIME) -> Option<String> {
-        let mut buffer = [0u16; 40];
-        // SAFETY: as above; a null format uses the locale's own time format.
-        let written = unsafe {
-            GetTimeFormatEx(
-                PCWSTR::null(),
-                TIME_NOSECONDS,
-                Some(when),
-                PCWSTR::null(),
-                Some(&mut buffer),
-            )
-        };
-        read(&buffer, written)
+        sized(|buffer| {
+            // SAFETY: as above; a null format uses the locale's own time format.
+            unsafe { GetTimeFormatEx(PCWSTR::null(), TIME_NOSECONDS, Some(when), PCWSTR::null(), buffer) }
+        })
     }
 
     pub use windows::Win32::Globalization::ENUM_DATE_FORMATS_FLAGS as Flags;
@@ -133,6 +128,18 @@ mod tests {
         let month_day = WindowsLocale.month_day(at.date());
         assert!(month_day.contains('8'), "{month_day}");
         assert!(WindowsLocale.full(at).contains(&month_day));
+    }
+
+    #[test]
+    fn rate_limit_messages_take_the_time_from_the_style() {
+        let at = chrono::Utc::now();
+        let error = codexbar_providers::ProviderError::RateLimited { retry_at: at };
+        let shown = error.describe_with(&|_| "9:05 AM".to_owned());
+        assert_eq!(shown, "Rate-limited by the provider; retrying at 9:05 AM.");
+        assert!(describe(&error).starts_with("Rate-limited by the provider; retrying at "));
+        // Other errors read as before.
+        let network = codexbar_providers::ProviderError::Network;
+        assert_eq!(describe(&network), network.to_string());
     }
 
     #[test]

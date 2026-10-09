@@ -600,7 +600,7 @@ impl Dashboard {
                             // One account of the provider failed while others succeeded: keep its last good usage
                             // (or show it unavailable) and list it as its own failure.
                             AccountOutcome::Failed { account, label, error } => {
-                                let message = error.to_string();
+                                let message = crate::locale::describe(&error);
                                 let known = self.accounts.iter().find(|shown| shown.id() == &account).cloned();
                                 let row = known.unwrap_or_else(|| {
                                     self.placeholders.insert(account.as_str().to_owned());
@@ -632,7 +632,7 @@ impl Dashboard {
                 Err(error) => {
                     // Keep the failed adapter's last good snapshots (or its placeholder) visible, marked stale. An
                     // adapter for one configured account keeps only that account; its siblings report separately.
-                    let message = error.to_string();
+                    let message = crate::locale::describe(&error);
                     let belongs = |a: &&AccountSnapshot| match &account_id {
                         Some(id) => a.id().as_str() == id,
                         None => a.provider().display_name() == provider,
