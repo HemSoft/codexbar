@@ -217,7 +217,8 @@ impl Authorization {
     }
 
     /// Waits for the callback with the matching state and returns its authorization code, with the PKCE verifier the
-    /// exchange needs. Stops at `timeout` or when `cancel` is set.
+    /// exchange needs. Stops at `timeout` or when `cancel` is set, including while a slow connection is being read.
+    /// The browser's answer for the matching callback waits until `Callback::finish`, so it can say how sign-in ended.
     pub fn wait(self, timeout: Duration, cancel: &AtomicBool) -> Result<Callback, OAuthError> {
         self.listener.set_nonblocking(true).map_err(|_| OAuthError::Listener)?;
         let deadline = Instant::now() + timeout;
@@ -229,44 +230,37 @@ impl Authorization {
                 return Err(OAuthError::Timeout);
             }
             match self.listener.accept() {
-                Ok((stream, peer)) if peer.ip().is_loopback() => {
-                    if let Some(outcome) = self.handle(stream) {
-                        return outcome.map(|code| Callback {
+                Ok((stream, peer)) if peer.ip().is_loopback() => match self.handle(stream, deadline, cancel) {
+                    Handled::Ignored => {}
+                    Handled::Stopped(err) => return Err(err),
+                    Handled::Code(code, stream) => {
+                        return Ok(Callback {
                             code,
                             verifier: self.pkce.verifier.clone(),
                             redirect_uri: self.redirect_uri.clone(),
+                            reply: Some(stream),
                         });
                     }
-                }
+                },
                 // Bound to loopback only; anything else is dropped unanswered.
                 Ok(_) => {}
-                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
-                    std::thread::sleep(Duration::from_millis(25));
-                }
                 Err(_) => std::thread::sleep(Duration::from_millis(25)),
             }
         }
     }
 
-    /// Answers one request. `Some` ends the sign-in (the code, or a refusal); `None` keeps waiting.
-    fn handle(&self, mut stream: TcpStream) -> Option<Result<String, OAuthError>> {
-        let _ = stream.set_nonblocking(false);
-        let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
-        let mut buffer = [0u8; 8192];
-        let mut read = 0;
-        while read < buffer.len() {
-            match stream.read(&mut buffer[read..]) {
-                Ok(0) => break,
-                Ok(n) => {
-                    read += n;
-                    if buffer[..read].windows(4).any(|end| end == b"\r\n\r\n") {
-                        break;
-                    }
-                }
-                Err(_) => break,
+    /// Reads and answers one request.
+    fn handle(&self, mut stream: TcpStream, deadline: Instant, cancel: &AtomicBool) -> Handled {
+        let Some(head) = read_head(&mut stream, deadline, cancel) else {
+            if cancel.load(Ordering::SeqCst) {
+                return Handled::Stopped(OAuthError::Cancelled);
             }
-        }
-        let head = String::from_utf8_lossy(&buffer[..read]);
+            if Instant::now() >= deadline {
+                return Handled::Stopped(OAuthError::Timeout);
+            }
+            respond(&mut stream, 400, "This isn't a sign-in request.");
+            return Handled::Ignored;
+        };
         let target = head
             .lines()
             .next()
@@ -274,12 +268,12 @@ impl Authorization {
             .and_then(|rest| rest.split(' ').next());
         let Some(target) = target else {
             respond(&mut stream, 400, "This isn't a sign-in request.");
-            return None;
+            return Handled::Ignored;
         };
         let (path, query) = target.split_once('?').unwrap_or((target, ""));
         if path != self.redirect_path {
             respond(&mut stream, 404, "Not found.");
-            return None;
+            return Handled::Ignored;
         }
         let pairs: Vec<(String, String)> = form_urlencoded::parse(query.as_bytes()).into_owned().collect();
         let get = |key: &str| {
@@ -294,34 +288,106 @@ impl Authorization {
                 400,
                 "This sign-in link doesn't match. Start the sign-in again from CodexBar.",
             );
-            return None;
+            return Handled::Ignored;
         }
         if let Some(error) = get("error") {
             respond(&mut stream, 200, "Sign-in was declined. You can close this window.");
-            return Some(Err(OAuthError::Denied(short_code(error))));
+            return Handled::Stopped(OAuthError::Denied(short_code(error)));
         }
         match get("code").filter(|code| !code.is_empty()) {
-            Some(code) => {
-                respond(
-                    &mut stream,
-                    200,
-                    "Signed in. You can close this window and return to CodexBar.",
-                );
-                Some(Ok(code.to_owned()))
-            }
+            Some(code) => Handled::Code(code.to_owned(), stream),
             None => {
                 respond(&mut stream, 400, "The sign-in answer was incomplete.");
-                None
+                Handled::Ignored
             }
         }
     }
 }
 
-/// What a successful callback carries into the token exchange.
+enum Handled {
+    /// Not the callback: answered, keep waiting.
+    Ignored,
+    /// The sign-in ends without a code.
+    Stopped(OAuthError),
+    /// The callback's code, with its connection still open for the final answer.
+    Code(String, TcpStream),
+}
+
+/// The longest one request's head may take to arrive, so one slow connection can't hold the listener.
+const HEAD_READ_LIMIT: Duration = Duration::from_secs(3);
+
+/// Reads a request head, giving up at the sign-in's deadline, on cancel, or after `HEAD_READ_LIMIT`, however slowly
+/// the bytes trickle in. `None` when no complete head arrived.
+fn read_head(stream: &mut TcpStream, deadline: Instant, cancel: &AtomicBool) -> Option<String> {
+    let _ = stream.set_nonblocking(false);
+    let stop = deadline.min(Instant::now() + HEAD_READ_LIMIT);
+    let mut buffer = [0u8; 8192];
+    let mut read = 0;
+    while read < buffer.len() {
+        if cancel.load(Ordering::SeqCst) {
+            return None;
+        }
+        let left = stop.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return None;
+        }
+        // Short reads, so the deadline and cancel are checked between them.
+        let _ = stream.set_read_timeout(Some(left.min(Duration::from_millis(200))));
+        match stream.read(&mut buffer[read..]) {
+            Ok(0) => break,
+            Ok(n) => {
+                read += n;
+                if buffer[..read].windows(4).any(|end| end == b"\r\n\r\n") {
+                    return Some(String::from_utf8_lossy(&buffer[..read]).into_owned());
+                }
+            }
+            Err(err)
+                if matches!(
+                    err.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) => {}
+            Err(_) => break,
+        }
+    }
+    (read > 0).then(|| String::from_utf8_lossy(&buffer[..read]).into_owned())
+}
+
+/// What a successful callback carries into the token exchange. The browser is told the outcome by `finish`, once the
+/// exchange is done; dropped unfinished, it's told to return to CodexBar.
 pub struct Callback {
     pub code: String,
     pub verifier: String,
     pub redirect_uri: String,
+    reply: Option<TcpStream>,
+}
+
+impl Callback {
+    /// Tells the browser how sign-in ended.
+    pub fn finish(&mut self, signed_in: bool) {
+        if let Some(mut stream) = self.reply.take() {
+            if signed_in {
+                respond(
+                    &mut stream,
+                    200,
+                    "Signed in. You can close this window and return to CodexBar.",
+                );
+            } else {
+                respond(
+                    &mut stream,
+                    200,
+                    "Sign-in couldn't be completed. Return to CodexBar to see why.",
+                );
+            }
+        }
+    }
+}
+
+impl Drop for Callback {
+    fn drop(&mut self) {
+        if let Some(mut stream) = self.reply.take() {
+            respond(&mut stream, 200, "Return to CodexBar to finish signing in.");
+        }
+    }
 }
 
 /// Exchanges an authorization code for tokens.
@@ -356,7 +422,7 @@ pub fn refresh(
     token_request(http, client, &body, Some(refresh_token), now)
 }
 
-/// The whole sign-in: open the browser, wait for the callback, exchange the code.
+/// The whole sign-in: open the browser, wait for the callback, exchange the code, then tell the browser the outcome.
 pub fn sign_in(
     http: &impl HttpClient,
     browser: &dyn Browser,
@@ -366,8 +432,10 @@ pub fn sign_in(
 ) -> Result<TokenSet, OAuthError> {
     let authorization = Authorization::begin(client)?;
     browser.open(authorization.url())?;
-    let callback = authorization.wait(timeout, cancel)?;
-    exchange(http, client, &callback, Utc::now())
+    let mut callback = authorization.wait(timeout, cancel)?;
+    let tokens = exchange(http, client, &callback, Utc::now());
+    callback.finish(tokens.is_ok());
+    tokens
 }
 
 fn token_request(
@@ -403,11 +471,28 @@ fn token_request(
         .filter(|token| !token.is_empty())
         .map(str::to_owned)
         .or_else(|| previous_refresh.map(str::to_owned));
-    let expires_at = value
+    // Only Bearer tokens are understood (RFC 6749 section 7.1). The type is required, but some providers leave it out
+    // of refresh responses; a missing type is read as Bearer, any other type is refused.
+    if value
+        .get("token_type")
+        .and_then(Value::as_str)
+        .is_some_and(|kind| !kind.eq_ignore_ascii_case("bearer"))
+    {
+        return Err(OAuthError::InvalidResponse);
+    }
+    // A lifetime that can't be a date is a malformed answer, not a reason to crash.
+    let expires_at = match value
         .get("expires_in")
         .and_then(|seconds| seconds.as_i64().or_else(|| seconds.as_str()?.parse().ok()))
         .filter(|seconds| *seconds > 0)
-        .map(|seconds| now + chrono::Duration::seconds(seconds));
+    {
+        Some(seconds) => Some(
+            chrono::Duration::try_seconds(seconds)
+                .and_then(|lifetime| now.checked_add_signed(lifetime))
+                .ok_or(OAuthError::InvalidResponse)?,
+        ),
+        None => None,
+    };
     Ok(TokenSet {
         access_token,
         refresh_token,
@@ -530,9 +615,15 @@ mod tests {
         assert_eq!(query_value(url, "code_challenge_method"), "S256");
         assert_eq!(query_value(url, "client_id"), "codexbar-test");
         assert_eq!(query_value(url, "scope"), "usage.read offline_access");
+        // 127.0.0.1, or [::1] where only IPv6 loopback is available (RFC 8252 section 7.3).
+        let host = if address.is_ipv4() {
+            "127.0.0.1".to_owned()
+        } else {
+            format!("[{}]", address.ip())
+        };
         assert_eq!(
             query_value(url, "redirect_uri"),
-            format!("http://127.0.0.1:{}/callback", address.port())
+            format!("http://{host}:{}/callback", address.port())
         );
         // Two sign-ins never share a port.
         let other = Authorization::begin(&client()).unwrap();
@@ -558,6 +649,8 @@ mod tests {
         });
         let callback = authorization.wait(Duration::from_secs(10), &cancel).unwrap();
         assert_eq!(callback.code, "the-code");
+        // The success connection stays open for the final answer; dropping the callback sends it.
+        drop(callback);
         let statuses = probe.join().unwrap();
         assert!(statuses[0].contains("400"), "{statuses:?}");
         assert!(statuses[1].contains("404"));
@@ -638,6 +731,7 @@ mod tests {
             code: "the-code".into(),
             verifier: "the-verifier".into(),
             redirect_uri: "http://127.0.0.1:5000/callback".into(),
+            reply: None,
         }
     }
 
@@ -673,6 +767,70 @@ mod tests {
             exchange(&http, &client(), &callback(), now()).err(),
             Some(OAuthError::InvalidResponse)
         );
+    }
+
+    #[test]
+    fn unusable_token_types_and_lifetimes_are_refused() {
+        let dpop = Token::new(200, r#"{"access_token":"at","token_type":"DPoP"}"#);
+        assert_eq!(
+            exchange(&dpop, &client(), &callback(), now()).err(),
+            Some(OAuthError::InvalidResponse)
+        );
+        let huge = Token::new(
+            200,
+            r#"{"access_token":"at","token_type":"bearer","expires_in":9223372036854775807}"#,
+        );
+        assert_eq!(
+            exchange(&huge, &client(), &callback(), now()).err(),
+            Some(OAuthError::InvalidResponse)
+        );
+    }
+
+    #[test]
+    fn a_slow_connection_cannot_hold_the_sign_in_past_its_deadline() {
+        let authorization = Authorization::begin(&client()).unwrap();
+        let addr = authorization.local_addr().unwrap();
+        let cancel = AtomicBool::new(false);
+        // Drips one byte at a time, never finishing a request.
+        let dripper = std::thread::spawn(move || {
+            let mut stream = TcpStream::connect(addr).unwrap();
+            for _ in 0..40 {
+                if stream.write_all(b"G").is_err() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        });
+        let started = Instant::now();
+        let result = authorization.wait(Duration::from_millis(600), &cancel);
+        assert_eq!(result.err(), Some(OAuthError::Timeout));
+        assert!(started.elapsed() < Duration::from_secs(2), "{:?}", started.elapsed());
+        dripper.join().unwrap();
+    }
+
+    #[test]
+    fn the_browser_hears_success_only_after_the_exchange() {
+        let authorization = Authorization::begin(&client()).unwrap();
+        let addr = authorization.local_addr().unwrap();
+        let state = query_value(authorization.url(), "state");
+        let probe = std::thread::spawn(move || {
+            let mut stream = TcpStream::connect(addr).unwrap();
+            stream
+                .write_all(get(&format!("/callback?code=c&state={state}")).as_bytes())
+                .unwrap();
+            let mut response = String::new();
+            let _ = stream.read_to_string(&mut response);
+            response
+        });
+        let mut callback = authorization
+            .wait(Duration::from_secs(10), &AtomicBool::new(false))
+            .unwrap();
+        let failing = Token::new(500, "{}");
+        let result = exchange(&failing, &client(), &callback, now());
+        callback.finish(result.is_ok());
+        let page = probe.join().unwrap();
+        assert!(page.contains("couldn't be completed"), "{page}");
+        assert!(!page.contains("Signed in"));
     }
 
     #[test]

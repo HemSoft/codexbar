@@ -216,6 +216,73 @@ pub enum SecretSource {
     /// Credential Manager could not be read; distinct from Missing.
     StoreUnavailable(CredentialError),
 }
+/// Windows Credential Manager holds at most 2,560 bytes per credential, 1,280 characters as stored here (UTF-16).
+/// Secrets longer than one credential (OAuth tokens, #77) are split across numbered parts.
+pub const PART_CHARS: usize = 1200;
+const CHUNKED_PREFIX: &str = "codexbar-parts:";
+
+/// Writes a secret of any length. Short secrets are one credential, as before. Long ones are written as parts of a
+/// new generation first, then the account's credential is switched to point at them, then the previous generation's
+/// parts are deleted. An interrupted write leaves the previous secret readable.
+pub fn write_long(store: &dyn CredentialStore, account_id: &str, secret: &str) -> Result<(), CredentialError> {
+    let previous = parts_of(store.read(account_id)?.as_deref());
+    if secret.chars().count() <= PART_CHARS && !secret.starts_with(CHUNKED_PREFIX) {
+        store.write(account_id, secret)?;
+    } else {
+        let generation = previous.map_or(1, |(generation, _)| generation + 1);
+        let chars: Vec<char> = secret.chars().collect();
+        let parts: Vec<String> = chars.chunks(PART_CHARS).map(|part| part.iter().collect()).collect();
+        for (ix, part) in parts.iter().enumerate() {
+            store.write(&part_id(account_id, generation, ix), part)?;
+        }
+        store.write(account_id, &format!("{CHUNKED_PREFIX}{generation}:{}", parts.len()))?;
+    }
+    if let Some((generation, count)) = previous {
+        for ix in 0..count {
+            // Left-over parts are harmless (nothing points at them); a later write tries again.
+            let _ = store.delete(&part_id(account_id, generation, ix));
+        }
+    }
+    Ok(())
+}
+
+/// Reads a secret written by `write_long` (or a plain one).
+pub fn read_long(store: &dyn CredentialStore, account_id: &str) -> Result<Option<String>, CredentialError> {
+    let Some(head) = store.read(account_id)? else {
+        return Ok(None);
+    };
+    let Some((generation, count)) = parts_of(Some(&head)) else {
+        return Ok(Some(head));
+    };
+    let mut secret = String::new();
+    for ix in 0..count {
+        match store.read(&part_id(account_id, generation, ix))? {
+            Some(part) => secret.push_str(&part),
+            // A part is missing: the secret is incomplete, so it counts as not there.
+            None => return Ok(None),
+        }
+    }
+    Ok(Some(secret))
+}
+
+/// Deletes a secret written by `write_long`, with its parts.
+pub fn delete_long(store: &dyn CredentialStore, account_id: &str) -> Result<(), CredentialError> {
+    if let Some((generation, count)) = parts_of(store.read(account_id)?.as_deref()) {
+        for ix in 0..count {
+            store.delete(&part_id(account_id, generation, ix))?;
+        }
+    }
+    store.delete(account_id)
+}
+
+fn parts_of(head: Option<&str>) -> Option<(u64, usize)> {
+    let (generation, count) = head?.strip_prefix(CHUNKED_PREFIX)?.split_once(':')?;
+    Some((generation.parse().ok()?, count.parse().ok()?))
+}
+
+fn part_id(account_id: &str, generation: u64, ix: usize) -> String {
+    format!("{account_id}#part{generation}.{ix}")
+}
 
 /// Resolves a secret: environment variable, then Credential Manager, then the legacy settings file.
 pub fn resolve_secret(
@@ -246,6 +313,55 @@ pub fn resolve_secret(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A store that, like Credential Manager, refuses secrets longer than one credential.
+    #[derive(Default)]
+    struct Limited(MemoryCredentialStore);
+
+    impl CredentialStore for Limited {
+        fn read(&self, id: &str) -> Result<Option<String>, CredentialError> {
+            self.0.read(id)
+        }
+
+        fn write(&self, id: &str, secret: &str) -> Result<(), CredentialError> {
+            if secret.encode_utf16().count() * 2 > 2560 {
+                return Err(CredentialError { code: 1783 });
+            }
+            self.0.write(id, secret)
+        }
+
+        fn delete(&self, id: &str) -> Result<(), CredentialError> {
+            self.0.delete(id)
+        }
+    }
+
+    #[test]
+    fn long_secrets_are_split_and_replaced_by_generation() {
+        let store = Limited::default();
+        let long: String = "a".repeat(3000) + &"b".repeat(1000);
+        assert!(store.write("acct", &long).is_err(), "too long for one credential");
+        write_long(&store, "acct", &long).unwrap();
+        assert!(read_long(&store, "acct").unwrap().as_deref() == Some(long.as_str()));
+        // A renewal replaces it; the previous parts are deleted.
+        let renewed: String = "c".repeat(2500);
+        write_long(&store, "acct", &renewed).unwrap();
+        assert!(read_long(&store, "acct").unwrap().as_deref() == Some(renewed.as_str()));
+        assert_eq!(store.read("acct#part1.0").unwrap(), None, "old generation gone");
+        // Short secrets stay one credential, and deleting removes every part.
+        write_long(&store, "short", "sk-short").unwrap();
+        assert_eq!(store.read("short").unwrap().as_deref(), Some("sk-short"));
+        delete_long(&store, "acct").unwrap();
+        assert_eq!(read_long(&store, "acct").unwrap(), None);
+        assert_eq!(store.read("acct#part2.0").unwrap(), None);
+    }
+
+    #[test]
+    fn a_missing_part_reads_as_no_secret() {
+        let store = MemoryCredentialStore::default();
+        write_long(&store, "acct", &"x".repeat(2000)).unwrap();
+        store.delete("acct#part1.1").unwrap();
+        assert_eq!(read_long(&store, "acct").unwrap(), None);
+    }
 
     #[test]
     fn memory_store_add_replace_read_delete() {

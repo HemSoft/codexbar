@@ -2293,8 +2293,18 @@ fn sign_in_tokens_are_kept_in_and_replaced_through_credential_manager(cx: &mut T
         .unwrap();
     cx.update(|cx| SettingsHub::global(cx).save_tokens("acct", &renewed))
         .unwrap();
-    let stored = cx.update(|cx| SettingsHub::global(cx).tokens_for("acct"));
+    let stored = cx.update(|cx| SettingsHub::global(cx).tokens_for("acct")).unwrap();
     assert!(stored == Some(renewed), "the renewal replaced the first tokens");
+    // Long tokens (JWTs) are split across credentials and read back whole.
+    let long = TokenSet {
+        access_token: "j".repeat(3000),
+        refresh_token: Some("r".repeat(2000)),
+        expires_at: None,
+    };
+    cx.update(|cx| SettingsHub::global(cx).save_tokens("acct", &long))
+        .unwrap();
+    let stored = cx.update(|cx| SettingsHub::global(cx).tokens_for("acct")).unwrap();
+    assert!(stored == Some(long), "long tokens round-trip");
     // Nothing goes to the settings file.
     let text = std::fs::read_to_string(settings.0.join("settings.json")).unwrap_or_default();
     assert!(!text.contains("at-2") && !text.contains("rt-1"));
