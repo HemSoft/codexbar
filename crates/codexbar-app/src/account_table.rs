@@ -207,7 +207,7 @@ impl TableDelegate for AccountTable {
                 .child(
                     primary
                         .and_then(Metric::resets_at)
-                        .map(|at| format::reset_label(at, self.now, &Local))
+                        .map(|at| format::reset_label_in(at, self.now, &Local, crate::locale::style()))
                         .unwrap_or_else(|| "—".into()),
                 )
                 .into_any_element(),

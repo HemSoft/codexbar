@@ -478,7 +478,7 @@ fn pace_takeaway(metric: &Metric, now: DateTime<Utc>) -> String {
 fn reset_caption(metric: &Metric, now: DateTime<Utc>) -> String {
     match metric.resets_at() {
         Some(at) => {
-            let label = format::reset_label(at, now, &Local);
+            let label = format::reset_label_in(at, now, &Local, crate::locale::style());
             match label.strip_prefix("in ") {
                 Some(rest) => format!("Resets in {rest}"),
                 None => format!("Resets {label}"),
@@ -494,9 +494,16 @@ fn window_period(metric: &Metric, now: DateTime<Utc>) -> String {
         Some(at) if at - now <= chrono::Duration::days(7) => {
             let start = (at - chrono::Duration::days(7)).with_timezone(&Local);
             let end = at.with_timezone(&Local);
-            format!("{} – {}", start.format("%b %-d"), end.format("%b %-d"))
+            format!(
+                "{} – {}",
+                crate::locale::style().month_day(start.date_naive()),
+                crate::locale::style().month_day(end.date_naive())
+            )
         }
-        Some(at) => format!("Until {}", at.with_timezone(&Local).format("%b %-d")),
+        Some(at) => format!(
+            "Until {}",
+            crate::locale::style().month_day(at.with_timezone(&Local).date_naive())
+        ),
         None => String::new(),
     }
 }
@@ -504,9 +511,7 @@ fn window_period(metric: &Metric, now: DateTime<Utc>) -> String {
 /// Weekday initials for a trend whose last point is today.
 fn day_label(len: usize, ix: usize) -> String {
     let days_ago = (len - 1 - ix) as i64;
-    (Local::now() - chrono::Duration::days(days_ago))
-        .format("%a")
-        .to_string()
+    crate::locale::style().weekday((Local::now() - chrono::Duration::days(days_ago)).date_naive())
 }
 
 #[cfg(test)]

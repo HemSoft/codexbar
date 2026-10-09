@@ -488,9 +488,15 @@ impl Dashboard {
                                 outcomes
                                     .into_iter()
                                     .map(|outcome| match outcome {
-                                        AccountOutcome::Fresh(account) => AccountOutcome::Fresh(
-                                            codexbar_store::enrich(&history, account, &Local, now),
-                                        ),
+                                        AccountOutcome::Fresh(account) => {
+                                            AccountOutcome::Fresh(codexbar_store::enrich(
+                                                &history,
+                                                account,
+                                                &Local,
+                                                crate::locale::style(),
+                                                now,
+                                            ))
+                                        }
                                         failed => failed,
                                     })
                                     .collect()
@@ -600,7 +606,7 @@ impl Dashboard {
                             // One account of the provider failed while others succeeded: keep its last good usage
                             // (or show it unavailable) and list it as its own failure.
                             AccountOutcome::Failed { account, label, error } => {
-                                let message = error.to_string();
+                                let message = crate::locale::describe(&error);
                                 let known = self.accounts.iter().find(|shown| shown.id() == &account).cloned();
                                 let row = known.unwrap_or_else(|| {
                                     self.placeholders.insert(account.as_str().to_owned());
@@ -632,7 +638,7 @@ impl Dashboard {
                 Err(error) => {
                     // Keep the failed adapter's last good snapshots (or its placeholder) visible, marked stale. An
                     // adapter for one configured account keeps only that account; its siblings report separately.
-                    let message = error.to_string();
+                    let message = crate::locale::describe(&error);
                     let belongs = |a: &&AccountSnapshot| match &account_id {
                         Some(id) => a.id().as_str() == id,
                         None => a.provider().display_name() == provider,
@@ -753,7 +759,7 @@ impl Dashboard {
             let history = self.history.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             restored
                 .into_iter()
-                .map(|account| codexbar_store::enrich(&history, account, &Local, now))
+                .map(|account| codexbar_store::enrich(&history, account, &Local, crate::locale::style(), now))
                 .collect()
         };
         for account in &restored {
@@ -1013,7 +1019,12 @@ impl Dashboard {
             .unwrap_or_default();
         let reset = metric
             .and_then(Metric::resets_at)
-            .map(|at| format!(", resets {}", format::reset_label(at, self.now, &Local)))
+            .map(|at| {
+                format!(
+                    ", resets {}",
+                    format::reset_label_in(at, self.now, &Local, crate::locale::style())
+                )
+            })
             .unwrap_or_default();
         // Restored or stale usage says so, so an old figure isn't read as current.
         let freshness = match self.states.get(top.id().as_str()) {

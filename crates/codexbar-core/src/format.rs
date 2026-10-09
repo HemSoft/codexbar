@@ -1,13 +1,68 @@
-use chrono::{DateTime, Duration, TimeZone, Utc};
+use chrono::{DateTime, Duration, NaiveDate, NaiveDateTime, TimeZone, Utc};
 
-/// Describes when a limit resets, relative to `now` and in the viewer's timezone `tz`.
+/// How dates and times read on screen (#84). The app formats them in the Windows user's own locale (12- or 24-hour
+/// time, local month and weekday names, local order); `English` is the built-in style the tests use.
+pub trait DateStyle: Sync {
+    /// A time of day: "09:00", or "9:00 AM" where that is the custom.
+    fn time(&self, at: NaiveDateTime) -> String;
+    /// A short weekday: "Thu".
+    fn weekday(&self, at: NaiveDate) -> String;
+    /// A month and day: "Nov 1", or "1. Nov." in German.
+    fn month_day(&self, at: NaiveDate) -> String;
+
+    /// "Thu 09:00".
+    fn weekday_time(&self, at: NaiveDateTime) -> String {
+        format!("{} {}", self.weekday(at.date()), self.time(at))
+    }
+
+    /// "Nov 1 09:00".
+    fn month_day_time(&self, at: NaiveDateTime) -> String {
+        format!("{} {}", self.month_day(at.date()), self.time(at))
+    }
+
+    /// "Thu Nov 1, 09:00".
+    fn full(&self, at: NaiveDateTime) -> String {
+        format!(
+            "{} {}, {}",
+            self.weekday(at.date()),
+            self.month_day(at.date()),
+            self.time(at)
+        )
+    }
+}
+
+/// English with a 24-hour clock: the built-in style.
+pub struct English;
+
+impl DateStyle for English {
+    fn time(&self, at: NaiveDateTime) -> String {
+        at.format("%H:%M").to_string()
+    }
+
+    fn weekday(&self, at: NaiveDate) -> String {
+        at.format("%a").to_string()
+    }
+
+    fn month_day(&self, at: NaiveDate) -> String {
+        at.format("%b %-d").to_string()
+    }
+}
+
+/// Describes when a limit resets, relative to `now` and in the viewer's timezone `tz`, in the English style.
+pub fn reset_label<Tz: TimeZone>(resets_at: DateTime<Utc>, now: DateTime<Utc>, tz: &Tz) -> String {
+    reset_label_in(resets_at, now, tz, &English)
+}
+
+/// Describes when a limit resets, relative to `now`, in the viewer's timezone `tz` and date style.
 ///
 /// Under a day reads as a countdown ("in 38m", "in 1h 12m"), under a week as a weekday and time
-/// ("Thu 09:00"), and anything later as a date ("Nov 1").
-pub fn reset_label<Tz: TimeZone>(resets_at: DateTime<Utc>, now: DateTime<Utc>, tz: &Tz) -> String
-where
-    Tz::Offset: std::fmt::Display,
-{
+/// ("Thu 09:00"), and anything later as a date ("Nov 1"). Provider instants are only converted for display.
+pub fn reset_label_in<Tz: TimeZone>(
+    resets_at: DateTime<Utc>,
+    now: DateTime<Utc>,
+    tz: &Tz,
+    style: &dyn DateStyle,
+) -> String {
     let remaining = resets_at - now;
     if remaining <= Duration::zero() {
         return "now".to_owned();
@@ -15,11 +70,11 @@ where
     if remaining < Duration::days(1) {
         return format!("in {}", countdown(remaining));
     }
-    let local = resets_at.with_timezone(tz);
+    let local = resets_at.with_timezone(tz).naive_local();
     if remaining < Duration::days(7) {
-        local.format("%a %H:%M").to_string()
+        style.weekday_time(local)
     } else {
-        local.format("%b %-d").to_string()
+        style.month_day(local.date())
     }
 }
 
@@ -60,12 +115,45 @@ mod tests {
     use chrono::FixedOffset;
 
     fn now() -> DateTime<Utc> {
-        // Monday 2026-10-06 22:00 in UTC-4.
+        // Tuesday 2026-10-06 22:00 in UTC-4.
         "2026-10-07T02:00:00Z".parse().unwrap()
     }
 
     fn eastern() -> FixedOffset {
         FixedOffset::west_opt(4 * 3600).unwrap()
+    }
+
+    /// A 12-hour, day-first style, like en-GB with a 12-hour clock.
+    struct DayFirst;
+
+    impl DateStyle for DayFirst {
+        fn time(&self, at: NaiveDateTime) -> String {
+            at.format("%-I:%M %p").to_string()
+        }
+
+        fn weekday(&self, at: NaiveDate) -> String {
+            at.format("%a").to_string()
+        }
+
+        fn month_day(&self, at: NaiveDate) -> String {
+            at.format("%-d %b").to_string()
+        }
+    }
+
+    #[test]
+    fn reset_labels_follow_the_date_style() {
+        let thursday_nine = now() + Duration::hours(35);
+        assert_eq!(
+            reset_label_in(thursday_nine, now(), &eastern(), &DayFirst),
+            "Thu 9:00 AM"
+        );
+        let nov_first = "2026-11-01T16:00:00Z".parse().unwrap();
+        assert_eq!(reset_label_in(nov_first, now(), &eastern(), &DayFirst), "1 Nov");
+        // Countdowns and the instant itself don't depend on the style.
+        assert_eq!(
+            reset_label_in(now() + Duration::minutes(38), now(), &eastern(), &DayFirst),
+            "in 38m"
+        );
     }
 
     #[test]

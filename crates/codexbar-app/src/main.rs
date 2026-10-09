@@ -8,6 +8,7 @@ mod dashboard;
 mod focus_cards;
 mod groups_page;
 mod history_view;
+mod locale;
 mod notifications;
 mod prefs_hub;
 mod providers;
