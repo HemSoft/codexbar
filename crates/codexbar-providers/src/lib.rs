@@ -9,6 +9,7 @@ pub mod copilot;
 pub mod cursor;
 mod error;
 mod http;
+pub mod oauth;
 pub mod opencode;
 mod pace;
 

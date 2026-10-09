@@ -156,6 +156,30 @@ impl SettingsHub {
 
     /// The secret an account will use and where it comes from. The legacy plaintext key belongs to the provider's
     /// first account only, as in the WPF app.
+    /// An account's browser sign-in tokens (#77), from Credential Manager.
+    #[allow(
+        dead_code,
+        reason = "used by provider sign-in once a client registration is approved (docs/OAUTH.md)"
+    )]
+    pub fn tokens_for(&self, account_id: &str) -> Option<codexbar_providers::oauth::TokenSet> {
+        let secret = self.credentials.read(account_id).ok()??;
+        codexbar_providers::oauth::TokenSet::from_secret(&secret)
+    }
+
+    /// Stores an account's tokens after a sign-in or renewal, replacing the previous ones in one write. If the write
+    /// fails, the old tokens stay and the error says why (never with a token in it).
+    #[allow(
+        dead_code,
+        reason = "used by provider sign-in once a client registration is approved (docs/OAUTH.md)"
+    )]
+    pub fn save_tokens(
+        &self,
+        account_id: &str,
+        tokens: &codexbar_providers::oauth::TokenSet,
+    ) -> Result<(), codexbar_store::credentials::CredentialError> {
+        self.credentials.write(account_id, &tokens.to_secret())
+    }
+
     pub fn secret_for(&self, account: &AccountRecord) -> (Option<String>, SecretSource) {
         let info = catalog::info(&account.provider);
         let Some(spec) = &info.secret else {
