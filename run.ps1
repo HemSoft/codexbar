@@ -1,55 +1,38 @@
-# Launch CodexBar in the system tray.
+# Build CodexBar (Rust) and launch it in the system tray.
 $ErrorActionPreference = 'Stop'
 
-$projectDir = Join-Path $PSScriptRoot 'src\CodexBar.App'
-$project = Join-Path $projectDir 'CodexBar.App.csproj'
-$artifactsRoot = Join-Path $env:LOCALAPPDATA 'CodexBar\launcher-artifacts'
-$artifactsDir = Join-Path $artifactsRoot 'current'
+$installDir = Join-Path $env:LOCALAPPDATA 'CodexBar\bin'
+$installedExe = Join-Path $installDir 'codexbar.exe'
+$builtExe = Join-Path $PSScriptRoot 'target\release\codexbar.exe'
 $defaultGitHubConfigDir = Join-Path $env:USERPROFILE '.gh-work'
 
-# Kill any existing instance so the DLL isn't locked during build.
-$existingProcesses = @(Get-Process -Name 'CodexBar.App' -ErrorAction SilentlyContinue)
+# Build first, so a failed build leaves the running instance alone.
+Write-Information 'Building CodexBar...' -InformationAction Continue
+Push-Location $PSScriptRoot
+try {
+    cargo build --release --locked -p codexbar-app
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+}
+finally {
+    Pop-Location
+}
+
+# Stop any running instance, including the retired WPF app, so only one tray icon remains and the copy isn't locked.
+$existingProcesses = @(Get-Process -Name 'codexbar', 'CodexBar.App' -ErrorAction SilentlyContinue)
 if ($existingProcesses.Count -gt 0) {
     $existingProcesses | Stop-Process -Force -ErrorAction SilentlyContinue
     $existingProcesses | Wait-Process -Timeout 5 -ErrorAction SilentlyContinue
 }
 
-# Clear stale WPF temp projects so directory-based tooling stays unambiguous.
-Get-ChildItem -LiteralPath $projectDir -Filter '*_wpftmp.csproj' -File |
-    Remove-Item -Force
+# Run a copy, so the next build can replace target\release\codexbar.exe while CodexBar is running.
+New-Item -ItemType Directory -Path $installDir -Force | Out-Null
+Copy-Item -LiteralPath $builtExe -Destination $installedExe -Force
 
-New-Item -ItemType Directory -Path $artifactsRoot -Force | Out-Null
-
-# Clean up older timestamped launcher builds without failing the launch if Windows still has a handle open.
-Get-ChildItem -LiteralPath $artifactsRoot -Directory -ErrorAction SilentlyContinue |
-    Where-Object { $_.FullName -ne $artifactsDir } |
-    Sort-Object LastWriteTime -Descending |
-    Select-Object -Skip 2 |
-    ForEach-Object {
-        Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue
-    }
-
-if (Test-Path -LiteralPath $artifactsDir) {
-    Remove-Item -LiteralPath $artifactsDir -Recurse -Force -ErrorAction SilentlyContinue
-}
-
-# Build so errors are visible in the terminal.
-Write-Information 'Building CodexBar...' -InformationAction Continue
-dotnet build $project --verbosity quiet --artifacts-path $artifactsDir /nr:false /p:UseSharedCompilation=false
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-# Launch detached; the app lives in the system tray, not the terminal.
-$exe = Get-ChildItem -LiteralPath $artifactsDir -Filter 'CodexBar.App.exe' -Recurse -File |
-    Select-Object -First 1 -ExpandProperty FullName
-if (-not $exe) {
-    throw "Could not find CodexBar.App.exe under $artifactsDir."
-}
-
-$processStartInfo = [System.Diagnostics.ProcessStartInfo]::new($exe)
+$processStartInfo = [System.Diagnostics.ProcessStartInfo]::new($installedExe)
 $processStartInfo.UseShellExecute = $false
-$processStartInfo.WorkingDirectory = Split-Path -Parent $exe
+$processStartInfo.WorkingDirectory = $installDir
 
-# Keep terminal-specific GitHub auth overrides from leaking into CodexBar refreshes.
+# Keep terminal-specific GitHub auth overrides from leaking into CodexBar's gh calls.
 @(
     'GH_TOKEN',
     'GITHUB_TOKEN',
