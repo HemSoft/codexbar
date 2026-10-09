@@ -297,8 +297,8 @@ fn charted_metrics(account: &AccountSnapshot) -> impl Iterator<Item = &Metric> {
 fn point_label(point: &ChartPoint, range: HistoryRange) -> String {
     let local = point.at.with_timezone(&Local);
     match range {
-        HistoryRange::Day => local.format("%H:%M").to_string(),
-        _ => local.format("%b %-d %H:%M").to_string(),
+        HistoryRange::Day => crate::locale::style().time(local.naive_local()),
+        _ => crate::locale::style().month_day_time(local.naive_local()),
     }
 }
 
@@ -538,7 +538,7 @@ impl HistoryView {
         let readout = readings.get(cursor).map(|point| {
             format!(
                 "{} · {}",
-                point.at.with_timezone(&Local).format("%a %b %-d, %H:%M"),
+                crate::locale::style().full(point.at.with_timezone(&Local).naive_local()),
                 kind.value(point.value)
             )
         });
@@ -619,7 +619,7 @@ impl HistoryView {
                         .child(format!(
                             "No new data for {}. Latest reads as of {}.",
                             span_label(stale),
-                            summary.latest_at.with_timezone(&Local).format("%a %b %-d, %H:%M")
+                            crate::locale::style().full(summary.latest_at.with_timezone(&Local).naive_local())
                         )),
                 )
             })
