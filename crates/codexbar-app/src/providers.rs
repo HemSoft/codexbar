@@ -141,7 +141,7 @@ pub fn copilot_discovers_all(hub: &SettingsHub) -> bool {
 /// reports under the legacy id, so nothing moves until the first account is configured; with several configured
 /// accounts the legacy history's owner is unknown, so nothing moves.
 pub fn legacy_ids(hub: &SettingsHub) -> Vec<(&'static str, String)> {
-    let mut renames: Vec<(&'static str, String)> = [("openrouter", names::OPENROUTER), ("moonshot", names::MOONSHOT)]
+    let renames: Vec<(&'static str, String)> = [("openrouter", names::OPENROUTER), ("moonshot", names::MOONSHOT)]
         .into_iter()
         .filter_map(|(legacy, provider)| {
             let records: Vec<&AccountRecord> = hub.settings().accounts_for(provider).collect();
@@ -151,14 +151,9 @@ pub fn legacy_ids(hub: &SettingsHub) -> Vec<(&'static str, String)> {
             }
         })
         .collect();
-    // Cursor reported as one `cursor` account before accounts were told apart (#81); that history belongs to the
-    // account signed in when this version first runs. Tests never read the real Cursor sign-in.
-    if !cfg!(test)
-        && let Some(account) = cursor::signed_in_account(&cursor::default_auth_path())
-            .filter(|account| account.as_str() != cursor::LEGACY_ID)
-    {
-        renames.push((cursor::LEGACY_ID, account.as_str().to_owned()));
-    }
+    // Cursor's legacy `cursor` history isn't moved (#81): nothing shows which Cursor account it belonged to, and
+    // the account signed in now may not be that one. It stays under the legacy id rather than be credited to someone
+    // else.
     renames
 }
 
