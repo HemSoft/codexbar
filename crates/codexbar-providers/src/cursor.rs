@@ -2,6 +2,7 @@
 //! `%APPDATA%\Cursor\auth.json`.
 
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
 use chrono::{DateTime, Months, Utc};
 use codexbar_core::{AccountId, AccountSnapshot, Metric, Money, Provider};
@@ -9,7 +10,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 use crate::pace::elapsed_pace;
-use crate::{HttpClient, ProviderError, UsageProvider};
+use crate::{AccountOutcome, HttpClient, ProviderError, UsageProvider};
 
 const USAGE_ENDPOINT: &str = "https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage";
 const SIGN_IN_HINT: &str = "Sign in to Cursor, then refresh CodexBar.";
@@ -186,19 +187,33 @@ fn on_demand(json: &Value, resets_at: DateTime<Utc>) -> Vec<Metric> {
         .collect()
 }
 
+/// The account each sign-in file last fetched for. Process-wide, because the dashboard builds its providers anew for
+/// every refresh, so a switch between refreshes is still noticed.
+static LAST_ACCOUNTS: Mutex<Vec<(PathBuf, AccountId)>> = Mutex::new(Vec::new());
+
 pub struct CursorProvider<H: HttpClient> {
     http: H,
     auth_path: PathBuf,
-    /// The account the last fetch was for, to say so when the Cursor app is signed in to another one.
-    last_account: std::sync::Mutex<Option<AccountId>>,
 }
 
 impl<H: HttpClient> CursorProvider<H> {
     pub fn new(http: H, auth_path: PathBuf) -> Self {
-        Self {
-            http,
-            auth_path,
-            last_account: std::sync::Mutex::default(),
+        Self { http, auth_path }
+    }
+
+    fn usage(&self, token: &str, now: DateTime<Utc>) -> Result<AccountSnapshot, ProviderError> {
+        let bearer = format!("Bearer {token}");
+        let headers = [
+            ("Authorization", bearer.as_str()),
+            ("Content-Type", "application/json"),
+            ("Accept", "application/json"),
+            ("Connect-Protocol-Version", "1"),
+        ];
+        let response = self.http.post_json(USAGE_ENDPOINT, &headers, "{}")?;
+        match response.status {
+            200..=299 => parse_usage(&response.body, now),
+            401 | 403 => Err(ProviderError::Expired { hint: SIGN_IN_HINT }),
+            status => Err(ProviderError::Http { status }),
         }
     }
 }
@@ -209,35 +224,49 @@ impl<H: HttpClient> UsageProvider for CursorProvider<H> {
     }
 
     fn fetch(&self, now: DateTime<Utc>) -> Result<Vec<AccountSnapshot>, ProviderError> {
+        self.fetch_outcomes(now)?
+            .into_iter()
+            .map(|outcome| match outcome {
+                AccountOutcome::Fresh(account) => Ok(account),
+                AccountOutcome::Failed { error, .. } => Err(error),
+            })
+            .collect()
+    }
+
+    /// No sign-in fails the provider as a whole. Once the token is read the account is known, so a failed fetch is
+    /// that account's failure, never attributed to the account shown before a switch.
+    fn fetch_outcomes(&self, now: DateTime<Utc>) -> Result<Vec<AccountOutcome>, ProviderError> {
         let token = read_access_token(&self.auth_path)?;
-        let bearer = format!("Bearer {token}");
-        let headers = [
-            ("Authorization", bearer.as_str()),
-            ("Content-Type", "application/json"),
-            ("Accept", "application/json"),
-            ("Connect-Protocol-Version", "1"),
-        ];
-        let response = self.http.post_json(USAGE_ENDPOINT, &headers, "{}")?;
-        match response.status {
-            200..=299 => {
-                let id = account_id_for_token(&token);
-                let usage = parse_usage(&response.body, now)?;
+        let id = account_id_for_token(&token);
+        let outcome = match self.usage(&token, now) {
+            Ok(usage) => {
                 let mut account = AccountSnapshot::new(id.clone(), Provider::Cursor, usage.metrics().to_vec(), now);
-                let mut last = self
-                    .last_account
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
-                if last.as_ref().is_some_and(|previous| *previous != id) {
-                    account = account.with_message(
-                        "The Cursor app is signed in to a different account. The previous account's usage stays with it.",
-                    );
+                let mut last = LAST_ACCOUNTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                let previous = last.iter_mut().find(|(path, _)| *path == self.auth_path);
+                match previous {
+                    Some((_, previous)) => {
+                        if *previous != id {
+                            account = account.with_message(
+                                "The Cursor app is signed in to a different account. The previous account's usage stays with it.",
+                            );
+                        }
+                        *previous = id;
+                    }
+                    None => last.push((self.auth_path.clone(), id)),
                 }
-                *last = Some(id);
-                Ok(vec![account])
+                AccountOutcome::Fresh(account)
             }
-            401 | 403 => Err(ProviderError::Expired { hint: SIGN_IN_HINT }),
-            status => Err(ProviderError::Http { status }),
-        }
+            Err(error) => AccountOutcome::Failed {
+                account: id,
+                label: None,
+                error,
+            },
+        };
+        Ok(vec![outcome])
+    }
+
+    fn signed_in_account(&self) -> Option<AccountId> {
+        signed_in_account(&self.auth_path)
     }
 }
 
@@ -457,24 +486,42 @@ mod tests {
     #[test]
     fn switching_cursor_accounts_starts_a_separate_account_and_says_so() {
         let auth = Auth::new("switch", "google-oauth2|111");
-        let provider = CursorProvider::new(Fixed(HttpResponse::new(200, USAGE)), auth.0.clone());
-        let first = provider.fetch(now()).unwrap().remove(0);
+        // A new provider each time, as the dashboard builds them for every refresh.
+        let provider = || CursorProvider::new(Fixed(HttpResponse::new(200, USAGE)), auth.0.clone());
+        let first = provider().fetch(now()).unwrap().remove(0);
         assert_eq!(first.id(), &account_id_for_token(&token("google-oauth2|111")));
         assert!(first.messages().is_empty());
-        assert_eq!(signed_in_account(&auth.0), Some(first.id().clone()));
+        assert_eq!(provider().signed_in_account(), Some(first.id().clone()));
         // The Cursor app signs in to another account.
         auth.sign_in("google-oauth2|222");
-        let second = provider.fetch(now()).unwrap().remove(0);
+        let second = provider().fetch(now()).unwrap().remove(0);
         assert_ne!(second.id(), first.id(), "nothing carries over");
-        assert_eq!(second.metrics().len(), first.metrics().len());
         assert_eq!(
             second.messages(),
             ["The Cursor app is signed in to a different account. The previous account's usage stays with it."]
         );
-        // Signed out: no account at all.
+        assert!(provider().fetch(now()).unwrap()[0].messages().is_empty(), "said once");
+        // Signed out: the provider as a whole has no sign-in.
         std::fs::remove_file(&auth.0).unwrap();
-        assert!(matches!(provider.fetch(now()), Err(ProviderError::NotSignedIn { .. })));
-        assert_eq!(signed_in_account(&auth.0), None);
+        assert!(matches!(
+            provider().fetch(now()),
+            Err(ProviderError::NotSignedIn { .. })
+        ));
+        assert_eq!(provider().signed_in_account(), None);
+    }
+
+    #[test]
+    fn a_failed_fetch_is_the_signed_in_accounts_failure() {
+        let auth = Auth::new("failure", "google-oauth2|333");
+        let provider = CursorProvider::new(Fixed(HttpResponse::new(401, "")), auth.0.clone());
+        let outcomes = provider.fetch_outcomes(now()).unwrap();
+        match &outcomes[..] {
+            [AccountOutcome::Failed { account, error, .. }] => {
+                assert_eq!(account, &account_id_for_token(&token("google-oauth2|333")));
+                assert!(matches!(error, ProviderError::Expired { .. }));
+            }
+            _ => panic!("one failed outcome for the signed-in account"),
+        }
     }
 
     #[test]

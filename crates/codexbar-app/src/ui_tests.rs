@@ -2318,3 +2318,53 @@ fn sign_in_tokens_are_kept_in_and_replaced_through_credential_manager(cx: &mut T
     let text = std::fs::read_to_string(settings.0.join("settings.json")).unwrap_or_default();
     assert!(!text.contains("at-2") && !text.contains("rt-1"));
 }
+
+/// A Cursor-like provider that knows which account it's signed in to, and whose fetch hasn't returned yet.
+struct SignedInCursor(AccountId);
+
+impl UsageProvider for SignedInCursor {
+    fn name(&self) -> &'static str {
+        "Cursor"
+    }
+
+    fn fetch(&self, _: chrono::DateTime<chrono::Utc>) -> Result<Vec<AccountSnapshot>, ProviderError> {
+        Err(ProviderError::Network)
+    }
+
+    fn signed_in_account(&self) -> Option<AccountId> {
+        Some(self.0.clone())
+    }
+}
+
+#[gpui_kit::test]
+fn a_saved_cursor_account_is_not_restored_after_a_switch(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("cursor-switch-restore", "{}");
+    let saved = |id: &str, provider| AccountSnapshot::new(AccountId::new(id), provider, Vec::new(), chrono::Utc::now());
+    codexbar_store::snapshots::save_snapshots(
+        &settings.0,
+        &[
+            saved("cursor-aaaaaaaaaaaa", Provider::Cursor),
+            saved("claude-1", Provider::Claude),
+        ],
+    )
+    .unwrap();
+    // The Cursor app is now signed in to another account.
+    let dashboard = open_live_dyn(
+        cx,
+        &settings,
+        vec![
+            Arc::new(SignedInCursor(AccountId::new("cursor-bbbbbbbbbbbb"))),
+            FakeProvider::new(Provider::Claude, "claude-1", Some(0.4)),
+        ],
+        MemoryCredentialStore::default(),
+    );
+    let shown = ids(cx, &dashboard);
+    assert!(
+        shown.contains(&"claude-1".to_owned()),
+        "other saved accounts are restored: {shown:?}"
+    );
+    assert!(
+        !shown.contains(&"cursor-aaaaaaaaaaaa".to_owned()),
+        "the previous Cursor account isn't shown: {shown:?}"
+    );
+}
