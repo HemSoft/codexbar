@@ -59,4 +59,10 @@ pub trait UsageProvider: Send + Sync {
     fn account_label(&self) -> Option<&str> {
         None
     }
+
+    /// The one account this adapter's sign-in belongs to right now, when it can tell without fetching (Cursor, #81).
+    /// Lets saved results of another account be set aside at startup.
+    fn signed_in_account(&self) -> Option<AccountId> {
+        None
+    }
 }

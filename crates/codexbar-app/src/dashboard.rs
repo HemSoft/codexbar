@@ -719,7 +719,14 @@ impl Dashboard {
         };
         // Only accounts still switched on: one removed or disabled since the last run doesn't reappear.
         let hub = SettingsHub::global(cx);
-        let enabled: Vec<&'static str> = providers(hub).iter().map(|provider| provider.name()).collect();
+        let adapters = providers(hub);
+        let enabled: Vec<&'static str> = adapters.iter().map(|provider| provider.name()).collect();
+        // A provider signed in to another account since the last run (Cursor, #81) doesn't show the old account's
+        // saved usage, even briefly.
+        let signed_in: Vec<(&'static str, AccountId)> = adapters
+            .iter()
+            .filter_map(|provider| Some((provider.name(), provider.signed_in_account()?)))
+            .collect();
         let disabled: Vec<String> = hub
             .settings()
             .accounts()
@@ -731,6 +738,12 @@ impl Dashboard {
             .into_iter()
             .filter(|account| enabled.contains(&account.provider().display_name()))
             .filter(|account| !disabled.iter().any(|id| id == account.id().as_str()))
+            .filter(|account| {
+                signed_in
+                    .iter()
+                    .filter(|(name, _)| *name == account.provider().display_name())
+                    .all(|(_, current)| current == account.id())
+            })
             .collect();
         if restored.is_empty() {
             return;

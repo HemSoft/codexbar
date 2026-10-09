@@ -63,7 +63,8 @@ fn copilot_results_are_identified_by_username() {
 fn cursor_results_keep_their_id_and_metric_keys() {
     let payload = r#"{"billingCycleEnd":"1792540800000","planUsage":{"totalPercentUsed":71,"autoPercentUsed":40,"apiPercentUsed":12.5}}"#;
     let account = cursor::parse_usage(payload, now()).unwrap();
-    assert_eq!(account.id().as_str(), "cursor");
+    // Parsed alone, the legacy id; the provider names the account after the signed-in identity (#81).
+    assert_eq!(account.id().as_str(), cursor::LEGACY_ID);
     assert_eq!(keys(&account), vec!["included-usage", "auto", "api"]);
     let with_on_demand = r#"{"billingCycleEnd":"1792540800000","planUsage":{"totalPercentUsed":71},
         "spendLimitUsage":{"individualLimit":2000,"individualRemaining":1500}}"#;
