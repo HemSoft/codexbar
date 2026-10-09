@@ -488,9 +488,15 @@ impl Dashboard {
                                 outcomes
                                     .into_iter()
                                     .map(|outcome| match outcome {
-                                        AccountOutcome::Fresh(account) => AccountOutcome::Fresh(
-                                            codexbar_store::enrich(&history, account, &Local, now),
-                                        ),
+                                        AccountOutcome::Fresh(account) => {
+                                            AccountOutcome::Fresh(codexbar_store::enrich(
+                                                &history,
+                                                account,
+                                                &Local,
+                                                crate::locale::style(),
+                                                now,
+                                            ))
+                                        }
                                         failed => failed,
                                     })
                                     .collect()
@@ -753,7 +759,7 @@ impl Dashboard {
             let history = self.history.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
             restored
                 .into_iter()
-                .map(|account| codexbar_store::enrich(&history, account, &Local, now))
+                .map(|account| codexbar_store::enrich(&history, account, &Local, crate::locale::style(), now))
                 .collect()
         };
         for account in &restored {

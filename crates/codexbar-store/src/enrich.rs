@@ -1,6 +1,7 @@
 //! Turns stored history into the series the dashboard draws: a daily trend and the current-vs-previous window curve.
 
 use chrono::{DateTime, Duration, TimeZone, Utc};
+use codexbar_core::format::DateStyle;
 use codexbar_core::{AccountSnapshot, Metric, WindowCurve};
 
 use crate::HistoryStore;
@@ -10,11 +11,13 @@ pub const TREND_DAYS: usize = 14;
 /// Points along a window curve.
 const CURVE_BUCKETS: usize = 30;
 
-/// Adds the stored trend and window curve to a freshly fetched account. Provider-supplied series are kept.
+/// Adds the stored trend and window curve to a freshly fetched account. Provider-supplied series are kept. Curve
+/// labels are in `style`.
 pub fn enrich<Tz: TimeZone>(
     store: &HistoryStore,
     account: AccountSnapshot,
     tz: &Tz,
+    style: &dyn DateStyle,
     now: DateTime<Utc>,
 ) -> AccountSnapshot
 where
@@ -38,7 +41,7 @@ where
     if account.detail().window_curve().is_some() {
         return account;
     }
-    match window_curve(store, &id, &primary, tz, now) {
+    match window_curve(store, &id, &primary, tz, style, now) {
         Some(curve) => {
             let detail = account.detail().clone().with_window_curve(curve);
             account.with_detail(detail)
@@ -69,6 +72,7 @@ fn window_curve<Tz: TimeZone>(
     account: &str,
     metric: &Metric,
     tz: &Tz,
+    style: &dyn DateStyle,
     now: DateTime<Utc>,
 ) -> Option<WindowCurve>
 where
@@ -135,21 +139,15 @@ where
     };
     let labels = (0..CURVE_BUCKETS)
         .map(|ix| {
-            bucket_end(ix)
-                .with_timezone(tz)
-                .format(label_format(length))
-                .to_string()
+            let local = bucket_end(ix).with_timezone(tz).naive_local();
+            if length > Duration::days(1) {
+                style.weekday_time(local)
+            } else {
+                style.time(local)
+            }
         })
         .collect();
     Some(WindowCurve::new(labels, current_values, previous_values))
-}
-
-fn label_format(length: Duration) -> &'static str {
-    if length > Duration::days(1) {
-        "%a %H:%M"
-    } else {
-        "%H:%M"
-    }
 }
 
 #[cfg(test)]
@@ -157,6 +155,7 @@ mod tests {
     use std::path::PathBuf;
 
     use chrono::FixedOffset;
+    use codexbar_core::format::English;
     use codexbar_core::{AccountId, Provider};
 
     use super::*;
@@ -211,7 +210,7 @@ mod tests {
             store.record(&[codex(used, current_reset, at)], at).unwrap();
         }
 
-        let account = enrich(&store, codex(0.5, current_reset, now()), &tz, now());
+        let account = enrich(&store, codex(0.5, current_reset, now()), &tz, &English, now());
         let curve = account.detail().window_curve().expect("curve");
         assert_eq!(curve.labels().len(), 30);
         assert_eq!(curve.previous().len(), 30);
@@ -229,7 +228,7 @@ mod tests {
         let mut store = HistoryStore::open(&path, Duration::days(30), now());
         let reset = now() + Duration::hours(3);
         store.record(&[codex(0.3, reset, now())], now()).unwrap();
-        let account = enrich(&store, codex(0.3, reset, now()), &tz, now());
+        let account = enrich(&store, codex(0.3, reset, now()), &tz, &English, now());
         assert!(account.trend().is_empty());
         assert!(account.detail().window_curve().is_none());
         let _ = std::fs::remove_dir_all(path.parent().unwrap());

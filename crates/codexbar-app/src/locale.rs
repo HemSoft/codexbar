@@ -23,7 +23,7 @@ pub struct WindowsLocale;
 mod win {
     use windows::Win32::Foundation::SYSTEMTIME;
     use windows::Win32::Globalization::{
-        DATE_MONTHDAY, ENUM_DATE_FORMATS_FLAGS, GetDateFormatEx, GetTimeFormatEx, TIME_NOSECONDS,
+        DATE_LONGDATE, DATE_MONTHDAY, ENUM_DATE_FORMATS_FLAGS, GetDateFormatEx, GetTimeFormatEx, TIME_NOSECONDS,
     };
     use windows::core::{HSTRING, PCWSTR};
 
@@ -59,6 +59,7 @@ mod win {
     pub use windows::Win32::Globalization::ENUM_DATE_FORMATS_FLAGS as Flags;
     pub const NONE: Flags = ENUM_DATE_FORMATS_FLAGS(0);
     pub const MONTH_DAY: Flags = DATE_MONTHDAY;
+    pub const LONG_DATE: Flags = DATE_LONGDATE;
 }
 
 #[cfg(windows)]
@@ -89,6 +90,28 @@ impl DateStyle for WindowsLocale {
     fn month_day(&self, at: NaiveDate) -> String {
         let at = at.and_hms_opt(12, 0, 0).unwrap_or_default();
         win::date(&system_time(at), win::MONTH_DAY, None).unwrap_or_else(|| English.month_day(at.date()))
+    }
+
+    // The composites use whole Windows date patterns, so the locale decides the order and punctuation; date before
+    // time, as in .NET's general and full date-time patterns.
+    fn month_day_time(&self, at: NaiveDateTime) -> String {
+        match (
+            win::date(&system_time(at), win::MONTH_DAY, None),
+            win::time(&system_time(at)),
+        ) {
+            (Some(date), Some(time)) => format!("{date} {time}"),
+            _ => English.month_day_time(at),
+        }
+    }
+
+    fn full(&self, at: NaiveDateTime) -> String {
+        match (
+            win::date(&system_time(at), win::LONG_DATE, None),
+            win::time(&system_time(at)),
+        ) {
+            (Some(date), Some(time)) => format!("{date} {time}"),
+            _ => English.full(at),
+        }
     }
 }
 
@@ -127,7 +150,9 @@ mod tests {
         assert!(!WindowsLocale.weekday(at.date()).is_empty());
         let month_day = WindowsLocale.month_day(at.date());
         assert!(month_day.contains('8'), "{month_day}");
-        assert!(WindowsLocale.full(at).contains(&month_day));
+        assert!(WindowsLocale.month_day_time(at).contains(&month_day));
+        let full = WindowsLocale.full(at);
+        assert!(full.contains("2026") && full.ends_with(&time), "{full}");
     }
 
     #[test]

@@ -2,7 +2,7 @@ use chrono::{DateTime, Duration, NaiveDate, NaiveDateTime, TimeZone, Utc};
 
 /// How dates and times read on screen (#84). The app formats them in the Windows user's own locale (12- or 24-hour
 /// time, local month and weekday names, local order); `English` is the built-in style the tests use.
-pub trait DateStyle {
+pub trait DateStyle: Sync {
     /// A time of day: "09:00", or "9:00 AM" where that is the custom.
     fn time(&self, at: NaiveDateTime) -> String;
     /// A short weekday: "Thu".
