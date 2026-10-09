@@ -2272,3 +2272,49 @@ fn the_keyboard_starts_on_the_view_tabs_and_tab_cycles_through_the_usage_view(cx
     press(cx, handle, "shift-tab");
     assert!(focused(cx, "group-menu".into()), "Shift+Tab goes back the same way");
 }
+
+#[gpui_kit::test]
+fn sign_in_tokens_are_kept_in_and_replaced_through_credential_manager(cx: &mut TestAppContext) {
+    use codexbar_providers::oauth::TokenSet;
+    let settings = TempSettings::new("oauth-tokens", "{}");
+    let _dashboard = open_live(cx, &settings, vec![]);
+    cx.run_until_parked();
+    let first = TokenSet {
+        access_token: "at-1".into(),
+        refresh_token: Some("rt-1".into()),
+        expires_at: None,
+    };
+    let renewed = TokenSet {
+        access_token: "at-2".into(),
+        refresh_token: Some("rt-1".into()),
+        expires_at: None,
+    };
+    cx.update(|cx| SettingsHub::global(cx).save_tokens("acct", &first))
+        .unwrap();
+    cx.update(|cx| SettingsHub::global(cx).save_tokens("acct", &renewed))
+        .unwrap();
+    let stored = cx.update(|cx| SettingsHub::global(cx).tokens_for("acct")).unwrap();
+    assert!(stored == Some(renewed), "the renewal replaced the first tokens");
+    // Long tokens (JWTs) are split across credentials and read back whole.
+    let long = TokenSet {
+        access_token: "j".repeat(3000),
+        refresh_token: Some("r".repeat(2000)),
+        expires_at: None,
+    };
+    cx.update(|cx| SettingsHub::global(cx).save_tokens("acct", &long))
+        .unwrap();
+    let stored = cx.update(|cx| SettingsHub::global(cx).tokens_for("acct")).unwrap();
+    assert!(stored == Some(long), "long tokens round-trip");
+    // Removing the account's secret removes every part.
+    cx.update(|cx| codexbar_store::credentials::delete_long(SettingsHub::global(cx).credentials().as_ref(), "acct"))
+        .unwrap();
+    assert!(
+        cx.update(|cx| SettingsHub::global(cx).tokens_for("acct"))
+            .unwrap()
+            .is_none()
+    );
+    assert!(secret_of(cx, "acct#part1.0").is_none() && secret_of(cx, "acct#part2.0").is_none());
+    // Nothing goes to the settings file.
+    let text = std::fs::read_to_string(settings.0.join("settings.json")).unwrap_or_default();
+    assert!(!text.contains("at-2") && !text.contains("rt-1"));
+}

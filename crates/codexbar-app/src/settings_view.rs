@@ -542,9 +542,11 @@ fn confirm_remove(record: AccountRecord, window: &mut Window, cx: &mut App) {
                     ));
                 }
                 if result.is_ok()
-                    && let Some(err) = ids
-                        .iter()
-                        .find_map(|id| SettingsHub::global(cx).credentials().delete(id).err())
+                    && let Some(err) = ids.iter().find_map(|id| {
+                        // Tokens may be split across parts (#77); delete them all.
+                        codexbar_store::credentials::delete_long(SettingsHub::global(cx).credentials().as_ref(), id)
+                            .err()
+                    })
                 {
                     SettingsHub::set_error(
                         cx,
@@ -578,7 +580,7 @@ fn confirm_reset(window: &mut Window, cx: &mut App) {
                 .is_ok()
                 {
                     let store = SettingsHub::global(cx).credentials();
-                    let failed = ids.iter().filter(|id| store.delete(id).is_err()).count();
+                    let failed = ids.iter().filter(|id| codexbar_store::credentials::delete_long(store.as_ref(), id).is_err()).count();
                     if failed > 0 {
                         SettingsHub::set_error(cx, Some(format!("Accounts were reset, but {failed} saved keys couldn't be deleted.").into()));
                     }
