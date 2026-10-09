@@ -2,68 +2,70 @@
 
 A Windows system tray app that keeps your AI provider usage limits visible. Inspired by [steipete/CodexBar](https://github.com/steipete/CodexBar) (macOS).
 
-Built with C# / WPF / .NET 9 — native Windows, no Electron overhead.
+Built with Rust, [GPUI](https://www.gpui.rs/) and [gpui-kit](https://gpui-kit.com/): native Windows, no Electron overhead.
 
 ## Providers
 
 | Provider | Auth Method | What's Tracked |
 |----------|-------------|----------------|
-| **Gemini** | OAuth (Gemini CLI credentials) | Pro + Flash quota |
+| **ChatGPT / Codex** | Codex CLI ChatGPT login (`~/.codex/auth.json`) | 5-hour + weekly usage limits |
+| **Claude** | Claude Code login (`~/.claude/.credentials.json`) | Session + weekly limits, extra-usage spend |
+| **Copilot** | GitHub CLI (`gh auth`) | Usage limits per account |
+| **Cursor** | Cursor app sign-in (`%APPDATA%\Cursor\auth.json`) | Plan usage and spend |
+| **OpenCode Go / Zen** | Dashboard cookie + workspace ID | Usage and balance |
 | **OpenRouter** | API Key | Credits, usage across models |
 | **Moonshot (Kimi)** | API Key | Remaining API credit balance |
-| **Copilot** | GitHub CLI (`gh auth`) | Usage limits per account |
-| **ChatGPT / Codex** | Codex CLI ChatGPT login | 5-hour + weekly usage limits |
 
 ## Features
 
-- **System tray** icon with per-provider usage meters
-- **Popup panel** showing session + weekly limits and reset countdowns
-- **Settings** to enable/disable providers and configure auth
-- **Auto-refresh** with configurable intervals (1m, 2m, 5m, 15m)
-- **Privacy-first**: on-device only, no data sent anywhere except provider APIs
+- **System tray** icon with a usage tooltip
+- **Dashboard** with an account table, focus cards, usage history and window curves
+- **Alerts** when an account nears or hits its limit
+- **Groups and ordering** by urgency or by hand
+- **System, light and dark appearance**, following Windows high contrast
+- **Privacy-first**: on-device only, no data sent anywhere except provider APIs; keys are kept in Windows Credential Manager
 
 ## Getting Started
 
 ### Requirements
 
 - Windows 10 or later
-- [.NET 9 Runtime](https://dotnet.microsoft.com/download/dotnet/9.0)
+- [Rust](https://www.rust-lang.org/tools/install) (the MSVC toolchain; `rust-toolchain.toml` pins stable)
+- Visual Studio Build Tools with the "Desktop development with C++" workload
 - Node.js 20 or later (required for `npm install` / pre-commit hook setup)
 
 ### Build from source
 
 ```powershell
-git clone https://github.com/HemSoft/codexbar.git
+git clone https://github.com/hemsoft-dev/codexbar.git
 cd codexbar
 npm install          # Also configures the pre-commit hook
-dotnet build
-dotnet run --project src\CodexBar.App
+.\run.ps1            # Builds in release and starts CodexBar in the system tray
 ```
+
+`run.ps1` copies the app to `%LOCALAPPDATA%\CodexBar\bin\codexbar.exe` and replaces a running instance. For
+development, `cargo run -p codexbar-app -- --demo` starts the dashboard with sample data beside the real app.
 
 ### Provider setup
 
-1. **Gemini**: Install [Gemini CLI](https://github.com/google-gemini/gemini-cli) and run `gemini` to complete OAuth login
-2. **OpenRouter**: Get an API key from [openrouter.ai/keys](https://openrouter.ai/keys) and add it in Settings
-3. **Moonshot (Kimi)**: Get an API key from [platform.kimi.ai](https://platform.kimi.ai/), set `MOONSHOT_API_KEY` (or add `apiKey` under `Moonshot` in `~/.codexbar/settings.json`), then enable Moonshot in Settings
-4. **Copilot**: Uses GitHub CLI tokens — run `gh auth login` for each account
-5. **ChatGPT / Codex**: Run `codex` and sign in with your ChatGPT account
+1. **ChatGPT / Codex**: Run `codex` and sign in with your ChatGPT account
+2. **Claude**: Run `claude` and sign in
+3. **Copilot**: Uses GitHub CLI tokens — run `gh auth login` for each account
+4. **Cursor**: Sign in to the Cursor app
+5. **OpenRouter**: Get an API key from [openrouter.ai/keys](https://openrouter.ai/keys) and add it in Settings, or set `OPENROUTER_API_KEY`
+6. **Moonshot (Kimi)**: Get an API key from [platform.kimi.ai](https://platform.kimi.ai/) and add it in Settings, or set `MOONSHOT_API_KEY`
 
 ## Architecture
 
 ```text
-CodexBar.sln
-├── src/CodexBar.Core/          # Provider abstractions, models, fetch logic
-│   ├── Models/                 # UsageSnapshot, ProviderStatus, etc.
-│   ├── Providers/              # One folder per provider
-│   │   ├── Gemini/
-│   │   ├── OpenRouter/
-│   │   └── Copilot/
-│   └── Services/               # Shared services (HTTP, refresh loop)
-└── src/CodexBar.App/           # WPF system tray app
-    ├── Views/                  # XAML views
-    ├── ViewModels/             # MVVM view models
-    └── Resources/              # Icons, assets
+Cargo.toml
+├── crates/codexbar-core/       # Models, metrics, alerts, layout, formatting
+├── crates/codexbar-providers/  # One module per provider, HTTP and OAuth helpers
+├── crates/codexbar-store/      # Settings, credentials, snapshots, usage history
+└── crates/codexbar-app/        # GPUI dashboard and tray host
 ```
+
+The `src/` folder holds the retired C# / WPF app.
 
 ## Credits
 
