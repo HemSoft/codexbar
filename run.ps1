@@ -27,10 +27,12 @@ if (-not $builtExe) {
 }
 
 # Stop the running app, and the retired WPF app, so only one tray icon remains and the copy isn't locked. Demo
-# instances (--demo) are left running; they have their own single-instance lock.
+# instances (--demo) and other users' instances are left running; each has its own single-instance lock.
+$currentUserSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 $existingProcesses = @(
     Get-CimInstance Win32_Process -Filter "Name = 'codexbar.exe' OR Name = 'CodexBar.App.exe'" |
         Where-Object { $_.CommandLine -notmatch '(^|\s)--demo(\s|$)' } |
+        Where-Object { (Invoke-CimMethod -InputObject $_ -MethodName GetOwnerSid).Sid -eq $currentUserSid } |
         ForEach-Object { Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue }
 )
 if ($existingProcesses.Count -gt 0) {
