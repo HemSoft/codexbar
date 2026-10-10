@@ -7,6 +7,19 @@ set -e
 
 echo "🔍 Running pre-commit checks..."
 
+# The gates check the working tree, so a Rust file staged in one state and changed again afterwards would be checked
+# in a state that isn't the one committed. Stage or stash those changes first.
+staged=$(git diff --cached --name-only)
+partly_staged=$(git diff --name-only -- '*.rs' '*Cargo.toml' 'Cargo.lock' | while IFS= read -r file; do
+    if printf '%s
+' "$staged" | grep -Fxq -- "$file"; then echo "$file"; fi
+done)
+if [ -n "$partly_staged" ]; then
+    echo "✗ These files have unstaged changes on top of staged ones; stage or stash them so the checks see what is committed:"
+    echo "$partly_staged" | sed 's/^/    /'
+    exit 1
+fi
+
 echo "  → Checking Rust formatting..."
 cargo fmt --all --check
 
@@ -16,7 +29,7 @@ cargo clippy --workspace --all-targets --locked --quiet -- -D warnings
 echo "  → Running Rust tests..."
 cargo test --workspace --locked --quiet
 
-if git diff --cached --name-only | grep -Eq '^src/|\.(cs|csproj|sln|props|targets|xaml)$'; then
+if git diff --cached --name-only | grep -Eq '^src/|\.(cs|csproj|sln|slnx|props|targets|xaml)$'; then
     echo "  → C# files changed: checking formatting..."
     dotnet format --verify-no-changes
 
