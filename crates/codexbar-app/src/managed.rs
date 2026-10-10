@@ -6,13 +6,14 @@ use codexbar_store::settings::AccountRecord;
 use gpui_kit::{App, Window};
 
 use crate::settings_hub::SettingsHub;
-use crate::{claude_sign_in, codex_sign_in, github_sign_in};
+use crate::{claude_sign_in, codex_sign_in, cursor_sign_in, github_sign_in};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Managed {
     Codex,
     GitHub,
     Claude,
+    Cursor,
 }
 
 impl Managed {
@@ -24,6 +25,8 @@ impl Managed {
             Some(Self::GitHub)
         } else if claude_sign_in::is_managed(record) {
             Some(Self::Claude)
+        } else if cursor_sign_in::is_managed(record) {
+            Some(Self::Cursor)
         } else {
             None
         }
@@ -34,6 +37,7 @@ impl Managed {
             Self::Codex => codex_sign_in::sign_in(record_id, window, cx),
             Self::GitHub => github_sign_in::sign_in(record_id, window, cx),
             Self::Claude => claude_sign_in::sign_in(record_id, window, cx),
+            Self::Cursor => cursor_sign_in::sign_in(record_id, window, cx),
         }
     }
 
@@ -42,6 +46,7 @@ impl Managed {
             Self::Codex => codex_sign_in::sign_out(record_id, window, cx),
             Self::GitHub => github_sign_in::sign_out(record_id, cx),
             Self::Claude => claude_sign_in::sign_out(record_id, window, cx),
+            Self::Cursor => cursor_sign_in::sign_out(record_id, window, cx),
         }
     }
 
@@ -51,6 +56,7 @@ impl Managed {
             Self::Codex => codex_sign_in::describe(hub.dir(), record),
             Self::GitHub => github_sign_in::describe(hub, record),
             Self::Claude => claude_sign_in::describe(hub.dir(), record),
+            Self::Cursor => cursor_sign_in::describe(hub.dir(), record),
         }
     }
 
@@ -59,6 +65,7 @@ impl Managed {
             Self::Codex => codex_sign_in::auth_path(hub.dir(), record).exists(),
             Self::GitHub => matches!(github_sign_in::token(hub, record), Ok(Some(_))),
             Self::Claude => claude_sign_in::credentials_path(hub.dir(), record).exists(),
+            Self::Cursor => cursor_sign_in::auth_path(hub.dir(), record).exists(),
         }
     }
 
@@ -68,6 +75,7 @@ impl Managed {
         match self {
             Self::Codex => codex_sign_in::forget(record, cx),
             Self::Claude => claude_sign_in::forget(record, cx),
+            Self::Cursor => cursor_sign_in::forget(record, cx),
             Self::GitHub => {
                 if let Err(err) =
                     codexbar_store::credentials::delete_long(SettingsHub::global(cx).credentials().as_ref(), &record.id)

@@ -38,12 +38,7 @@ pub fn enabled(hub: &SettingsHub) -> Vec<Arc<dyn UsageProvider>> {
     }
 
     providers.extend(claude_adapters(hub));
-    if !enabled_accounts(hub, names::CURSOR).is_empty() {
-        providers.push(Arc::new(CursorProvider::new(
-            UreqClient::new(),
-            cursor::default_auth_path(),
-        )));
-    }
+    providers.extend(cursor_adapters(hub));
 
     let openrouter = enabled_accounts(hub, names::OPENROUTER);
     let multiple = openrouter.len() > 1;
@@ -94,7 +89,11 @@ fn codex_adapters(hub: &SettingsHub) -> Vec<Arc<dyn UsageProvider>> {
     let mut records = enabled_accounts(hub, names::CODEX);
     let several = records.len() > 1;
     // CodexBar's own accounts first: they own their identity.
-    records.sort_by_key(|record| !crate::codex_sign_in::is_managed(record));
+    // Signed-in homes first, CodexBar's own first among those: a remembered identity never hides a live sign-in.
+    records.sort_by_key(|record| {
+        let signed_in = crate::codex_sign_in::auth_path(hub.dir(), record).is_file();
+        (!signed_in, !crate::codex_sign_in::is_managed(record))
+    });
     let mut homes = Vec::new();
     let mut identities = Vec::new();
     let mut adapters: Vec<Arc<dyn UsageProvider>> = Vec::new();
@@ -137,7 +136,7 @@ fn claude_adapters(hub: &SettingsHub) -> Vec<Arc<dyn UsageProvider>> {
     records.sort_by_key(|record| {
         let managed = crate::claude_sign_in::is_managed(record);
         let signed_in = crate::claude_sign_in::credentials_path(hub.dir(), record).is_file();
-        (!managed, !signed_in)
+        (!signed_in, !managed)
     });
     let mut folders = Vec::new();
     let mut identities = Vec::new();
@@ -163,6 +162,40 @@ fn claude_adapters(hub: &SettingsHub) -> Vec<Arc<dyn UsageProvider>> {
         let mut provider = ClaudeProvider::new(UreqClient::new(), credentials).with_renewer(Arc::new(ClaudeCliRenewer));
         if managed {
             provider = provider.with_profile(profile).managed();
+        }
+        if managed || several {
+            provider = provider.with_account(identity.unwrap_or_else(|| record.id.clone()), record.label.clone());
+        }
+        adapters.push(Arc::new(provider));
+    }
+    adapters
+}
+
+/// One adapter per Cursor sign-in (#81): the Cursor app's, and one for each account CodexBar signed in. Folders signed
+/// in to the same Cursor account show it once, signed-in ones first.
+fn cursor_adapters(hub: &SettingsHub) -> Vec<Arc<dyn UsageProvider>> {
+    let mut records = enabled_accounts(hub, names::CURSOR);
+    let several = records.len() > 1;
+    records.sort_by_key(|record| {
+        let managed = crate::cursor_sign_in::is_managed(record);
+        (!crate::cursor_sign_in::auth_path(hub.dir(), record).is_file(), !managed)
+    });
+    let mut paths = Vec::new();
+    let mut identities = Vec::new();
+    let mut adapters: Vec<Arc<dyn UsageProvider>> = Vec::new();
+    for record in records {
+        let path = crate::cursor_sign_in::auth_path(hub.dir(), &record);
+        let managed = crate::cursor_sign_in::is_managed(&record);
+        let identity = if managed { record.external_id.clone() } else { None }
+            .or_else(|| cursor::signed_in_account(&path).map(|id| id.as_str().to_owned()));
+        if paths.contains(&path) || identity.as_ref().is_some_and(|id| identities.contains(id)) {
+            continue;
+        }
+        paths.push(path.clone());
+        identities.extend(identity.clone());
+        let mut provider = CursorProvider::new(UreqClient::new(), path);
+        if managed {
+            provider = provider.managed();
         }
         if managed || several {
             provider = provider.with_account(identity.unwrap_or_else(|| record.id.clone()), record.label.clone());
@@ -208,6 +241,7 @@ pub fn owned_account_ids(hub: &SettingsHub) -> HashMap<String, String> {
                 names::OPENROUTER | names::MOONSHOT => record.id.clone(),
                 names::CODEX if crate::codex_sign_in::is_managed(record) => record.external_id.clone()?,
                 names::CLAUDE if crate::claude_sign_in::is_managed(record) => record.external_id.clone()?,
+                names::CURSOR if crate::cursor_sign_in::is_managed(record) => record.external_id.clone()?,
                 names::COPILOT => {
                     let user = record.external_id.as_deref()?.trim();
                     (!user.is_empty()).then(|| codexbar_providers::copilot::account_id(user).as_str().to_owned())?

@@ -54,10 +54,11 @@ pub const PROVIDERS: [ProviderInfo; 8] = [
     ProviderInfo {
         id: names::CURSOR,
         display: "Cursor",
-        sign_in: "Uses the sign-in from the Cursor app.",
+        sign_in: "Automatic uses the Cursor app's sign-in. OAuth signs an account in with your browser through the \
+                  Cursor CLI (cursor-agent) and keeps it separate, so several Cursor accounts can be added.",
         secret: None,
         default_method: AuthMethod::Automatic,
-        multi_account: false,
+        multi_account: true,
     },
     ProviderInfo {
         id: names::OPENROUTER,

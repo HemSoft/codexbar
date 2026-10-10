@@ -365,7 +365,7 @@ impl<H: HttpClient> UsageProvider for CodexProvider<H> {
                     Some((_, previous)) => {
                         if *previous != id {
                             account = account.with_message(
-                                "Signed in to a different ChatGPT account. The previous account's usage stays with it.",
+                                "Signed in to a different ChatGPT account. It is a new account here; the previous one's usage isn't carried over.",
                             );
                         }
                         *previous = id;

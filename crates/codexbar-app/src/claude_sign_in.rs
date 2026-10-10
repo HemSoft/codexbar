@@ -230,10 +230,13 @@ pub fn sign_in(record_id: &str, window: &mut Window, cx: &mut App) {
                 .background_spawn(async move { pending.finish(SIGN_IN_TIMEOUT, waiting) })
                 .await;
             let _ = cx.update(|window, cx| match result {
-                Ok(()) => {
-                    remember_identity(&record_id, &dir, cx);
-                    window.close_dialog(cx);
-                }
+                Ok(()) => match remember_identity(&record_id, &dir, cx) {
+                    Ok(()) => window.close_dialog(cx),
+                    Err(message) => {
+                        *stage.borrow_mut() = Stage::Failed(message);
+                        window.refresh();
+                    }
+                },
                 Err(ClaudeCliError::Cancelled) => {}
                 Err(err) => {
                     *stage.borrow_mut() = Stage::Failed(err.to_string().into());
@@ -246,7 +249,7 @@ pub fn sign_in(record_id: &str, window: &mut Window, cx: &mut App) {
 
 /// Stores the Claude identity the folder is signed in to, as the account's dashboard account. Signing it in to
 /// another identity replaces the one before, whose stored usage is then removed with it, so identities never mix.
-fn remember_identity(record_id: &str, dir: &Path, cx: &mut App) {
+fn remember_identity(record_id: &str, dir: &Path, cx: &mut App) -> Result<(), SharedString> {
     let Some(record) = SettingsHub::global(cx)
         .settings()
         .accounts()
@@ -254,19 +257,21 @@ fn remember_identity(record_id: &str, dir: &Path, cx: &mut App) {
         .find(|a| a.id == record_id)
         .cloned()
     else {
-        return;
+        return Err("The account was removed during the sign-in.".into());
     };
     let identity = codexbar_providers::claude::signed_in_identity(&profile_path(dir, &record))
         .map(|(id, _)| id.as_str().to_owned());
     if identity.is_some() && identity != record.external_id {
-        let _ = SettingsHub::update(cx, |settings| {
+        SettingsHub::update(cx, |settings| {
             settings.upsert(AccountRecord {
                 external_id: identity,
                 ..record
             })
-        });
+        })
+        .map_err(|err| SharedString::from(format!("The sign-in couldn't be saved: {err}")))?;
     }
     SettingsHub::request_refresh(cx);
+    Ok(())
 }
 
 /// Signs a managed account out. Its history stays, for when it is signed in again.

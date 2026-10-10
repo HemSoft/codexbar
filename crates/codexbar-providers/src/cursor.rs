@@ -14,6 +14,8 @@ use crate::{AccountOutcome, HttpClient, ProviderError, UsageProvider};
 
 const USAGE_ENDPOINT: &str = "https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage";
 const SIGN_IN_HINT: &str = "Sign in to Cursor, then refresh CodexBar.";
+/// The hint for a sign-in CodexBar made (#81).
+pub const MANAGED_SIGN_IN_HINT: &str = "Sign in again in Settings > Accounts.";
 
 pub fn default_auth_path() -> PathBuf {
     std::env::var_os("APPDATA")
@@ -162,11 +164,39 @@ static LAST_ACCOUNTS: Mutex<Vec<(PathBuf, AccountId)>> = Mutex::new(Vec::new());
 pub struct CursorProvider<H: HttpClient> {
     http: H,
     auth_path: PathBuf,
+    /// The dashboard account and name this adapter reports, when it serves one configured account of several.
+    account: Option<(String, String)>,
+    hint: &'static str,
 }
 
 impl<H: HttpClient> CursorProvider<H> {
     pub fn new(http: H, auth_path: PathBuf) -> Self {
-        Self { http, auth_path }
+        Self {
+            http,
+            auth_path,
+            account: None,
+            hint: SIGN_IN_HINT,
+        }
+    }
+
+    /// Reports one configured account: `id` is the dashboard account it is expected under (its signed-in identity, or
+    /// the record before a sign-in), `label` its name.
+    pub fn with_account(mut self, id: impl Into<String>, label: impl Into<String>) -> Self {
+        self.account = Some((id.into(), label.into()));
+        self
+    }
+
+    /// A sign-in CodexBar made: signing in again happens in Settings.
+    pub fn managed(mut self) -> Self {
+        self.hint = MANAGED_SIGN_IN_HINT;
+        self
+    }
+
+    fn label(&self) -> Option<String> {
+        self.account
+            .as_ref()
+            .map(|(_, label)| label.trim().to_owned())
+            .filter(|label| !label.is_empty())
     }
 
     fn usage(&self, token: &str, now: DateTime<Utc>) -> Result<AccountSnapshot, ProviderError> {
@@ -180,7 +210,7 @@ impl<H: HttpClient> CursorProvider<H> {
         let response = self.http.post_json(USAGE_ENDPOINT, &headers, "{}")?;
         match response.status {
             200..=299 => parse_usage(&response.body, now),
-            401 | 403 => Err(ProviderError::Expired { hint: SIGN_IN_HINT }),
+            401 | 403 => Err(ProviderError::Expired { hint: self.hint }),
             status => Err(ProviderError::Http { status }),
         }
     }
@@ -204,19 +234,24 @@ impl<H: HttpClient> UsageProvider for CursorProvider<H> {
     /// No sign-in fails the provider as a whole. Once the token is read the account is known, so a failed fetch is
     /// that account's failure, never attributed to the account shown before a switch.
     fn fetch_outcomes(&self, now: DateTime<Utc>) -> Result<Vec<AccountOutcome>, ProviderError> {
-        let token = read_access_token(&self.auth_path)?;
+        let token = read_access_token(&self.auth_path).map_err(|_| ProviderError::NotSignedIn { hint: self.hint })?;
         let id = account_id_for_token(&token);
         let outcome = match self.usage(&token, now) {
             Ok(usage) => {
                 let mut account = AccountSnapshot::new(id.clone(), Provider::Cursor, usage.metrics().to_vec(), now);
+                if let Some(label) = self.label() {
+                    account = account.with_label(label);
+                }
                 let mut last = LAST_ACCOUNTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
                 let previous = last.iter_mut().find(|(path, _)| *path == self.auth_path);
                 match previous {
                     Some((_, previous)) => {
                         if *previous != id {
-                            account = account.with_message(
-                                "The Cursor app is signed in to a different account. The previous account's usage stays with it.",
-                            );
+                            account = account.with_message(if self.hint == MANAGED_SIGN_IN_HINT {
+                                "Signed in to a different Cursor account. It is a new account here; the previous one's usage isn't carried over."
+                            } else {
+                                "The Cursor app is signed in to a different account. The previous account's usage stays with it."
+                            });
                         }
                         *previous = id;
                     }
@@ -226,15 +261,25 @@ impl<H: HttpClient> UsageProvider for CursorProvider<H> {
             }
             Err(error) => AccountOutcome::Failed {
                 account: id,
-                label: None,
+                label: self.label(),
                 error,
             },
         };
         Ok(vec![outcome])
     }
 
+    fn account_id(&self) -> Option<&str> {
+        self.account.as_ref().map(|(id, _)| id.as_str())
+    }
+
+    fn account_label(&self) -> Option<&str> {
+        self.account.as_ref().map(|(_, label)| label.as_str())
+    }
+
+    /// The sign-in's account; a configured account that is signed out still holds the identity it had, so its saved
+    /// usage is shown rather than set aside.
     fn signed_in_account(&self) -> Option<AccountId> {
-        signed_in_account(&self.auth_path)
+        signed_in_account(&self.auth_path).or_else(|| self.account.as_ref().map(|(id, _)| AccountId::new(id.clone())))
     }
 }
 
@@ -449,6 +494,54 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_file(&self.0);
         }
+    }
+
+    #[test]
+    fn a_configured_cursor_account_is_named_and_keeps_its_identity_signed_out() {
+        let auth = Auth::new("configured", "google-oauth2|333");
+        let provider = || {
+            CursorProvider::new(Fixed(HttpResponse::new(200, USAGE)), auth.0.clone())
+                .managed()
+                .with_account("cursor-aaaaaaaaaaaa", "Work")
+        };
+        let account = provider().fetch(now()).unwrap().remove(0);
+        assert_eq!(account.label(), Some("Work"));
+        assert_eq!(provider().account_id(), Some("cursor-aaaaaaaaaaaa"));
+        assert_eq!(provider().account_label(), Some("Work"));
+        std::fs::remove_file(&auth.0).unwrap();
+        // Signed out: it still holds the identity it had, and says to sign in from Settings.
+        assert_eq!(
+            provider()
+                .signed_in_account()
+                .map(|id| id.as_str().to_owned())
+                .as_deref(),
+            Some("cursor-aaaaaaaaaaaa")
+        );
+        assert_eq!(
+            provider().fetch_outcomes(now()).err(),
+            Some(ProviderError::NotSignedIn {
+                hint: MANAGED_SIGN_IN_HINT
+            })
+        );
+    }
+
+    #[test]
+    fn a_refused_configured_account_is_its_own_failure() {
+        let auth = Auth::new("refused", "google-oauth2|444");
+        let provider = CursorProvider::new(Fixed(HttpResponse::new(401, "")), auth.0.clone())
+            .managed()
+            .with_account("cursor-bbbbbbbbbbbb", "Work");
+        let outcomes = provider.fetch_outcomes(now()).unwrap();
+        let AccountOutcome::Failed { label, error, .. } = &outcomes[0] else {
+            panic!("expected a failure")
+        };
+        assert_eq!(label.as_deref(), Some("Work"));
+        assert_eq!(
+            error,
+            &ProviderError::Expired {
+                hint: MANAGED_SIGN_IN_HINT
+            }
+        );
     }
 
     #[test]
