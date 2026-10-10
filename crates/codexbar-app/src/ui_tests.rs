@@ -992,6 +992,9 @@ fn open_live_dyn(
         if cx.try_global::<crate::codex_sign_in::Service>().is_none() {
             crate::codex_sign_in::init_with(cx, Arc::new(codex_fixture::FakeCodexSignIn::default()));
         }
+        if cx.try_global::<crate::claude_sign_in::Service>().is_none() {
+            crate::claude_sign_in::init_with(cx, Arc::new(claude_fixture::FakeClaude::default()));
+        }
         if cx.try_global::<crate::github_sign_in::Service>().is_none() {
             crate::github_sign_in::init_with(cx, Arc::new(github_fixture::FakeGitHub::default()));
         }
@@ -3185,4 +3188,306 @@ fn an_organization_card_is_owned_while_an_account_bills_it(cx: &mut TestAppConte
     assert_eq!(owned.get("cli-1").map(String::as_str), Some("copilot-dev"));
     assert_eq!(owned.get("cli-1#org").map(String::as_str), Some("copilotorg-acme-eng"));
     assert!(!owned.contains_key("cli-2#org"), "a switched-off account bills nothing");
+}
+
+// Claude accounts CodexBar signs in (#80): a Claude Code window for the account's own folder, its identity, sign-out,
+// cancellation and removal, with a fake standing in for Claude Code.
+
+mod claude_fixture {
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    use codexbar_providers::claude_cli::ClaudeCliError;
+
+    use crate::claude_sign_in::{PendingSignIn, SignInService};
+
+    #[derive(Clone, Default)]
+    pub enum Outcome {
+        SignsIn(&'static str),
+        Fails,
+        #[default]
+        Waits,
+    }
+
+    #[derive(Default)]
+    pub struct State {
+        pub outcome: Mutex<Outcome>,
+        pub opened: Mutex<Vec<PathBuf>>,
+        pub signed_out: Mutex<Vec<PathBuf>>,
+        pub cancel: Mutex<Option<Arc<AtomicBool>>>,
+    }
+
+    #[derive(Default, Clone)]
+    pub struct FakeClaude(pub Arc<State>);
+
+    impl FakeClaude {
+        pub fn new(outcome: Outcome) -> Self {
+            let fake = Self::default();
+            *fake.0.outcome.lock().unwrap() = outcome;
+            fake
+        }
+    }
+
+    impl SignInService for FakeClaude {
+        fn begin(&self, config: &Path, _: &AtomicBool) -> Result<Box<dyn PendingSignIn>, ClaudeCliError> {
+            self.0.opened.lock().unwrap().push(config.to_owned());
+            Ok(Box::new(Pending {
+                state: self.0.clone(),
+                config: config.to_owned(),
+            }))
+        }
+
+        fn sign_out(&self, config: &Path) -> Result<(), ClaudeCliError> {
+            self.0.signed_out.lock().unwrap().push(config.to_owned());
+            let _ = std::fs::remove_file(config.join(".credentials.json"));
+            Ok(())
+        }
+    }
+
+    struct Pending {
+        state: Arc<State>,
+        config: PathBuf,
+    }
+
+    impl PendingSignIn for Pending {
+        fn finish(self: Box<Self>, _: Duration, cancel: Arc<AtomicBool>) -> Result<(), ClaudeCliError> {
+            *self.state.cancel.lock().unwrap() = Some(cancel.clone());
+            match self.state.outcome.lock().unwrap().clone() {
+                Outcome::SignsIn(user) => {
+                    sign_in(&self.config, user);
+                    Ok(())
+                }
+                Outcome::Fails => Err(ClaudeCliError::Failed),
+                Outcome::Waits => {
+                    assert!(!cancel.load(Ordering::SeqCst));
+                    Err(ClaudeCliError::Cancelled)
+                }
+            }
+        }
+    }
+
+    /// What Claude Code leaves in a folder after signing `user` in.
+    pub fn sign_in(config: &Path, user: &str) {
+        std::fs::create_dir_all(config).unwrap();
+        std::fs::write(
+            config.join(".credentials.json"),
+            r#"{"claudeAiOauth":{"accessToken":"sk-ant-oat01-test","refreshToken":"r","expiresAt":4102444800000,"subscriptionType":"max"}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            config.join(".claude.json"),
+            format!(
+                r#"{{"oauthAccount":{{"accountUuid":"{user}","organizationUuid":"org-1","emailAddress":"{user}@example.com"}}}}"#
+            ),
+        )
+        .unwrap();
+    }
+}
+
+use claude_fixture::FakeClaude;
+
+const MANAGED_CLAUDE: &str = r#"{ "accountConfigurationVersion": 1, "accounts": [
+    { "id": "cl-1", "providerId": "Claude", "displayLabel": "Work", "enabled": true,
+      "authenticationMethod": "BrowserSession" } ] }"#;
+
+fn open_claude_accounts(cx: &mut TestAppContext, settings: &TempSettings, fake: &FakeClaude) -> AnyWindowHandle {
+    let fake = fake.clone();
+    cx.update(|cx| crate::claude_sign_in::init_with(cx, Arc::new(fake)));
+    open_settings_page(cx, settings, MemoryCredentialStore::default(), 1)
+}
+
+fn claude_folder(settings: &TempSettings, id: &str) -> PathBuf {
+    settings.0.join("claude").join(id)
+}
+
+#[gpui_kit::test]
+fn a_claude_account_signs_in_through_claude_code_and_shows_who_it_is(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("claude-sign-in", MANAGED_CLAUDE);
+    let fake = FakeClaude::new(claude_fixture::Outcome::SignsIn("dev"));
+    let handle = open_claude_accounts(cx, &settings, &fake);
+    assert_eq!(
+        label_of(cx, "account-detail-cl-1").as_deref(),
+        Some("Browser session · Not signed in")
+    );
+    let requests = cx.update(|cx| SettingsHub::refresh_requests(cx));
+    click(cx, handle, "sign-in-cl-1");
+    let folder = claude_folder(&settings, "cl-1");
+    assert_eq!(*fake.0.opened.lock().unwrap(), std::slice::from_ref(&folder));
+    assert!(
+        !exists(cx, handle, "claude-sign-in-status"),
+        "the dialog closes once signed in"
+    );
+    let identity = codexbar_providers::claude::signed_in_identity(&folder.join(".claude.json"))
+        .unwrap()
+        .0;
+    assert_eq!(
+        saved_settings(&settings).accounts()[0].external_id.as_deref(),
+        Some(identity.as_str())
+    );
+    assert_eq!(
+        label_of(cx, "account-detail-cl-1").as_deref(),
+        Some("Browser session · dev@example.com")
+    );
+    assert!(cx.update(|cx| SettingsHub::refresh_requests(cx)) > requests);
+    let owned = cx.update(|cx| crate::providers::owned_account_ids(SettingsHub::global(cx)));
+    assert_eq!(owned.get("cl-1"), Some(&identity.as_str().to_owned()));
+
+    click(cx, handle, "sign-out-cl-1");
+    assert_eq!(*fake.0.signed_out.lock().unwrap(), std::slice::from_ref(&folder));
+    assert_eq!(
+        label_of(cx, "account-detail-cl-1").as_deref(),
+        Some("Browser session · Not signed in")
+    );
+    assert_eq!(
+        saved_settings(&settings).accounts()[0].external_id.as_deref(),
+        Some(identity.as_str())
+    );
+}
+
+#[gpui_kit::test]
+fn closing_the_claude_dialog_closes_its_window(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("claude-cancel", MANAGED_CLAUDE);
+    let fake = FakeClaude::new(claude_fixture::Outcome::Waits);
+    let handle = open_claude_accounts(cx, &settings, &fake);
+    click(cx, handle, "sign-in-cl-1");
+    let status = label_of(cx, "claude-sign-in-status").unwrap();
+    assert!(status.starts_with("A Claude Code window opened"), "{status}");
+    let cancel = fake.0.cancel.lock().unwrap().clone().unwrap();
+    press(cx, handle, "escape");
+    assert!(cancel.load(std::sync::atomic::Ordering::SeqCst));
+    assert_eq!(saved_settings(&settings).accounts()[0].external_id, None);
+}
+
+#[gpui_kit::test]
+fn a_failed_claude_sign_in_says_so(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("claude-fails", MANAGED_CLAUDE);
+    let handle = open_claude_accounts(cx, &settings, &FakeClaude::new(claude_fixture::Outcome::Fails));
+    click(cx, handle, "sign-in-cl-1");
+    assert_eq!(
+        label_of(cx, "claude-sign-in-error").as_deref(),
+        Some("Claude Code didn't complete the sign-in.")
+    );
+}
+
+#[gpui_kit::test]
+fn removing_a_claude_account_signs_it_out_and_deletes_its_folder(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("claude-remove", MANAGED_CLAUDE);
+    let folder = claude_folder(&settings, "cl-1");
+    claude_fixture::sign_in(&folder, "dev");
+    let fake = FakeClaude::default();
+    let handle = open_claude_accounts(cx, &settings, &fake);
+    click(cx, handle, "remove-cl-1");
+    press(cx, handle, "enter");
+    assert!(saved_settings(&settings).accounts().is_empty());
+    assert_eq!(*fake.0.signed_out.lock().unwrap(), std::slice::from_ref(&folder));
+    assert!(!folder.exists());
+}
+
+#[gpui_kit::test]
+fn adding_a_claude_account_with_a_browser_session_signs_it_in(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("claude-add", "{}");
+    let fake = FakeClaude::new(claude_fixture::Outcome::SignsIn("dev"));
+    let handle = open_claude_accounts(cx, &settings, &fake);
+    click(cx, handle, "add-Claude");
+    type_text(cx, handle, "Work");
+    // From OAuth (Claude's default) one step down to Browser session; the first Down opens the list.
+    press(cx, handle, "tab");
+    for _ in 0..2 {
+        press(cx, handle, "down");
+    }
+    press(cx, handle, "enter");
+    click(cx, handle, "account-save");
+    let saved = saved_settings(&settings);
+    let record = saved
+        .accounts()
+        .iter()
+        .find(|record| record.method == codexbar_store::settings::AuthMethod::BrowserSession)
+        .unwrap();
+    // Claude Code's own sign-in, shown until now as the implicit account, stays as an account of its own.
+    let methods: Vec<_> = saved.accounts().iter().map(|record| record.method).collect();
+    assert_eq!(
+        methods,
+        [
+            codexbar_store::settings::AuthMethod::OAuth,
+            codexbar_store::settings::AuthMethod::BrowserSession
+        ]
+    );
+    assert_eq!(*fake.0.opened.lock().unwrap(), [claude_folder(&settings, &record.id)]);
+    assert!(record.external_id.is_some());
+}
+
+#[gpui_kit::test]
+fn each_claude_account_gets_its_own_adapter_and_shares_none(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "claude-adapters",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "cl-1", "providerId": "Claude", "displayLabel": "Work", "enabled": true,
+              "authenticationMethod": "BrowserSession", "externalAccountId": "claude-aaaaaaaaaaaa" },
+            { "id": "cl-2", "providerId": "Claude", "displayLabel": "Again", "enabled": true,
+              "authenticationMethod": "BrowserSession", "externalAccountId": "claude-aaaaaaaaaaaa" },
+            { "id": "cl-3", "providerId": "Claude", "displayLabel": "Home", "enabled": true,
+              "authenticationMethod": "BrowserSession" } ] }"#,
+    );
+    // Both folders are signed in to the same Claude account.
+    claude_fixture::sign_in(&claude_folder(&settings, "cl-1"), "same");
+    claude_fixture::sign_in(&claude_folder(&settings, "cl-2"), "same");
+    cx.update(|cx| SettingsHub::init_with(cx, &settings.0, Arc::new(MemoryCredentialStore::default())));
+    let adapters = cx.update(|cx| crate::providers::enabled(SettingsHub::global(cx)));
+    let claude: Vec<Option<String>> = adapters
+        .iter()
+        .filter(|provider| provider.name() == "Claude")
+        .map(|provider| provider.account_id().map(str::to_owned))
+        .collect();
+    // One identity shows once; an account not signed in yet reports under its record.
+    assert_eq!(
+        claude,
+        [Some("claude-aaaaaaaaaaaa".to_owned()), Some("cl-3".to_owned())]
+    );
+}
+
+#[gpui_kit::test]
+fn a_signed_out_claude_account_doesnt_hide_a_signed_in_one(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "claude-signed-out-claim",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "cl-1", "providerId": "Claude", "displayLabel": "Old", "enabled": true,
+              "authenticationMethod": "BrowserSession", "externalAccountId": "claude-aaaaaaaaaaaa" },
+            { "id": "cl-2", "providerId": "Claude", "displayLabel": "Current", "enabled": true,
+              "authenticationMethod": "BrowserSession", "externalAccountId": "claude-aaaaaaaaaaaa" } ] }"#,
+    );
+    // Only the second folder is signed in.
+    claude_fixture::sign_in(&claude_folder(&settings, "cl-2"), "same");
+    cx.update(|cx| SettingsHub::init_with(cx, &settings.0, Arc::new(MemoryCredentialStore::default())));
+    let adapters = cx.update(|cx| crate::providers::enabled(SettingsHub::global(cx)));
+    let labels: Vec<Option<String>> = adapters
+        .iter()
+        .filter(|provider| provider.name() == "Claude")
+        .map(|provider| provider.account_label().map(str::to_owned))
+        .collect();
+    // Only the signed-in folder shows the account; the signed-out one would only add a failure for it.
+    assert_eq!(labels, [Some("Current".to_owned())]);
+}
+
+#[gpui_kit::test]
+fn claude_codes_own_folder_keeps_the_account_neutral_id(cx: &mut TestAppContext) {
+    // Other Claude apps can rename the account in its .claude.json without changing the CLI's credentials, so it is
+    // never named by that file.
+    let settings = TempSettings::new(
+        "claude-default-id",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "cl-own", "providerId": "Claude", "displayLabel": "Mine", "enabled": true,
+              "authenticationMethod": "OAuth" },
+            { "id": "cl-1", "providerId": "Claude", "displayLabel": "Work", "enabled": true,
+              "authenticationMethod": "BrowserSession" } ] }"#,
+    );
+    cx.update(|cx| SettingsHub::init_with(cx, &settings.0, Arc::new(MemoryCredentialStore::default())));
+    let adapters = cx.update(|cx| crate::providers::enabled(SettingsHub::global(cx)));
+    let own = adapters
+        .iter()
+        .find(|provider| provider.name() == "Claude" && provider.account_label() == Some("Mine"))
+        .expect("Claude Code's own folder has an adapter");
+    // Configured among several, it reports under its record, never an identity read from the shared profile.
+    assert_eq!(own.account_id(), Some("cl-own"));
 }

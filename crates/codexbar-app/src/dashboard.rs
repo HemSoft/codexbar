@@ -748,11 +748,12 @@ impl Dashboard {
             .accounts()
             .iter()
             .filter(|account| !account.enabled)
-            // A switched-off Codex account CodexBar signed in reports under the identity it holds (#78).
+            // A switched-off Codex or Claude account CodexBar signed in reports under the identity it holds (#78, #80).
             .flat_map(|account| {
-                let identity = crate::codex_sign_in::is_managed(account)
-                    .then(|| account.external_id.clone())
-                    .flatten();
+                let identity = (crate::codex_sign_in::is_managed(account)
+                    || crate::claude_sign_in::is_managed(account))
+                .then(|| account.external_id.clone())
+                .flatten();
                 std::iter::once(account.id.clone()).chain(identity)
             })
             .collect();

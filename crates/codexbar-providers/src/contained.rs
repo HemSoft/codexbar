@@ -13,14 +13,28 @@ pub(crate) struct Contained {
 
 /// Spawns `command` with no console window, inside a kill-on-close job.
 pub(crate) fn spawn(command: &mut Command) -> std::io::Result<Contained> {
+    spawn_with(command, false)
+}
+
+/// Spawns `command` in a console window of its own, for a CLI the user signs in through, inside a kill-on-close
+/// job.
+pub(crate) fn spawn_console(command: &mut Command) -> std::io::Result<Contained> {
+    spawn_with(command, true)
+}
+
+fn spawn_with(command: &mut Command, console: bool) -> std::io::Result<Contained> {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         const CREATE_SUSPENDED: u32 = 0x0000_0004;
+        const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        let window = if console { CREATE_NEW_CONSOLE } else { CREATE_NO_WINDOW };
         // Suspended until it is in its job, so nothing it starts can run outside the job.
-        command.creation_flags(CREATE_NO_WINDOW | CREATE_SUSPENDED);
+        command.creation_flags(window | CREATE_SUSPENDED);
     }
+    #[cfg(not(windows))]
+    let _ = console;
     let mut child = command.spawn()?;
     #[cfg(windows)]
     {

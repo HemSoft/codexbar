@@ -62,6 +62,22 @@ and keeps writing its own credential file; CodexBar only reads it.
   the Automatic or Command line method use the GitHub CLI's own accounts, the
   import and fallback path.
 
+- **Claude (#80).** An account with the Browser session sign-in method (OAuth
+  already means Claude Code's own sign-in for Claude) gets its own Claude Code
+  config folder in the settings folder (`claude\<account id>`, used as
+  `CLAUDE_CONFIG_DIR`). `claude auth login` is an interactive terminal UI, so
+  CodexBar opens it in a console window of its own and waits for it to close
+  with a sign-in. Renewal is Claude Code's own: when a token expires within
+  five minutes, or the usage endpoint refuses it, CodexBar runs `claude auth
+  status --json` for that folder, which refreshes the token under Claude
+  Code's refresh lock (`.oauth_refresh.lock.owner`), then reads the file again;
+  at most once per folder every 15 minutes. CodexBar never writes the
+  credentials, so a stale refresh can't overwrite newer ones. Sign out runs
+  `claude auth logout`. Each Claude account and organization
+  (`.claude.json` `oauthAccount`) is its own dashboard account. Claude Code's
+  own `~/.claude` is the import and fallback path, renewed the same way. Every
+  process runs in a kill-on-close job.
+
 ## Approved client registrations
 
 A provider can use this path only once a human has confirmed its client

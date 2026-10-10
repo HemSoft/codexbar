@@ -3,6 +3,7 @@
 
 pub mod balance;
 pub mod claude;
+pub mod claude_cli;
 pub mod codex;
 pub mod codex_app_server;
 mod command;

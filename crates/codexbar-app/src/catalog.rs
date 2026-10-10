@@ -35,10 +35,11 @@ pub const PROVIDERS: [ProviderInfo; 8] = [
     ProviderInfo {
         id: names::CLAUDE,
         display: "Claude",
-        sign_in: "Uses the sign-in from Claude Code (`claude`).",
+        sign_in: "OAuth and Automatic use Claude Code's own sign-in (`claude`). Browser session signs an account in \
+                  through a Claude Code window and keeps it separate, so several Claude accounts can be added.",
         secret: None,
         default_method: AuthMethod::OAuth,
-        multi_account: false,
+        multi_account: true,
     },
     ProviderInfo {
         id: names::COPILOT,

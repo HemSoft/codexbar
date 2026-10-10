@@ -1,23 +1,35 @@
-//! Claude subscription limits (5-hour and weekly), read with the sign-in Claude Code keeps in
-//! `~/.claude/.credentials.json`.
+//! Claude subscription limits (5-hour and weekly), read with the sign-in Claude Code keeps in a config folder's
+//! `.credentials.json`: Claude Code's own (`~/.claude`), or one CodexBar signed in through Claude Code (#80).
 //!
-//! Read-only by design: this provider never refreshes or rewrites Claude Code's OAuth token, because a refresh
-//! racing Claude Code can sign it out. Safe shared renewal is issue #80. The usage endpoint punishes polling with
-//! hour-long 429s, so results are cached and every 429/403 starts a backoff.
+//! This provider never refreshes or rewrites a token itself, because a refresh racing Claude Code can sign it out.
+//! When a token expires (or is refused) it asks Claude Code to renew it (`claude_cli::renew`), which takes Claude
+//! Code's own refresh lock, then reads the file again. The usage endpoint punishes polling with hour-long 429s, so
+//! results are cached and every 429/403 starts a backoff, per sign-in file and across refreshes.
 
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use chrono::{DateTime, Duration, Utc};
 use codexbar_core::{AccountId, AccountSnapshot, Currency, Metric, Money, Provider};
 use serde_json::Value;
+use sha2::{Digest as _, Sha256};
 
+use crate::claude_cli::ClaudeCliError;
 use crate::pace::elapsed_pace;
-use crate::{HttpClient, ProviderError, UsageProvider};
+use crate::{AccountOutcome, HttpClient, ProviderError, UsageProvider};
 
 const USAGE_ENDPOINT: &str = "https://api.anthropic.com/api/oauth/usage";
 const SIGN_IN_HINT: &str = "Run `claude` and sign in with your Claude account.";
 const EXPIRED_HINT: &str = "Open Claude Code once to renew the sign-in.";
+/// The hint for a sign-in CodexBar made (#80).
+pub const MANAGED_SIGN_IN_HINT: &str = "Sign in again in Settings > Accounts.";
+/// The account of a sign-in whose Claude account can't be read.
+const LEGACY_ID: &str = "claude";
+/// A sign-in is renewed when its token expires within this long.
+const RENEW_AHEAD_MINUTES: i64 = 5;
+/// At most one renewal is tried per sign-in file in this long.
+const RENEW_BACKOFF: std::time::Duration = std::time::Duration::from_secs(15 * 60);
 /// Fresh results are reused this long; the endpoint does not need 2-minute polling.
 const CACHE_TTL_MINUTES: i64 = 10;
 /// Minimum wait after a 429, even when Retry-After is shorter.
@@ -41,6 +53,49 @@ impl std::fmt::Debug for Credentials {
             .field("subscription", &self.subscription)
             .finish()
     }
+}
+
+/// Claude Code's own config folder: `$CLAUDE_CONFIG_DIR`, or `~/.claude`.
+pub fn default_config_dir() -> PathBuf {
+    std::env::var_os("CLAUDE_CONFIG_DIR")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("USERPROFILE").map(|profile| PathBuf::from(profile).join(".claude")))
+        .unwrap_or_else(|| PathBuf::from(".claude"))
+}
+
+/// Where Claude Code keeps the signed-in account (`oauthAccount`): `.claude.json` in the config folder when one is
+/// set, else in the user profile beside `~/.claude`.
+pub fn default_profile_path() -> PathBuf {
+    match std::env::var_os("CLAUDE_CONFIG_DIR").filter(|value| !value.is_empty()) {
+        Some(dir) => PathBuf::from(dir).join(".claude.json"),
+        None => std::env::var_os("USERPROFILE")
+            .map(PathBuf::from)
+            .unwrap_or_default()
+            .join(".claude.json"),
+    }
+}
+
+/// The Claude account a config folder is signed in to: its dashboard account, `claude-` and a short hash of the
+/// account and organization, so each identity keeps its own history and a folder signed in to another never inherits
+/// them; and its email.
+pub fn signed_in_identity(profile: &Path) -> Option<(AccountId, Option<String>)> {
+    let text = std::fs::read_to_string(profile).ok()?;
+    let json: Value = serde_json::from_str(&text).ok()?;
+    let account = json.get("oauthAccount")?;
+    let field = |name: &str| {
+        account
+            .get(name)
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+    };
+    let user = field("accountUuid")?;
+    let organization = field("organizationUuid").unwrap_or_default();
+    let digest = Sha256::digest(format!("{user}\n{organization}").as_bytes());
+    let short: String = digest.iter().take(6).map(|byte| format!("{byte:02x}")).collect();
+    Some((AccountId::new(format!("claude-{short}")), field("emailAddress")))
 }
 
 /// `$CLAUDE_CONFIG_DIR/.credentials.json`, or `~/.claude/.credentials.json`.
@@ -320,13 +375,49 @@ fn credits(used: Money, limit: Option<Money>) -> Metric {
 #[derive(Default)]
 struct State {
     cached: Option<AccountSnapshot>,
-    backoff_until: Option<DateTime<Utc>>,
+    /// Until when, and for which account: a folder signed in to another account since isn't held back.
+    backoff_until: Option<(DateTime<Utc>, AccountId)>,
+    renewed_at: Option<Instant>,
+    /// The account this sign-in file last fetched for, so a switch between refreshes is noticed.
+    last_account: Option<AccountId>,
+}
+
+/// Cache, backoff and renewal per sign-in file. Process-wide, because the dashboard builds its providers anew for
+/// every refresh: state kept in a provider would be gone by the next one, and with it the 429 backoff.
+static STATES: Mutex<Vec<(PathBuf, State)>> = Mutex::new(Vec::new());
+
+fn with_state<R>(path: &Path, f: impl FnOnce(&mut State) -> R) -> R {
+    let mut states = STATES.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some((_, state)) = states.iter_mut().find(|(known, _)| known == path) {
+        return f(state);
+    }
+    states.push((path.to_owned(), State::default()));
+    let (_, state) = states.last_mut().expect("just pushed");
+    f(state)
+}
+
+/// Asks Claude Code to renew a config folder's sign-in. A seam, so tests never start Claude Code.
+pub trait Renewer: Send + Sync {
+    fn renew(&self, config: &Path) -> Result<(), ClaudeCliError>;
+}
+
+/// Renews through `claude auth status`, which runs Claude Code's own locked refresh.
+pub struct ClaudeCliRenewer;
+
+impl Renewer for ClaudeCliRenewer {
+    fn renew(&self, config: &Path) -> Result<(), ClaudeCliError> {
+        crate::claude_cli::renew(config)
+    }
 }
 
 pub struct ClaudeProvider<H: HttpClient> {
     http: H,
     credentials_path: PathBuf,
-    state: Mutex<State>,
+    /// Where the signed-in account is named (`.claude.json`); without it every sign-in is the legacy account.
+    profile: Option<PathBuf>,
+    account: Option<(String, String)>,
+    hint: &'static str,
+    renewer: Option<Arc<dyn Renewer>>,
 }
 
 impl<H: HttpClient> ClaudeProvider<H> {
@@ -334,7 +425,91 @@ impl<H: HttpClient> ClaudeProvider<H> {
         Self {
             http,
             credentials_path,
-            state: Mutex::default(),
+            profile: None,
+            account: None,
+            hint: EXPIRED_HINT,
+            renewer: None,
+        }
+    }
+
+    /// Names the account from Claude Code's `.claude.json` at `profile`.
+    pub fn with_profile(mut self, profile: PathBuf) -> Self {
+        self.profile = Some(profile);
+        self
+    }
+
+    /// Reports one configured account: `id` is the dashboard account it is expected under, `label` its name.
+    pub fn with_account(mut self, id: impl Into<String>, label: impl Into<String>) -> Self {
+        self.account = Some((id.into(), label.into()));
+        self
+    }
+
+    /// A folder CodexBar signed in: signing in again happens in Settings.
+    pub fn managed(mut self) -> Self {
+        self.hint = MANAGED_SIGN_IN_HINT;
+        self
+    }
+
+    /// Asks Claude Code, through `renewer`, to renew a sign-in that expires or is refused.
+    pub fn with_renewer(mut self, renewer: Arc<dyn Renewer>) -> Self {
+        self.renewer = Some(renewer);
+        self
+    }
+
+    fn identity(&self) -> AccountId {
+        self.profile
+            .as_deref()
+            .and_then(signed_in_identity)
+            .map_or_else(|| AccountId::new(LEGACY_ID), |(id, _)| id)
+    }
+
+    fn read(&self) -> Result<Credentials, ProviderError> {
+        let not_signed_in = |_| ProviderError::NotSignedIn {
+            hint: self.not_signed_in_hint(),
+        };
+        match read_credentials(&self.credentials_path) {
+            Ok(credentials) => Ok(credentials),
+            // Claude Code may be replacing the file right now; one more read after a moment sees the finished file.
+            Err(_) if self.credentials_path.is_file() => {
+                std::thread::sleep(std::time::Duration::from_millis(150));
+                read_credentials(&self.credentials_path).map_err(not_signed_in)
+            }
+            Err(err) => Err(not_signed_in(err)),
+        }
+    }
+
+    fn not_signed_in_hint(&self) -> &'static str {
+        if self.hint == MANAGED_SIGN_IN_HINT {
+            MANAGED_SIGN_IN_HINT
+        } else {
+            SIGN_IN_HINT
+        }
+    }
+
+    /// Tries a renewal, at most once per sign-in file in [`RENEW_BACKOFF`]. True when Claude Code ran it.
+    fn renew(&self) -> bool {
+        let (Some(renewer), Some(config)) = (&self.renewer, self.credentials_path.parent()) else {
+            return false;
+        };
+        let due = with_state(&self.credentials_path, |state| {
+            let now = Instant::now();
+            if state
+                .renewed_at
+                .is_some_and(|at| now.duration_since(at) < RENEW_BACKOFF)
+            {
+                return false;
+            }
+            state.renewed_at = Some(now);
+            true
+        });
+        due && renewer.renew(config).is_ok()
+    }
+
+    fn label_for(&self, plan: Option<&str>) -> Option<String> {
+        match (self.account.as_ref().map(|(_, label)| label.trim()), plan) {
+            (Some(label), Some(plan)) if !label.is_empty() => Some(format!("{label} · {plan}")),
+            (Some(label), None) if !label.is_empty() => Some(label.to_owned()),
+            (_, plan) => plan.map(str::to_owned),
         }
     }
 
@@ -347,29 +522,54 @@ impl<H: HttpClient> ClaudeProvider<H> {
             ("User-Agent", "claude-cli/2.1.12 (external, cli)"),
         ];
         let response = self.http.get(USAGE_ENDPOINT, &headers)?;
-        let mut state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         match response.status {
-            200..=299 => {
-                let account = parse_usage(&response.body, credentials.subscription.as_deref(), now)?;
-                state.cached = Some(account.clone());
-                state.backoff_until = None;
-                Ok(account)
-            }
+            200..=299 => parse_usage(&response.body, credentials.subscription.as_deref(), now),
             429 => {
                 let retry_after = response
                     .retry_after_secs
                     .map(|secs| Duration::seconds(secs as i64))
                     .unwrap_or_default();
                 let until = now + retry_after.max(Duration::minutes(RATE_LIMIT_BACKOFF_MINUTES));
-                state.backoff_until = Some(until);
+                let id = self.identity();
+                with_state(&self.credentials_path, |state| state.backoff_until = Some((until, id)));
                 Err(ProviderError::RateLimited { retry_at: until })
             }
-            401 => Err(ProviderError::Expired { hint: EXPIRED_HINT }),
+            401 => Err(ProviderError::Expired { hint: self.hint }),
             403 => {
-                state.backoff_until = Some(now + Duration::hours(FORBIDDEN_BACKOFF_HOURS));
+                let id = self.identity();
+                with_state(&self.credentials_path, |state| {
+                    state.backoff_until = Some((now + Duration::hours(FORBIDDEN_BACKOFF_HOURS), id));
+                });
                 Err(ProviderError::Http { status: 403 })
             }
             status => Err(ProviderError::Http { status }),
+        }
+    }
+
+    /// The usage with the sign-in as it is now: renewed first when it expires within minutes, and renewed and tried
+    /// once more when the endpoint refuses it.
+    fn fresh(&self, now: DateTime<Utc>) -> Result<AccountSnapshot, ProviderError> {
+        let mut credentials = self.read()?;
+        let expiring = |credentials: &Credentials| {
+            credentials
+                .expires_at
+                .is_some_and(|at| at <= now + Duration::minutes(RENEW_AHEAD_MINUTES))
+        };
+        let mut renewed = false;
+        if expiring(&credentials) && self.renew() {
+            renewed = true;
+            credentials = self.read()?;
+        }
+        // Claude Code reports a folder signed in even when its refresh failed, so the file decides.
+        if credentials.expires_at.is_some_and(|at| at <= now) {
+            return Err(ProviderError::Expired { hint: self.hint });
+        }
+        match self.request(&credentials, now) {
+            Err(ProviderError::Expired { .. }) if !renewed && self.renew() => {
+                let credentials = self.read()?;
+                self.request(&credentials, now)
+            }
+            result => result,
         }
     }
 }
@@ -380,22 +580,95 @@ impl<H: HttpClient> UsageProvider for ClaudeProvider<H> {
     }
 
     fn fetch(&self, now: DateTime<Utc>) -> Result<Vec<AccountSnapshot>, ProviderError> {
-        {
-            let state = self.state.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            if let Some(cached) = &state.cached
-                && now - cached.fetched_at() < Duration::minutes(CACHE_TTL_MINUTES)
-            {
-                return Ok(vec![cached.clone()]);
-            }
-            if let Some(until) = state.backoff_until.filter(|until| now < *until) {
-                return Err(ProviderError::RateLimited { retry_at: until });
-            }
+        self.fetch_outcomes(now)?
+            .into_iter()
+            .map(|outcome| match outcome {
+                AccountOutcome::Fresh(account) => Ok(account),
+                AccountOutcome::Failed { error, .. } => Err(error),
+            })
+            .collect()
+    }
+
+    /// No sign-in fails the adapter as a whole. Otherwise the account is known from Claude Code's profile, so a
+    /// failure (expiry, backoff) is that account's, never another identity's. Fresh results are reused for a while.
+    fn fetch_outcomes(&self, now: DateTime<Utc>) -> Result<Vec<AccountOutcome>, ProviderError> {
+        if !self.credentials_path.is_file() {
+            return Err(ProviderError::NotSignedIn {
+                hint: self.not_signed_in_hint(),
+            });
         }
-        let credentials = read_credentials(&self.credentials_path)?;
-        if credentials.expires_at.is_some_and(|at| at <= now) {
-            return Err(ProviderError::Expired { hint: EXPIRED_HINT });
+        let id = self.identity();
+        let label = self.label_for(None);
+        let failed = |error| {
+            Ok(vec![AccountOutcome::Failed {
+                account: id.clone(),
+                label: label.clone(),
+                error,
+            }])
+        };
+        let held =
+            with_state(&self.credentials_path, |state| {
+                if let Some(cached) = state.cached.as_ref().filter(|cached| {
+                    cached.id() == &id && now - cached.fetched_at() < Duration::minutes(CACHE_TTL_MINUTES)
+                }) {
+                    return Some(Ok(cached.clone()));
+                }
+                state
+                    .backoff_until
+                    .as_ref()
+                    .filter(|(until, held)| now < *until && *held == id)
+                    .map(|(until, _)| Err(ProviderError::RateLimited { retry_at: *until }))
+            });
+        match held {
+            Some(Ok(cached)) => return Ok(vec![AccountOutcome::Fresh(cached)]),
+            Some(Err(error)) => return failed(error),
+            None => {}
         }
-        self.request(&credentials, now).map(|account| vec![account])
+        match self.fresh(now) {
+            Ok(usage) => {
+                let mut account = AccountSnapshot::new(id.clone(), Provider::Claude, usage.metrics().to_vec(), now);
+                if let Some(label) = self.label_for(usage.label()) {
+                    account = account.with_label(label);
+                }
+                for message in usage.messages() {
+                    account = account.with_message(message.clone());
+                }
+                let switched = with_state(&self.credentials_path, |state| {
+                    let switched = state.last_account.as_ref().is_some_and(|last| *last != id);
+                    state.last_account = Some(id.clone());
+                    state.cached = Some(account.clone());
+                    state.backoff_until = None;
+                    switched
+                });
+                if switched {
+                    account = account.with_message(
+                        "Signed in to a different Claude account. The previous account's usage stays with it.",
+                    );
+                }
+                Ok(vec![AccountOutcome::Fresh(account)])
+            }
+            Err(error @ ProviderError::NotSignedIn { .. }) => Err(error),
+            Err(error) => failed(error),
+        }
+    }
+
+    fn account_id(&self) -> Option<&str> {
+        self.account.as_ref().map(|(id, _)| id.as_str())
+    }
+
+    fn account_label(&self) -> Option<&str> {
+        self.account.as_ref().map(|(_, label)| label.as_str())
+    }
+
+    /// The folder's signed-in account; a configured one that is signed out still holds the identity it had.
+    fn signed_in_account(&self) -> Option<AccountId> {
+        let current = self
+            .profile
+            .as_deref()
+            .filter(|_| self.credentials_path.is_file())
+            .and_then(signed_in_identity)
+            .map(|(id, _)| id);
+        current.or_else(|| self.account.as_ref().map(|(id, _)| AccountId::new(id.clone())))
     }
 }
 
@@ -722,6 +995,247 @@ mod tests {
                 .unwrap()
                 .contains("\"refreshToken\":\"r\"")
         );
+    }
+
+    /// A Claude Code config folder for one test: `.credentials.json` and `.claude.json`, removed at the end.
+    struct Folder(PathBuf);
+
+    impl Folder {
+        fn new(name: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!("codexbar-claude-dir-{}-{name}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(&dir).unwrap();
+            Self(dir)
+        }
+
+        fn sign_in(&self, token: &str, expires_at: DateTime<Utc>, account: &str) {
+            std::fs::write(
+                self.0.join(".credentials.json"),
+                format!(
+                    r#"{{"claudeAiOauth":{{"accessToken":"{token}","refreshToken":"r","expiresAt":{},"subscriptionType":"max"}}}}"#,
+                    expires_at.timestamp_millis()
+                ),
+            )
+            .unwrap();
+            std::fs::write(
+                self.0.join(".claude.json"),
+                format!(
+                    r#"{{"oauthAccount":{{"accountUuid":"{account}","organizationUuid":"org-1","emailAddress":"{account}@example.com"}}}}"#
+                ),
+            )
+            .unwrap();
+        }
+
+        fn provider(&self, responses: Vec<HttpResponse>) -> ClaudeProvider<FakeHttp> {
+            ClaudeProvider::new(FakeHttp::new(responses), self.0.join(".credentials.json"))
+                .with_profile(self.0.join(".claude.json"))
+        }
+    }
+
+    impl Drop for Folder {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// Stands in for Claude Code: a renewal writes `renewed` (if any) as the new token, and counts the calls.
+    struct FakeRenewer {
+        folder: PathBuf,
+        renewed: Option<String>,
+        calls: AtomicUsize,
+    }
+
+    impl Renewer for FakeRenewer {
+        fn renew(&self, config: &Path) -> Result<(), ClaudeCliError> {
+            assert_eq!(config, self.folder.as_path());
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            if let Some(token) = &self.renewed {
+                let path = config.join(".credentials.json");
+                let text = std::fs::read_to_string(&path).unwrap();
+                let renewed = text.replace(
+                    &text[text.find("\"accessToken\":\"").unwrap()..text.find("\",\"refreshToken\"").unwrap()],
+                    &format!("\"accessToken\":\"{token}"),
+                );
+                let later = (now() + Duration::hours(8)).timestamp_millis().to_string();
+                let start = renewed.find("\"expiresAt\":").unwrap() + "\"expiresAt\":".len();
+                let end = start + renewed[start..].find(',').unwrap();
+                std::fs::write(&path, format!("{}{later}{}", &renewed[..start], &renewed[end..])).unwrap();
+            }
+            // Like Claude Code, it reports success even when the refresh didn't change anything.
+            Ok(())
+        }
+    }
+
+    fn renewer(folder: &Folder, renewed: Option<&str>) -> Arc<FakeRenewer> {
+        Arc::new(FakeRenewer {
+            folder: folder.0.clone(),
+            renewed: renewed.map(str::to_owned),
+            calls: AtomicUsize::new(0),
+        })
+    }
+
+    #[test]
+    fn the_cache_and_backoff_survive_a_new_provider() {
+        // The dashboard builds its providers anew for every refresh.
+        let folder = Folder::new("state");
+        folder.sign_in("tok", now() + Duration::hours(8), "user-1");
+        let first = folder.provider(vec![HttpResponse::new(200, FIXTURE)]);
+        first.fetch(now()).unwrap();
+        let again = folder.provider(vec![HttpResponse::new(200, FIXTURE)]);
+        again.fetch(now() + Duration::minutes(5)).unwrap();
+        assert_eq!(
+            again.http.calls.load(Ordering::SeqCst),
+            0,
+            "the cached result is reused"
+        );
+
+        let limited = Folder::new("state-429");
+        limited.sign_in("tok", now() + Duration::hours(8), "user-1");
+        let mut response = HttpResponse::new(429, "");
+        response.retry_after_secs = Some(3600);
+        assert!(limited.provider(vec![response]).fetch(now()).is_err());
+        let next = limited.provider(vec![HttpResponse::new(200, FIXTURE)]);
+        assert!(matches!(
+            next.fetch(now() + Duration::minutes(30)),
+            Err(ProviderError::RateLimited { .. })
+        ));
+        assert_eq!(
+            next.http.calls.load(Ordering::SeqCst),
+            0,
+            "the backoff holds across refreshes"
+        );
+    }
+
+    #[test]
+    fn each_claude_identity_is_its_own_account() {
+        let folder = Folder::new("identity");
+        folder.sign_in("tok", now() + Duration::hours(8), "user-1");
+        let (first, email) = signed_in_identity(&folder.0.join(".claude.json")).unwrap();
+        assert!(
+            first.as_str().starts_with("claude-") && first.as_str().len() == 19,
+            "{first:?}"
+        );
+        assert_eq!(email.as_deref(), Some("user-1@example.com"));
+        folder.sign_in("tok", now() + Duration::hours(8), "user-2");
+        let (second, _) = signed_in_identity(&folder.0.join(".claude.json")).unwrap();
+        assert_ne!(first, second);
+        assert!(signed_in_identity(&folder.0.join("missing.json")).is_none());
+        // Without a profile the account keeps the legacy id.
+        let (provider, _file) = provider("legacy-id", vec![HttpResponse::new(200, FIXTURE)]);
+        assert_eq!(provider.fetch(now()).unwrap()[0].id().as_str(), LEGACY_ID);
+    }
+
+    #[test]
+    fn a_sign_in_about_to_expire_is_renewed_by_claude_code_first() {
+        let folder = Folder::new("renew");
+        folder.sign_in("old", now() + Duration::minutes(2), "user-1");
+        let renewer = renewer(&folder, Some("new"));
+        let provider = folder
+            .provider(vec![HttpResponse::new(200, FIXTURE)])
+            .with_renewer(renewer.clone());
+        let account = provider.fetch(now()).unwrap().remove(0);
+        assert_eq!(renewer.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(provider.http.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            account.id(),
+            &signed_in_identity(&folder.0.join(".claude.json")).unwrap().0
+        );
+    }
+
+    #[test]
+    fn a_renewal_that_changed_nothing_is_still_an_expiry() {
+        // Claude Code says signed in even when its refresh failed; the file decides.
+        let folder = Folder::new("renew-failed");
+        folder.sign_in("old", now() - Duration::minutes(1), "user-1");
+        let renewer = renewer(&folder, None);
+        let provider = folder
+            .provider(vec![HttpResponse::new(200, FIXTURE)])
+            .managed()
+            .with_account("record-1", "Work")
+            .with_renewer(renewer.clone());
+        let outcomes = provider.fetch_outcomes(now()).unwrap();
+        let AccountOutcome::Failed { error, label, .. } = &outcomes[0] else {
+            panic!("expected an expiry")
+        };
+        assert_eq!(
+            error,
+            &ProviderError::Expired {
+                hint: MANAGED_SIGN_IN_HINT
+            }
+        );
+        assert_eq!(label.as_deref(), Some("Work"));
+        assert_eq!(provider.http.calls.load(Ordering::SeqCst), 0);
+        // The next refresh doesn't ask Claude Code again right away.
+        provider.fetch_outcomes(now() + Duration::minutes(1)).unwrap();
+        assert_eq!(renewer.calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_refused_sign_in_is_renewed_and_tried_once_more() {
+        let folder = Folder::new("renew-401");
+        folder.sign_in("revoked", now() + Duration::hours(8), "user-1");
+        let renewer = renewer(&folder, Some("new"));
+        let provider = folder
+            .provider(vec![HttpResponse::new(401, ""), HttpResponse::new(200, FIXTURE)])
+            .with_renewer(renewer.clone());
+        assert_eq!(provider.fetch(now()).unwrap().len(), 1);
+        assert_eq!(renewer.calls.load(Ordering::SeqCst), 1);
+        assert_eq!(provider.http.calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn a_folder_signed_in_to_another_account_starts_a_separate_one() {
+        let folder = Folder::new("switch");
+        folder.sign_in("tok", now() + Duration::hours(8), "user-1");
+        let first = folder
+            .provider(vec![HttpResponse::new(200, FIXTURE)])
+            .fetch(now())
+            .unwrap()
+            .remove(0);
+        assert!(!first.messages().iter().any(|m| m.contains("different Claude account")));
+        folder.sign_in("tok", now() + Duration::hours(8), "user-2");
+        // A fresh fetch (the first one is still cached, but for the other identity).
+        let second = folder
+            .provider(vec![HttpResponse::new(200, FIXTURE)])
+            .fetch(now())
+            .unwrap()
+            .remove(0);
+        assert_ne!(first.id(), second.id());
+        assert!(second.messages().iter().any(|m| m.contains("different Claude account")));
+    }
+
+    #[test]
+    fn a_backoff_holds_only_the_account_that_earned_it() {
+        let folder = Folder::new("backoff-identity");
+        folder.sign_in("tok", now() + Duration::hours(8), "user-a");
+        assert!(folder.provider(vec![HttpResponse::new(403, "")]).fetch(now()).is_err());
+        // Signed in to another account: its first fetch isn't held back by the first account's 403.
+        folder.sign_in("tok", now() + Duration::hours(8), "user-b");
+        let other = folder.provider(vec![HttpResponse::new(200, FIXTURE)]);
+        assert_eq!(other.fetch(now() + Duration::minutes(1)).unwrap().len(), 1);
+        assert_eq!(other.http.calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn a_configured_account_that_is_signed_out_keeps_its_identity_and_label() {
+        let folder = Folder::new("signed-out");
+        let provider = folder
+            .provider(vec![HttpResponse::new(200, FIXTURE)])
+            .managed()
+            .with_account("claude-aaaaaaaaaaaa", "Work");
+        assert_eq!(
+            provider.signed_in_account().map(|id| id.as_str().to_owned()).as_deref(),
+            Some("claude-aaaaaaaaaaaa")
+        );
+        assert_eq!(
+            provider.fetch_outcomes(now()).err(),
+            Some(ProviderError::NotSignedIn {
+                hint: MANAGED_SIGN_IN_HINT
+            })
+        );
+        folder.sign_in("tok", now() + Duration::hours(8), "user-1");
+        let account = provider.fetch(now()).unwrap().remove(0);
+        assert_eq!(account.label(), Some("Work · Max"));
     }
 
     #[test]
