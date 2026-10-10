@@ -249,13 +249,15 @@ else {
     Write-Information "Building CodexBar $version ($commit)..." -InformationAction Continue
     $builtExe = $null
     $env:CODEXBAR_BUILD = $commit
-    # The C runtime is linked in, so the package runs on PCs without the Visual C++ Redistributable. Its own target
-    # folder keeps these flags from rebuilding run.ps1's copy every time.
+    # The package declares x64, so it builds x64 on any host. The C runtime is linked in, so the package runs on PCs
+    # without the Visual C++ Redistributable. Its own target folder keeps these flags from rebuilding run.ps1's copy
+    # every time.
     $rustFlags = $env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS
     $env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS = "$rustFlags -C target-feature=+crt-static".Trim()
     Push-Location $PSScriptRoot
     try {
-        cargo build --release --locked -p codexbar-app --target-dir target\msix\build --message-format=json-render-diagnostics | ForEach-Object {
+        cargo build --release --locked -p codexbar-app --target x86_64-pc-windows-msvc --target-dir target\msix\build `
+            --message-format=json-render-diagnostics | ForEach-Object {
             try { $message = $_ | ConvertFrom-Json } catch { return }
             if ($message.reason -eq 'compiler-artifact' -and $message.target.name -eq 'codexbar' -and $message.executable) {
                 $builtExe = $message.executable
