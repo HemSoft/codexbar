@@ -83,9 +83,11 @@ or from **Settings › About**. Rollback, other PCs and uninstall are covered in
 - **Start with Windows**: `run.ps1` keeps an existing `CodexBar` entry in
   `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` pointed at the installed
   app.
-- **Widgets**: Windows widgets need the packaged app. With the package
-  installed, open the Widgets board (Windows key + W), choose **Add widgets**
-  and pick **CodexBar usage**. See [docs/PACKAGING.md](docs/PACKAGING.md#widgets).
+- **Widgets**: Windows widgets need the packaged app on Windows 11. Because the
+  package is self-signed, Windows lists its widget only with **Developer Mode**
+  on (Settings › System › For developers). Then open the Widgets board (Windows
+  key + W), choose **Add widgets** and pick **CodexBar usage**. See
+  [docs/PACKAGING.md](docs/PACKAGING.md#widgets).
 - **Uninstall**: first quit CodexBar (tray menu, Quit CodexBar). Then delete
   `%LOCALAPPDATA%\CodexBar\bin`, the `.codexbar` folder in your profile (and the
   folder in `CODEXBAR_SETTINGS_DIR`, if you set it), the `CodexBar:account:*`

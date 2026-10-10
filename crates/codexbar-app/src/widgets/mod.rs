@@ -14,6 +14,7 @@ pub mod cards;
 pub mod host;
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -27,8 +28,9 @@ use chrono::Utc;
 use codexbar_store::widgets::{LoadError, WidgetSnapshot, load_widget_snapshot};
 use windows::Win32::Foundation::CLASS_E_NOAGGREGATION;
 use windows::Win32::System::Com::{
-    CLSCTX_LOCAL_SERVER, COINIT_MULTITHREADED, CoInitializeEx, CoRegisterClassObject, CoRevokeClassObject,
-    IClassFactory, IClassFactory_Impl, REGCLS_MULTIPLEUSE,
+    CLSCTX_LOCAL_SERVER, COINIT_MULTITHREADED, CoAddRefServerProcess, CoInitializeEx, CoRegisterClassObject,
+    CoReleaseServerProcess, CoResumeClassObjects, CoRevokeClassObject, IClassFactory, IClassFactory_Impl, REGCLS,
+    REGCLS_MULTIPLEUSE, REGCLS_SUSPENDED,
 };
 use windows::core::{BOOL, GUID, HSTRING, IUnknown, Interface, Ref, implement};
 
@@ -44,10 +46,82 @@ pub const SERVER_ARG: &str = "-RegisterProcessAsComServer";
 /// "Updated 3 min ago" text.
 const POLL: Duration = Duration::from_secs(10);
 const REDRAW: Duration = Duration::from_secs(60);
-/// With no widget on screen for this long the process exits; Windows starts it again when the board needs it.
-const IDLE_EXIT: Duration = Duration::from_secs(10 * 60);
-/// With no widget pinned at all, it exits sooner.
-const EMPTY_EXIT: Duration = Duration::from_secs(60);
+/// Started but never asked for a provider in this long, the process exits.
+const UNUSED_EXIT: Duration = Duration::from_secs(60);
+
+/// Whether this PC can show CodexBar's widgets.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BoardSupport {
+    /// Windows 10 has no Widgets board; Windows 11 (build 22000) is the only widget host.
+    NeedsWindows11,
+    /// The board lists widgets from a self-signed (sideloaded) package only with Developer Mode on.
+    NeedsDeveloperMode,
+    Ready,
+}
+
+impl BoardSupport {
+    pub fn of(build: Option<u32>, developer_mode: bool) -> Self {
+        match build {
+            Some(build) if build < 22000 => Self::NeedsWindows11,
+            _ if !developer_mode => Self::NeedsDeveloperMode,
+            _ => Self::Ready,
+        }
+    }
+
+    /// This PC's support, from the registry.
+    pub fn current() -> Self {
+        let build = read_string(r"SOFTWARE\Microsoft\Windows NT\CurrentVersion", "CurrentBuildNumber")
+            .and_then(|build| build.trim().parse().ok());
+        let developer_mode = read_dword(
+            r"SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock",
+            "AllowDevelopmentWithoutDevLicense",
+        ) == Some(1);
+        Self::of(build, developer_mode)
+    }
+}
+
+fn read_value(key: &str, name: &str, flags: windows::Win32::System::Registry::REG_ROUTINE_FLAGS) -> Option<Vec<u8>> {
+    use windows::Win32::System::Registry::{HKEY_LOCAL_MACHINE, RegGetValueW};
+    let (key, name) = (HSTRING::from(key), HSTRING::from(name));
+    let mut size = 0u32;
+    // SAFETY: valid null-terminated strings; the first call only asks for the size.
+    unsafe { RegGetValueW(HKEY_LOCAL_MACHINE, &key, &name, flags, None, None, Some(&mut size)) }
+        .ok()
+        .ok()?;
+    let mut data = vec![0u8; size as usize];
+    // SAFETY: `data` holds `size` bytes, as Windows asked for.
+    unsafe {
+        RegGetValueW(
+            HKEY_LOCAL_MACHINE,
+            &key,
+            &name,
+            flags,
+            None,
+            Some(data.as_mut_ptr().cast()),
+            Some(&mut size),
+        )
+    }
+    .ok()
+    .ok()?;
+    data.truncate(size as usize);
+    Some(data)
+}
+
+fn read_string(key: &str, name: &str) -> Option<String> {
+    let data = read_value(key, name, windows::Win32::System::Registry::RRF_RT_REG_SZ)?;
+    let wide: Vec<u16> = data
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| u16::from_le_bytes(*pair))
+        .collect();
+    Some(String::from_utf16_lossy(&wide).trim_end_matches('\0').to_owned())
+}
+
+fn read_dword(key: &str, name: &str) -> Option<u32> {
+    let data = read_value(key, name, windows::Win32::System::Registry::RRF_RT_REG_DWORD)?;
+    Some(u32::from_le_bytes(data.get(..4)?.try_into().ok()?))
+}
 
 fn size(size: WidgetSize) -> cards::Size {
     match size {
@@ -64,6 +138,11 @@ struct Shared {
     /// Wakes the poll loop early (a widget was pinned or shown).
     wake: Condvar,
     last_active: Mutex<Instant>,
+    /// A client was handed a provider object or locked the server.
+    connected: AtomicBool,
+    /// Every provider object and server lock was released: COM has stopped handing out new ones (the class is
+    /// suspended), so the process ends and Windows starts a new one when a client asks again.
+    released: AtomicBool,
 }
 
 impl Shared {
@@ -73,6 +152,21 @@ impl Shared {
 
     fn host(&self) -> std::sync::MutexGuard<'_, Host> {
         self.host.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// One more provider object or server lock held by a client.
+    fn add_ref(&self) {
+        self.connected.store(true, Ordering::SeqCst);
+        // SAFETY: balanced by `release`.
+        unsafe { CoAddRefServerProcess() };
+    }
+
+    fn release(&self) {
+        // SAFETY: pairs with an earlier `add_ref`. At zero COM suspends the class objects.
+        if unsafe { CoReleaseServerProcess() } == 0 {
+            self.released.store(true, Ordering::SeqCst);
+            self.wake.notify_all();
+        }
     }
 
     fn touch(&self) {
@@ -102,8 +196,22 @@ fn open_codexbar() {
     }
 }
 
+/// One provider object per client request; the server lives as long as any is held (out-of-process COM's rule).
 #[implement(IWidgetProvider, IWidgetProvider2)]
 struct Provider(Arc<Shared>);
+
+impl Provider {
+    fn new(shared: Arc<Shared>) -> Self {
+        shared.add_ref();
+        Self(shared)
+    }
+}
+
+impl Drop for Provider {
+    fn drop(&mut self) {
+        self.0.release();
+    }
+}
 
 impl IWidgetProvider_Impl for Provider_Impl {
     fn CreateWidget(&self, context: Ref<WidgetContext>) -> windows::core::Result<()> {
@@ -181,9 +289,9 @@ impl IWidgetProvider2_Impl for Provider_Impl {
     }
 }
 
-/// Hands out the one provider object, whatever the host asks for.
+/// Hands out provider objects, all sharing the one widget state.
 #[implement(IClassFactory)]
-struct Factory(IWidgetProvider);
+struct Factory(Arc<Shared>);
 
 impl IClassFactory_Impl for Factory_Impl {
     fn CreateInstance(
@@ -195,11 +303,17 @@ impl IClassFactory_Impl for Factory_Impl {
         if outer.is_some() {
             return Err(CLASS_E_NOAGGREGATION.into());
         }
+        let provider: IWidgetProvider = Provider::new(self.0.clone()).into();
         // SAFETY: COM passes a valid interface id and out-pointer.
-        unsafe { self.0.query(iid, object).ok() }
+        unsafe { provider.query(iid, object).ok() }
     }
 
-    fn LockServer(&self, _lock: BOOL) -> windows::core::Result<()> {
+    fn LockServer(&self, lock: BOOL) -> windows::core::Result<()> {
+        if lock.as_bool() {
+            self.0.add_ref();
+        } else {
+            self.0.release();
+        }
         Ok(())
     }
 }
@@ -219,7 +333,7 @@ fn restore(shared: &Shared) -> windows::core::Result<()> {
     Ok(())
 }
 
-/// Runs the COM server until no widget has been on screen for a while.
+/// Runs the COM server until its clients have released every provider object and lock.
 pub fn serve() -> windows::core::Result<()> {
     // SAFETY: the process's main thread joins the multithreaded apartment once, before any COM use.
     unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.ok()?;
@@ -228,14 +342,27 @@ pub fn serve() -> windows::core::Result<()> {
         host: Mutex::new(Host::default()),
         wake: Condvar::new(),
         last_active: Mutex::new(Instant::now()),
+        connected: AtomicBool::new(false),
+        released: AtomicBool::new(false),
     });
     if let Err(err) = restore(&shared) {
         eprintln!("codexbar: couldn't list pinned widgets: {}", err.message());
     }
-    let provider: IWidgetProvider = Provider(shared.clone()).into();
-    let factory: IClassFactory = Factory(provider).into();
-    // SAFETY: a valid class id and factory; the registration is revoked before the factory is dropped.
-    let cookie = unsafe { CoRegisterClassObject(&CLSID, &factory, CLSCTX_LOCAL_SERVER, REGCLS_MULTIPLEUSE) }?;
+    let factory: IClassFactory = Factory(shared.clone()).into();
+    // Registered suspended and then resumed, so the server-process count (`add_ref`/`release`) can suspend the class
+    // when it reaches zero. SAFETY: a valid class id and factory; the registration is revoked before the factory is
+    // dropped.
+    let cookie = unsafe {
+        CoRegisterClassObject(
+            &CLSID,
+            &factory,
+            CLSCTX_LOCAL_SERVER,
+            REGCLS(REGCLS_MULTIPLEUSE.0 | REGCLS_SUSPENDED.0),
+        )
+    }?;
+    // SAFETY: resumes the class objects this process registered.
+    unsafe { CoResumeClassObjects() }?;
+    let started = Instant::now();
 
     let modified = || {
         std::fs::metadata(shared.dir.join(codexbar_store::widgets::WIDGETS_FILE))
@@ -263,12 +390,9 @@ pub fn serve() -> windows::core::Result<()> {
             }
         }
         seen = changed;
-        let idle = shared
-            .last_active
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .elapsed();
-        if !active && (idle >= IDLE_EXIT || (idle >= EMPTY_EXIT && shared.host().is_empty())) {
+        if shared.released.load(Ordering::SeqCst)
+            || (!shared.connected.load(Ordering::SeqCst) && started.elapsed() >= UNUSED_EXIT)
+        {
             break;
         }
     }
@@ -291,6 +415,28 @@ mod tests {
         );
         assert!(manifest.contains(&format!(r#"arguments="{}""#, SERVER_ARG.to_lowercase())));
         assert!(manifest.contains(&format!(r#"<definition id="{}""#, host::DEFINITION.to_lowercase())));
+    }
+
+    #[test]
+    fn widgets_need_windows_11_and_developer_mode() {
+        assert_eq!(BoardSupport::of(Some(19045), true), BoardSupport::NeedsWindows11);
+        assert_eq!(BoardSupport::of(Some(26100), false), BoardSupport::NeedsDeveloperMode);
+        assert_eq!(BoardSupport::of(Some(22000), true), BoardSupport::Ready);
+        assert_eq!(
+            BoardSupport::of(None, true),
+            BoardSupport::Ready,
+            "an unreadable build isn't held against it"
+        );
+    }
+
+    #[test]
+    fn the_registry_reads_this_windows_build() {
+        let build = read_string(r"SOFTWARE\Microsoft\Windows NT\CurrentVersion", "CurrentBuildNumber");
+        assert!(build.is_some_and(|build| build.parse::<u32>().is_ok_and(|build| build >= 10240)));
+        assert_eq!(
+            read_dword(r"SOFTWARE\Microsoft\Windows NT\CurrentVersion", "NoSuchValue"),
+            None
+        );
     }
 
     #[test]

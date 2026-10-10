@@ -101,9 +101,14 @@ back to them.
 
 ## Widgets
 
-Only packaged apps can provide Windows widgets. The package declares one widget,
-**CodexBar usage**, in three sizes. Add it from the Widgets board (Windows key +
-W, **Add widgets**). **Customize widget** chooses which accounts it shows (all
+Only packaged apps can provide Windows widgets, and the only widget host is the
+Windows 11 Widgets board. The package declares one widget, **CodexBar usage**, in
+three sizes. The board lists widgets from a self-signed (sideloaded) package
+only with **Developer Mode** on (Settings › System › For developers). Settings ›
+Widgets and `package.ps1 -Install` say when it is off, and Settings says when
+the PC runs Windows 10. Add the widget from the Widgets board (Windows key + W,
+**Add widgets**). The picker shows a sample medium widget, drawn by
+`package.ps1`. **Customize widget** chooses which accounts it shows (all
 accounts in dashboard order, one provider, or one group) and the layout:
 automatic (one tile on small, two on medium, four on large) or one, two or four
 tiles.

@@ -1033,19 +1033,33 @@ fn appearance_page() -> SettingPage {
 }
 
 fn widgets_page() -> SettingPage {
-    // Windows widgets come only from packaged apps (#94).
-    let item = if crate::package::installed().is_some() {
-        info_item(
-            "Add a CodexBar widget",
-            "Open the Widgets board (Windows key + W), choose Add widgets and pick CodexBar usage. Customize widget \
-             chooses which accounts it shows (all, one provider or one group) and how many.",
-        )
-    } else {
+    use crate::widgets::BoardSupport;
+    // Windows widgets come only from packaged apps (#94), on Windows 11, and for a self-signed package only with
+    // Developer Mode on.
+    let item = if crate::package::installed().is_none() {
         info_item(
             "Install the package to use widgets",
             "Windows widgets work only when CodexBar is installed as a package: run .\\package.ps1 -Trust -Install \
              (see docs/PACKAGING.md).",
         )
+    } else {
+        match BoardSupport::current() {
+            BoardSupport::NeedsWindows11 => info_item(
+                "Widgets need Windows 11",
+                "The Widgets board, the only place Windows shows widgets, is part of Windows 11, so CodexBar's widget \
+                 can't be added on this PC.",
+            ),
+            BoardSupport::NeedsDeveloperMode => info_item(
+                "Turn on Developer Mode to see the widget",
+                "Windows lists widgets from a self-signed package only with Developer Mode on: Settings › System › \
+                 For developers › Developer Mode. Then open the Widgets board (Windows key + W) and choose Add widgets.",
+            ),
+            BoardSupport::Ready => info_item(
+                "Add a CodexBar widget",
+                "Open the Widgets board (Windows key + W), choose Add widgets and pick CodexBar usage. Customize \
+                 widget chooses which accounts it shows (all, one provider or one group) and how many.",
+            ),
+        }
     };
     SettingPage::new("Widgets")
         .icon(IconName::LayoutDashboard)

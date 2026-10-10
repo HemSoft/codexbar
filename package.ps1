@@ -122,6 +122,44 @@ function New-Logo([string]$Path, [int]$Width, [int]$Height) {
     }
 }
 
+# The widget picker's screenshot: a medium CodexBar widget as the Widgets board shows it, with sample accounts.
+function New-WidgetScreenshot([string]$Path) {
+    Add-Type -AssemblyName System.Drawing
+    $width = 300
+    $height = 304
+    $bitmap = [System.Drawing.Bitmap]::new($width, $height)
+    $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+    try {
+        $graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+        $graphics.TextRenderingHint = [System.Drawing.Text.TextRenderingHint]::ClearTypeGridFit
+        $graphics.Clear([System.Drawing.Color]::FromArgb(0x20, 0x20, 0x20))
+        $muted = [System.Drawing.SolidBrush]::new([System.Drawing.Color]::FromArgb(0xA0, 0xA0, 0xA0))
+        $text = [System.Drawing.SolidBrush]::new([System.Drawing.Color]::White)
+        $track = [System.Drawing.SolidBrush]::new([System.Drawing.Color]::FromArgb(0x3A, 0x3A, 0x3A))
+        $small = [System.Drawing.Font]::new('Segoe UI', 10)
+        $bold = [System.Drawing.Font]::new('Segoe UI Semibold', 11)
+        $graphics.DrawString('All accounts', $small, $muted, 16, 14)
+        $tiles = @(
+            @{ Name = "Claude $([char]0x00B7) Work"; Line = 'Weekly: 42% used'; Used = 0.42; Color = [System.Drawing.Color]::FromArgb(0x6C, 0xCB, 0x5F) },
+            @{ Name = "ChatGPT $([char]0x00B7) Codex"; Line = '5-hour window: 81% used'; Used = 0.81; Color = [System.Drawing.Color]::FromArgb(0xFC, 0xE1, 0x00) }
+        )
+        $y = 48
+        foreach ($tile in $tiles) {
+            $graphics.DrawString($tile.Name, $bold, $text, 16, $y)
+            $graphics.DrawString($tile.Line, $small, $text, 16, $y + 24)
+            $graphics.FillRectangle($track, 16, $y + 50, $width - 32, 6)
+            $graphics.FillRectangle([System.Drawing.SolidBrush]::new($tile.Color), 16, $y + 50, ($width - 32) * $tile.Used, 6)
+            $y += 92
+        }
+        $graphics.DrawString('Updated 1m ago', $small, $muted, 16, $height - 34)
+        $bitmap.Save($Path, [System.Drawing.Imaging.ImageFormat]::Png)
+    }
+    finally {
+        $graphics.Dispose()
+        $bitmap.Dispose()
+    }
+}
+
 # The certificate is created once and then kept: a new one would make every PC that trusts the old one refuse updates,
 # so renewing is an explicit step (-RenewCertificate).
 function Get-SigningCertificate {
@@ -342,7 +380,7 @@ else {
     New-Logo (Join-Path $layout 'Assets\Wide310x150Logo.png') 310 150
     New-Logo (Join-Path $layout 'Assets\StoreLogo.png') 50 50
     New-Logo (Join-Path $layout 'Assets\WidgetIcon.png') 64 64
-    New-Logo (Join-Path $layout 'Assets\WidgetScreenshot.png') 300 304
+    New-WidgetScreenshot (Join-Path $layout 'Assets\WidgetScreenshot.png')
 
     $unsigned = Join-Path $PSScriptRoot 'target\msix\CodexBar.msix'
     Invoke-Tool (Find-SdkTool 'makeappx.exe') @('pack', '/d', $layout, '/p', $unsigned, '/o')
@@ -414,6 +452,12 @@ if ($Install) {
 
     # Started again if it was running, and always after a move from run.ps1: the package turns its startup task on
     # when it runs.
+    # The Widgets board lists widgets from a self-signed package only with Developer Mode on.
+    $unlock = Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock' -ErrorAction SilentlyContinue
+    if (-not $unlock -or $unlock.PSObject.Properties['AllowDevelopmentWithoutDevLicense'].Value -ne 1) {
+        Write-Warning 'To add the CodexBar widget, turn on Developer Mode: Settings > System > For developers.'
+    }
+
     if ($running.Count -gt 0 -or $migrated) {
         Start-Process explorer.exe "shell:AppsFolder\$($installed.PackageFamilyName)!CodexBar"
         Write-Information "Installed CodexBar $version and started it again." -InformationAction Continue

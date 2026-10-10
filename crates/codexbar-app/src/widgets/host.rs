@@ -43,6 +43,7 @@ pub struct Host {
 }
 
 impl Host {
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.widgets.is_empty()
     }
