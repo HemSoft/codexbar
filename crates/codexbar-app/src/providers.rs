@@ -132,7 +132,13 @@ fn codex_adapters(hub: &SettingsHub) -> Vec<Arc<dyn UsageProvider>> {
 fn claude_adapters(hub: &SettingsHub) -> Vec<Arc<dyn UsageProvider>> {
     let mut records = enabled_accounts(hub, names::CLAUDE);
     let several = records.len() > 1;
-    records.sort_by_key(|record| !crate::claude_sign_in::is_managed(record));
+    // CodexBar's own folders first, signed-in ones first among them: a signed-out folder never stands in for a
+    // signed-in one holding the same account.
+    records.sort_by_key(|record| {
+        let managed = crate::claude_sign_in::is_managed(record);
+        let signed_in = crate::claude_sign_in::credentials_path(hub.dir(), record).is_file();
+        (!managed, !signed_in)
+    });
     let mut folders = Vec::new();
     let mut identities = Vec::new();
     let mut adapters: Vec<Arc<dyn UsageProvider>> = Vec::new();
@@ -140,7 +146,6 @@ fn claude_adapters(hub: &SettingsHub) -> Vec<Arc<dyn UsageProvider>> {
         let credentials = crate::claude_sign_in::credentials_path(hub.dir(), &record);
         let profile = crate::claude_sign_in::profile_path(hub.dir(), &record);
         let managed = crate::claude_sign_in::is_managed(&record);
-        let signed_in = credentials.is_file();
         let identity = if managed {
             record
                 .external_id
@@ -149,13 +154,12 @@ fn claude_adapters(hub: &SettingsHub) -> Vec<Arc<dyn UsageProvider>> {
         } else {
             None
         };
-        // A signed-out folder doesn't hold its remembered identity against one that is signed in to it.
-        let claims = identity.clone().filter(|_| signed_in);
-        if folders.contains(&credentials) || claims.as_ref().is_some_and(|id| identities.contains(id)) {
+        // Signed-in folders come first, so an account already shown by one isn't shown again by a signed-out one.
+        if folders.contains(&credentials) || identity.as_ref().is_some_and(|id| identities.contains(id)) {
             continue;
         }
         folders.push(credentials.clone());
-        identities.extend(claims);
+        identities.extend(identity.clone());
         let mut provider = ClaudeProvider::new(UreqClient::new(), credentials).with_renewer(Arc::new(ClaudeCliRenewer));
         if managed {
             provider = provider.with_profile(profile).managed();

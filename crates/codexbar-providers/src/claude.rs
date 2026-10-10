@@ -375,7 +375,8 @@ fn credits(used: Money, limit: Option<Money>) -> Metric {
 #[derive(Default)]
 struct State {
     cached: Option<AccountSnapshot>,
-    backoff_until: Option<DateTime<Utc>>,
+    /// Until when, and for which account: a folder signed in to another account since isn't held back.
+    backoff_until: Option<(DateTime<Utc>, AccountId)>,
     renewed_at: Option<Instant>,
     /// The account this sign-in file last fetched for, so a switch between refreshes is noticed.
     last_account: Option<AccountId>,
@@ -529,13 +530,15 @@ impl<H: HttpClient> ClaudeProvider<H> {
                     .map(|secs| Duration::seconds(secs as i64))
                     .unwrap_or_default();
                 let until = now + retry_after.max(Duration::minutes(RATE_LIMIT_BACKOFF_MINUTES));
-                with_state(&self.credentials_path, |state| state.backoff_until = Some(until));
+                let id = self.identity();
+                with_state(&self.credentials_path, |state| state.backoff_until = Some((until, id)));
                 Err(ProviderError::RateLimited { retry_at: until })
             }
             401 => Err(ProviderError::Expired { hint: self.hint }),
             403 => {
+                let id = self.identity();
                 with_state(&self.credentials_path, |state| {
-                    state.backoff_until = Some(now + Duration::hours(FORBIDDEN_BACKOFF_HOURS));
+                    state.backoff_until = Some((now + Duration::hours(FORBIDDEN_BACKOFF_HOURS), id));
                 });
                 Err(ProviderError::Http { status: 403 })
             }
@@ -612,8 +615,9 @@ impl<H: HttpClient> UsageProvider for ClaudeProvider<H> {
                 }
                 state
                     .backoff_until
-                    .filter(|until| now < *until)
-                    .map(|until| Err(ProviderError::RateLimited { retry_at: until }))
+                    .as_ref()
+                    .filter(|(until, held)| now < *until && *held == id)
+                    .map(|(until, _)| Err(ProviderError::RateLimited { retry_at: *until }))
             });
         match held {
             Some(Ok(cached)) => return Ok(vec![AccountOutcome::Fresh(cached)]),
@@ -1198,6 +1202,18 @@ mod tests {
             .remove(0);
         assert_ne!(first.id(), second.id());
         assert!(second.messages().iter().any(|m| m.contains("different Claude account")));
+    }
+
+    #[test]
+    fn a_backoff_holds_only_the_account_that_earned_it() {
+        let folder = Folder::new("backoff-identity");
+        folder.sign_in("tok", now() + Duration::hours(8), "user-a");
+        assert!(folder.provider(vec![HttpResponse::new(403, "")]).fetch(now()).is_err());
+        // Signed in to another account: its first fetch isn't held back by the first account's 403.
+        folder.sign_in("tok", now() + Duration::hours(8), "user-b");
+        let other = folder.provider(vec![HttpResponse::new(200, FIXTURE)]);
+        assert_eq!(other.fetch(now() + Duration::minutes(1)).unwrap().len(), 1);
+        assert_eq!(other.http.calls.load(Ordering::SeqCst), 1);
     }
 
     #[test]

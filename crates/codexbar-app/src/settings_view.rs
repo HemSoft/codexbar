@@ -637,17 +637,19 @@ fn save_account(form: &AccountForm, existing: Option<AccountRecord>, window: &mu
     let record_id = record.id.clone();
     // The first Codex account CodexBar signs in joins the Codex CLI's own sign-in rather than replacing it: that one
     // was showing as the implicit account and stays, as an account of its own the user can switch off or remove.
-    let keep_cli_account = previous.is_none()
-        && crate::codex_sign_in::is_managed(&record)
-        && SettingsHub::global(cx).settings().is_enabled(names::CODEX)
-        && SettingsHub::global(cx)
-            .settings()
-            .accounts_for(names::CODEX)
-            .next()
-            .is_none();
+    // The same holds for Claude Code's own sign-in when the first Claude account CodexBar signs in is added (#80).
+    let own_sign_in = match kind {
+        Some(Managed::Codex) => Some(names::CODEX),
+        Some(Managed::Claude) => Some(names::CLAUDE),
+        _ => None,
+    };
+    let keep_cli_account = own_sign_in.filter(|provider| {
+        let settings = SettingsHub::global(cx).settings();
+        previous.is_none() && settings.is_enabled(provider) && settings.accounts_for(provider).next().is_none()
+    });
     let saved = SettingsHub::update(cx, |settings| {
-        if keep_cli_account {
-            settings.upsert(SettingsHub::implicit_account(names::CODEX))?;
+        if let Some(provider) = keep_cli_account {
+            settings.upsert(SettingsHub::implicit_account(provider))?;
         }
         settings.upsert(record)
     });

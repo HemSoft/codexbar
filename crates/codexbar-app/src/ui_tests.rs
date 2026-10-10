@@ -3400,8 +3400,20 @@ fn adding_a_claude_account_with_a_browser_session_signs_it_in(cx: &mut TestAppCo
     press(cx, handle, "enter");
     click(cx, handle, "account-save");
     let saved = saved_settings(&settings);
-    let record = &saved.accounts()[0];
-    assert_eq!(record.method, codexbar_store::settings::AuthMethod::BrowserSession);
+    let record = saved
+        .accounts()
+        .iter()
+        .find(|record| record.method == codexbar_store::settings::AuthMethod::BrowserSession)
+        .unwrap();
+    // Claude Code's own sign-in, shown until now as the implicit account, stays as an account of its own.
+    let methods: Vec<_> = saved.accounts().iter().map(|record| record.method).collect();
+    assert_eq!(
+        methods,
+        [
+            codexbar_store::settings::AuthMethod::OAuth,
+            codexbar_store::settings::AuthMethod::BrowserSession
+        ]
+    );
     assert_eq!(*fake.0.opened.lock().unwrap(), [claude_folder(&settings, &record.id)]);
     assert!(record.external_id.is_some());
 }
@@ -3454,7 +3466,8 @@ fn a_signed_out_claude_account_doesnt_hide_a_signed_in_one(cx: &mut TestAppConte
         .filter(|provider| provider.name() == "Claude")
         .map(|provider| provider.account_label().map(str::to_owned))
         .collect();
-    assert!(labels.contains(&Some("Current".to_owned())), "{labels:?}");
+    // Only the signed-in folder shows the account; the signed-out one would only add a failure for it.
+    assert_eq!(labels, [Some("Current".to_owned())]);
 }
 
 #[gpui_kit::test]

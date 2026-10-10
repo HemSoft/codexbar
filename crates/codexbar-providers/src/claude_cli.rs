@@ -156,13 +156,22 @@ fn run(config: &Path, args: &[&str], timeout: Duration) -> Result<Vec<u8>, Claud
 
 fn claude(config: &Path) -> Result<Command, ClaudeCliError> {
     let program = claude_program().ok_or(ClaudeCliError::NotInstalled)?;
+    Ok(command_for(&program, config))
+}
+
+/// `program` set up to act on `config` only.
+fn command_for(program: &Path, config: &Path) -> Command {
     let mut command = Command::new(program);
-    command.env("CLAUDE_CONFIG_DIR", config);
+    // Claude Code prefers CLAUDE_SECURESTORAGE_CONFIG_DIR over CLAUDE_CONFIG_DIR for its credentials
+    // (anthropics/claude-code#79223), so an inherited one would sign in, renew or sign out another folder.
+    command
+        .env("CLAUDE_CONFIG_DIR", config)
+        .env("CLAUDE_SECURESTORAGE_CONFIG_DIR", config);
     // An API key or token in CodexBar's environment would sign Claude Code in as someone else.
     for name in ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"] {
         command.env_remove(name);
     }
-    Ok(command)
+    command
 }
 
 /// `claude.exe` (the native install), else `claude.cmd` (npm), from PATH.
@@ -176,6 +185,33 @@ fn claude_program() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_claude_command_acts_on_its_own_folder_only() {
+        let config = Path::new(r"C:\codexbar\claude\abc");
+        let command = command_for(Path::new("claude.exe"), config);
+        let envs: Vec<(String, Option<String>)> = command
+            .get_envs()
+            .map(|(name, value)| {
+                (
+                    name.to_string_lossy().into_owned(),
+                    value.map(|value| value.to_string_lossy().into_owned()),
+                )
+            })
+            .collect();
+        let value = |name: &str| {
+            envs.iter()
+                .find(|(known, _)| known == name)
+                .map(|(_, value)| value.clone())
+        };
+        let folder = Some(Some(config.to_string_lossy().into_owned()));
+        assert_eq!(value("CLAUDE_CONFIG_DIR"), folder);
+        // Claude Code prefers this one for credentials, so it must name the same folder.
+        assert_eq!(value("CLAUDE_SECURESTORAGE_CONFIG_DIR"), folder);
+        for name in ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"] {
+            assert_eq!(value(name), Some(None), "{name} is removed");
+        }
+    }
 
     /// Runs the installed Claude Code against a temporary folder holding a fake, expired sign-in: `auth status`
     /// tries Claude Code's own refresh (which fails for the fake token, so CodexBar reports it not renewed) and
