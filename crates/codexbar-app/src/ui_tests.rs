@@ -936,7 +936,7 @@ impl UsageProvider for FakeProvider {
                 vec![Metric::Window {
                     label: "Weekly".into(),
                     used,
-                    resets_at: now + chrono::Duration::days(3),
+                    resets_at: fake_resets_at(),
                     pace: None,
                 }],
                 now,
@@ -944,6 +944,14 @@ impl UsageProvider for FakeProvider {
             None => Err(ProviderError::Network),
         }
     }
+}
+
+/// The reset time the fake providers report: three days ahead, fixed for the whole test run. Computing it per fetch
+/// gave every fetch a different reset, so history recorded the same usage twice whenever two fetches fell in
+/// different seconds, which made history-count tests fail at random on slower machines.
+fn fake_resets_at() -> chrono::DateTime<chrono::Utc> {
+    static RESETS_AT: std::sync::OnceLock<chrono::DateTime<chrono::Utc>> = std::sync::OnceLock::new();
+    *RESETS_AT.get_or_init(|| chrono::Utc::now() + chrono::Duration::days(3))
 }
 
 /// Opens a live dashboard over `providers` without letting its first fetch run yet.
@@ -1323,7 +1331,7 @@ impl UsageProvider for FakeMultiProvider {
                         vec![Metric::Window {
                             label: "Weekly".into(),
                             used: *used,
-                            resets_at: now + chrono::Duration::days(3),
+                            resets_at: fake_resets_at(),
                             pace: None,
                         }],
                         now,

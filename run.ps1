@@ -37,12 +37,22 @@ $existingProcesses = @(
 )
 if ($existingProcesses.Count -gt 0) {
     $existingProcesses | Stop-Process -Force -ErrorAction SilentlyContinue
-    $existingProcesses | Wait-Process -Timeout 5 -ErrorAction SilentlyContinue
+    $existingProcesses | Wait-Process -Timeout 15 -ErrorAction SilentlyContinue
 }
 
-# Run a copy, so the next build can replace the built executable while CodexBar is running.
+# Run a copy, so the next build can replace the built executable while CodexBar is running. Windows can hold the old
+# file for a moment after the process exits (or while it is scanned), so the copy is retried for a few seconds.
 New-Item -ItemType Directory -Path $installDir -Force | Out-Null
-Copy-Item -LiteralPath $builtExe -Destination $installedExe -Force
+for ($attempt = 1; ; $attempt++) {
+    try {
+        Copy-Item -LiteralPath $builtExe -Destination $installedExe -Force -ErrorAction Stop
+        break
+    }
+    catch [System.IO.IOException] {
+        if ($attempt -ge 20) { throw }
+        Start-Sleep -Milliseconds 500
+    }
+}
 
 # The WPF app's "Start with Windows" wrote a CodexBar value to the Run key. Keep that choice, pointed at this app.
 $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
