@@ -114,39 +114,7 @@ pub fn signed_in_account(path: &Path) -> Option<AccountId> {
 
 /// The `sub` claim of a JWT's payload.
 fn token_subject(token: &str) -> Option<String> {
-    let payload = token.split('.').nth(1)?;
-    let bytes = base64url_decode(payload)?;
-    let claims: Value = serde_json::from_slice(&bytes).ok()?;
-    claims
-        .get("sub")
-        .and_then(Value::as_str)
-        .map(str::trim)
-        .filter(|subject| !subject.is_empty())
-        .map(str::to_owned)
-}
-
-fn base64url_decode(text: &str) -> Option<Vec<u8>> {
-    let value = |ch: u8| -> Option<u32> {
-        Some(match ch {
-            b'A'..=b'Z' => ch - b'A',
-            b'a'..=b'z' => ch - b'a' + 26,
-            b'0'..=b'9' => ch - b'0' + 52,
-            b'-' | b'+' => 62,
-            b'_' | b'/' => 63,
-            _ => return None,
-        } as u32)
-    };
-    let digits: Vec<u32> = text.trim_end_matches('=').bytes().map(value).collect::<Option<_>>()?;
-    let mut out = Vec::with_capacity(digits.len() * 3 / 4);
-    for chunk in digits.chunks(4) {
-        let n = chunk
-            .iter()
-            .enumerate()
-            .fold(0u32, |acc, (ix, digit)| acc | digit << (18 - 6 * ix));
-        let bytes = [(n >> 16) as u8, (n >> 8) as u8, n as u8];
-        out.extend_from_slice(&bytes[..chunk.len().saturating_sub(1)]);
-    }
-    Some(out)
+    crate::jwt::string_claim(&crate::jwt::claims(token)?, "sub")
 }
 
 /// Unix milliseconds, as a number or a numeric string.

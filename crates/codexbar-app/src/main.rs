@@ -4,6 +4,7 @@ mod account_table;
 mod alert_details;
 mod brand;
 mod catalog;
+mod codex_sign_in;
 mod dashboard;
 mod focus_cards;
 mod groups_page;
@@ -87,6 +88,7 @@ fn main() {
     gpui_kit::application().with_assets(gpui_kit::assets::Assets).run(|cx| {
         gpui_kit::init(cx);
         settings_hub::SettingsHub::init(cx);
+        codex_sign_in::init(cx);
         let dir = settings_hub::SettingsHub::global(cx).dir().to_owned();
         if is_demo() {
             prefs_hub::PrefsHub::init_in_memory(cx);

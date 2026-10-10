@@ -23,6 +23,27 @@ CodexBar's Rust app has one shared sign-in path for providers that support it
 - **No secrets in output.** Errors, logs and the UI never show tokens,
   authorization codes or token-endpoint response bodies.
 
+## Sign-in through a provider's own CLI
+
+Where a provider's official CLI can sign in for another program, CodexBar uses
+that instead of a client registration of its own. The CLI runs its own sign-in
+and keeps writing its own credential file; CodexBar only reads it.
+
+- **ChatGPT / Codex (#78).** An account with the OAuth sign-in method gets its
+  own Codex home in the settings folder (`codex\<account id>`, with
+  `cli_auth_credentials_store = "file"`). CodexBar starts
+  `codex app-server` for that home and uses its JSON-RPC methods:
+  `account/login/start` (browser sign-in; CodexBar opens the returned page and
+  Codex listens for the redirect), `account/login/cancel`, `account/logout`,
+  and `account/read` with `refreshToken: true` to renew tokens. A sign-in is
+  renewed when its access token expires within a day, or once after the usage
+  endpoint refuses it, at most once per home every 15 minutes. Each ChatGPT
+  user and workspace is its own dashboard account, so signing a home in to
+  another identity never inherits the previous one's history. An account with
+  the Automatic method reads the Codex CLI's own `~/.codex` (or `CODEX_HOME`),
+  the import and fallback path. The app-server process tree runs in a Windows
+  job that ends with each session.
+
 ## Approved client registrations
 
 A provider can use this path only once a human has confirmed its client

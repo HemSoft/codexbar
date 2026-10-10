@@ -165,6 +165,8 @@ pub struct Dashboard {
     published_tooltip: Option<String>,
     /// The settings revision the running live fetch started under.
     refresh_revision: u64,
+    /// The last refresh request from Settings that was acted on.
+    refresh_requests: u64,
     /// The settings revision the shown accounts were fetched under, or `None` when they came from a fetch that
     /// settings changed during; failed notifications are only resent from accounts that are current.
     accounts_revision: Option<u64>,
@@ -284,7 +286,14 @@ impl Dashboard {
         let layout_changes = cx.observe_global::<crate::prefs_hub::PrefsHub>(|this, cx| this.rearrange_if_changed(cx));
         let alert_changes =
             cx.observe_global::<crate::notifications::Notifications>(|this, cx| this.rearrange_if_changed(cx));
-        let settings_changes = cx.observe_global::<SettingsHub>(|this, cx| this.forget_removed_accounts(cx));
+        let settings_changes = cx.observe_global::<SettingsHub>(|this, cx| {
+            this.forget_removed_accounts(cx);
+            let requests = SettingsHub::refresh_requests(cx);
+            if requests != this.refresh_requests {
+                this.refresh_requests = requests;
+                this.refresh(cx);
+            }
+        });
         let mut dashboard = Self {
             source,
             history,
@@ -305,6 +314,7 @@ impl Dashboard {
             placeholders: Default::default(),
             published_tooltip: None,
             refresh_revision: 0,
+            refresh_requests: 0,
             accounts_revision: None,
             compact_minute: 0,
             view_tab_focus: DashboardView::ALL.iter().map(|_| cx.focus_handle()).collect(),
@@ -738,17 +748,25 @@ impl Dashboard {
             .accounts()
             .iter()
             .filter(|account| !account.enabled)
-            .map(|account| account.id.clone())
+            // A switched-off Codex account CodexBar signed in reports under the identity it holds (#78).
+            .flat_map(|account| {
+                let identity = crate::codex_sign_in::is_managed(account)
+                    .then(|| account.external_id.clone())
+                    .flatten();
+                std::iter::once(account.id.clone()).chain(identity)
+            })
             .collect();
         let restored: Vec<AccountSnapshot> = codexbar_store::snapshots::load_snapshots(hub.dir())
             .into_iter()
             .filter(|account| enabled.contains(&account.provider().display_name()))
             .filter(|account| !disabled.iter().any(|id| id == account.id().as_str()))
             .filter(|account| {
-                signed_in
+                // With several adapters for one provider (Codex accounts, #78), any of them may hold the account.
+                let mut current = signed_in
                     .iter()
                     .filter(|(name, _)| *name == account.provider().display_name())
-                    .all(|(_, current)| current == account.id())
+                    .peekable();
+                current.peek().is_none() || current.any(|(_, id)| id == account.id())
             })
             .collect();
         if restored.is_empty() {

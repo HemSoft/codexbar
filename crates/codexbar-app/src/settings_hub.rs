@@ -18,6 +18,8 @@ pub struct SettingsHub {
     error: Option<SharedString>,
     /// Bumped on every saved change, so work started under older settings can tell (an in-flight refresh).
     revision: u64,
+    /// Bumped when something outside the settings file changed what providers return (a sign-in, #78).
+    refresh_requests: u64,
 }
 
 impl Global for SettingsHub {}
@@ -62,7 +64,19 @@ impl SettingsHub {
             credentials,
             error,
             revision: 0,
+            refresh_requests: 0,
         });
+    }
+
+    /// Asks the dashboard to fetch again, after a sign-in changed what a provider can read.
+    pub fn request_refresh(cx: &mut App) {
+        cx.update_global(|hub: &mut Self, _| hub.refresh_requests += 1);
+        cx.refresh_windows();
+    }
+
+    /// Changes whenever a refresh is requested.
+    pub fn refresh_requests(cx: &App) -> u64 {
+        Self::global(cx).refresh_requests
     }
 
     /// Changes whenever settings are saved.
