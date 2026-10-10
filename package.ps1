@@ -191,6 +191,8 @@ function Write-AppInstaller([string]$Version, [string]$PackageFile) {
 }
 
 New-Item -ItemType Directory -Path $Channel -Force | Out-Null
+# File URIs need an absolute path.
+$Channel = (Resolve-Path -LiteralPath $Channel).ProviderPath
 
 if ($Rollback) {
     $version = $Rollback
@@ -303,14 +305,17 @@ if ($Install) {
         ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
     $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
     $settingsDir = if ($env:CODEXBAR_SETTINGS_DIR) { $env:CODEXBAR_SETTINGS_DIR } else { Join-Path $env:USERPROFILE '.codexbar' }
-    if (Get-ItemProperty -LiteralPath $runKey -Name 'CodexBar' -ErrorAction SilentlyContinue) {
+    $migrated = [bool](Get-ItemProperty -LiteralPath $runKey -Name 'CodexBar' -ErrorAction SilentlyContinue)
+    if ($migrated) {
         New-Item -ItemType Directory -Path $settingsDir -Force | Out-Null
         New-Item -ItemType File -Path (Join-Path $settingsDir 'start-with-windows.migrate') -Force | Out-Null
         Remove-ItemProperty -LiteralPath $runKey -Name 'CodexBar'
         Write-Information 'Start with Windows moved from the run.ps1 copy to the package.' -InformationAction Continue
     }
 
-    if ($running.Count -gt 0) {
+    # Started again if it was running, and always after a move from run.ps1: the package turns its startup task on
+    # when it runs.
+    if ($running.Count -gt 0 -or $migrated) {
         Start-Process explorer.exe "shell:AppsFolder\$($installed.PackageFamilyName)!CodexBar"
         Write-Information "Installed CodexBar $version and started it again." -InformationAction Continue
     }

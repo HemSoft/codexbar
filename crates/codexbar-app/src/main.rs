@@ -146,7 +146,12 @@ fn main() {
             cx.new(|cx| Dashboard::new(data_source(), window, cx))
         })
         .expect("failed to open the dashboard window");
-        cx.activate(true);
+        // Start with Windows (the package's startup task) goes straight to the notification area.
+        if package::launched_at_startup() {
+            let _ = cx.update_window(handle, |_, window, _| tray::hide(window));
+        } else {
+            cx.activate(true);
+        }
         if std::env::args().any(|arg| arg == "--settings") {
             dashboard.update(cx, |dashboard, cx| dashboard.show_view(DashboardView::Settings, cx));
         }

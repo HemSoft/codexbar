@@ -8,6 +8,8 @@ on:
     paths:
       - package.ps1
       - Cargo.toml
+      - Cargo.lock
+      - crates/*/Cargo.toml
       - packaging/**
       - scripts/Test-MsixChannel.ps1
       - crates/codexbar-app/src/package.rs

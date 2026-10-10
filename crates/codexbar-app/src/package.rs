@@ -115,8 +115,41 @@ impl UpdateState {
     }
 }
 
-/// Asks Windows whether the App Installer channel has a newer version. Blocking: run it off the UI thread.
+/// How long one update check may take; Windows has been seen never to answer one.
+const CHECK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Waits for `operation` up to `timeout`, then cancels it. `None` means it didn't finish in time.
+fn finish<T>(
+    operation: &windows_future::IAsyncOperation<T>,
+    timeout: std::time::Duration,
+) -> windows::core::Result<Option<T>>
+where
+    T: windows::core::RuntimeType + 'static,
+{
+    let started = std::time::Instant::now();
+    while operation.Status()? == windows_future::AsyncStatus::Started {
+        if started.elapsed() >= timeout {
+            let _ = operation.Cancel();
+            return Ok(None);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    operation.GetResults().map(Some)
+}
+
+/// Asks Windows whether the App Installer channel has a newer version, once more after a short pause if Windows
+/// reports an error (seen right after an install). Blocking: run it off the UI thread.
 pub fn check() -> UpdateState {
+    match check_once() {
+        UpdateState::Failed(_) if installed().is_some() => {
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            check_once()
+        }
+        state => state,
+    }
+}
+
+fn check_once() -> UpdateState {
     use windows::ApplicationModel::{Package, PackageUpdateAvailability};
     use windows::Management::Deployment::PackageManager;
     let result = (|| -> windows::core::Result<UpdateState> {
@@ -125,7 +158,9 @@ pub fn check() -> UpdateState {
         let full_name = Package::Current()?.Id()?.FullName()?;
         let package = PackageManager::new()?
             .FindPackageByUserSecurityIdPackageFullName(&windows::core::HSTRING::new(), &full_name)?;
-        let result = package.CheckUpdateAvailabilityAsync()?.join()?;
+        let Some(result) = finish(&package.CheckUpdateAvailabilityAsync()?, CHECK_TIMEOUT)? else {
+            return Ok(UpdateState::Failed("Windows didn't answer within a minute.".into()));
+        };
         Ok(match result.Availability()? {
             PackageUpdateAvailability::Available => UpdateState::Available { required: false },
             PackageUpdateAvailability::Required => UpdateState::Available { required: true },
@@ -137,6 +172,15 @@ pub fn check() -> UpdateState {
         })
     })();
     result.unwrap_or_else(|err| UpdateState::Failed(err.message()))
+}
+
+/// Whether Windows started CodexBar for its startup task (Start with Windows) rather than the user starting it.
+pub fn launched_at_startup() -> bool {
+    use windows::ApplicationModel::Activation::ActivationKind;
+    installed().is_some()
+        && windows::ApplicationModel::AppInstance::GetActivatedEventArgs()
+            .and_then(|args| args.Kind())
+            .is_ok_and(|kind| kind == ActivationKind::StartupTask)
 }
 
 /// Installs the channel's newer version. Windows closes CodexBar to replace it and starts it again afterwards, so on

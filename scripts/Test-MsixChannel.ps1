@@ -49,6 +49,13 @@ function Assert-Installed([string]$Expected) {
 }
 
 # Runs codexbar --package-status inside the installed package and returns what it wrote.
+# Ends every CodexBar process from the package, so a stuck one can't hold up the uninstall.
+function Stop-CodexBar {
+    Get-CimInstance Win32_Process -Filter "Name = 'codexbar.exe'" |
+        Where-Object { $_.ExecutablePath -match '\\WindowsApps\\' } |
+        ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+}
+
 function Get-PackageStatus {
     $installed = Get-AppxPackage -Name $name
     # Outside AppData, which Windows virtualizes for packaged processes.
@@ -56,13 +63,21 @@ function Get-PackageStatus {
     New-Item -ItemType Directory -Path $folder -Force | Out-Null
     $file = Join-Path $folder "status-$([guid]::NewGuid()).json"
     $exe = Join-Path $installed.InstallLocation 'codexbar.exe'
-    Invoke-CommandInDesktopPackage -PackageFamilyName $installed.PackageFamilyName -AppId 'CodexBar' `
-        -Command $exe -Args "--package-status `"$file`""
-    $deadline = (Get-Date).AddMinutes(2)
+    # Invoke-CommandInDesktopPackage can wait for the process, so it runs in a job and the file decides.
+    $job = Start-ThreadJob -ArgumentList $installed.PackageFamilyName, $exe, $file -ScriptBlock {
+        param($family, $exe, $file)
+        Invoke-CommandInDesktopPackage -PackageFamilyName $family -AppId 'CodexBar' -Command $exe -Args "--package-status `"$file`""
+    }
+    $deadline = (Get-Date).AddMinutes(3)
     while (-not (Test-Path -LiteralPath $file)) {
-        if ((Get-Date) -gt $deadline) { throw 'codexbar --package-status wrote nothing within 2 minutes.' }
+        if ((Get-Date) -gt $deadline) {
+            Stop-CodexBar
+            $job | Receive-Job -ErrorAction SilentlyContinue | Out-Host
+            throw 'codexbar --package-status wrote nothing within 3 minutes.'
+        }
         Start-Sleep -Milliseconds 500
     }
+    $job | Stop-Job -PassThru | Remove-Job -Force
     Start-Sleep -Milliseconds 500
     $status = Get-Content -LiteralPath $file -Raw | ConvertFrom-Json
     Remove-Item -LiteralPath $file -Force
@@ -98,6 +113,7 @@ try {
     Write-Information 'OK: rolled back through the channel, which no longer offers the newer build.' -InformationAction Continue
 }
 finally {
+    Stop-CodexBar
     Get-AppxPackage -Name $name | Remove-AppxPackage
     if (Test-Path -LiteralPath $Channel) { Remove-Item -LiteralPath $Channel -Recurse -Force }
     Get-ChildItem Cert:\LocalMachine\TrustedPeople |
