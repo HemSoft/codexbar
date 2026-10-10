@@ -1033,12 +1033,23 @@ fn appearance_page() -> SettingPage {
 }
 
 fn widgets_page() -> SettingPage {
-    SettingPage::new("Widgets").icon(IconName::LayoutDashboard).group(
-        SettingGroup::new().title("Windows widgets").item(info_item(
-            "Not available yet",
-            "A Windows Widgets board provider arrives with #94 and #95.",
-        )),
-    )
+    // Windows widgets come only from packaged apps (#94).
+    let item = if crate::package::installed().is_some() {
+        info_item(
+            "Add a CodexBar widget",
+            "Open the Widgets board (Windows key + W), choose Add widgets and pick CodexBar usage. Customize widget \
+             chooses which accounts it shows (all, one provider or one group) and how many.",
+        )
+    } else {
+        info_item(
+            "Install the package to use widgets",
+            "Windows widgets work only when CodexBar is installed as a package: run .\\package.ps1 -Trust -Install \
+             (see docs/PACKAGING.md).",
+        )
+    };
+    SettingPage::new("Widgets")
+        .icon(IconName::LayoutDashboard)
+        .group(SettingGroup::new().title("Windows widgets").item(item))
 }
 
 fn about_page() -> SettingPage {

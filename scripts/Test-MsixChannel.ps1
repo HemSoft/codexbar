@@ -1,6 +1,7 @@
 <#
 .SYNOPSIS
-Verifies the MSIX release procedures end to end: clean install, update check, upgrade, rollback and uninstall (#93).
+Verifies the MSIX release procedures end to end: clean install, update check, upgrade, rollback and uninstall (#93),
+and that Windows can start the widget provider (#94).
 
 .DESCRIPTION
 Publishes two builds to a throwaway channel with package.ps1, installs the first from the App Installer file, asks the
@@ -127,6 +128,18 @@ try {
     }
     if ($status.updateAvailable) { throw "No update was published yet, but the app reports: $($status.update)" }
     Write-Information "OK: the app runs from its package with the channel $($status.channel): $($status.update)" -InformationAction Continue
+
+    # The widget provider: Windows starts codexbar.exe -RegisterProcessAsComServer for the class in the manifest, the
+    # way the Widgets board does, and hands back the provider object.
+    $clsid = [guid]'6a9b22c1-0ca4-41f3-911a-fd4724d8e0b2'
+    $provider = [Activator]::CreateInstance([Type]::GetTypeFromCLSID($clsid))
+    if (-not $provider) { throw 'Windows returned no widget provider object.' }
+    $server = Get-CimInstance Win32_Process -Filter "Name = 'codexbar.exe'" |
+        Where-Object { $_.CommandLine -match '-RegisterProcessAsComServer' }
+    if (-not $server) { throw 'No codexbar.exe -RegisterProcessAsComServer process is running.' }
+    [void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($provider)
+    $server | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    Write-Information 'OK: Windows started the widget provider from the package.' -InformationAction Continue
 
     # A newer build in the channel. CodexBar is already running when it is published, as in real use (a launch
     # after publishing is Windows' own update-at-launch instead), and its own update check sees it. Then the App

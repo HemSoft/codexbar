@@ -185,6 +185,9 @@ pub struct Dashboard {
     /// Removed accounts, with whether their history is deleted on disk yet. A refresh that started before the removal
     /// can still write them back, and a failed rewrite needs another try, so each refresh checks them again.
     forgotten: HashMap<String, bool>,
+    /// When `widgets.json` was last written (#94); it is rewritten at least every few minutes so the widgets can
+    /// tell a running CodexBar from one that quit.
+    widgets_written: Option<DateTime<Utc>>,
     _clock: Task<()>,
     _subscriptions: Vec<Subscription>,
 }
@@ -247,6 +250,12 @@ impl Dashboard {
                     this.table.update(cx, |table, _| table.delegate_mut().set_now(now));
                     // The tooltip's "last known" age advances too; it is only republished when its text changes.
                     this.publish_tooltip(cx);
+                    if this
+                        .widgets_written
+                        .is_none_or(|at| this.now - at >= crate::widget_feed::HEARTBEAT)
+                    {
+                        this.save_widget_snapshot(cx);
+                    }
                     // Resend against the last refresh's accounts while settings still match it; otherwise refresh,
                     // so the failed alert is judged under the current settings rather than dropped.
                     if this.accounts_revision == Some(SettingsHub::revision(cx)) {
@@ -322,6 +331,7 @@ impl Dashboard {
             ranked_with: Default::default(),
             owned_ids: crate::providers::owned_account_ids(SettingsHub::global(cx)),
             forgotten: HashMap::new(),
+            widgets_written: None,
             _clock: clock,
             _subscriptions: vec![selection, activation, layout_changes, alert_changes, settings_changes],
         };
@@ -983,7 +993,19 @@ impl Dashboard {
             }
         });
         self.publish_tooltip(cx);
+        self.save_widget_snapshot(cx);
         cx.notify();
+    }
+
+    /// Writes what the Windows widgets show (#94), for live data only. A failed write only leaves the widgets on the
+    /// previous snapshot until the next one.
+    fn save_widget_snapshot(&mut self, cx: &mut Context<Self>) {
+        if !matches!(self.source, DataSource::Live { .. }) {
+            return;
+        }
+        let snapshot = crate::widget_feed::build(&self.accounts, &self.states, &self.layout, Utc::now());
+        let _ = codexbar_store::widgets::save_widget_snapshot(SettingsHub::global(cx).dir(), &snapshot);
+        self.widgets_written = Some(self.now);
     }
 
     /// Recomputes the table's compact history for the current minute, keeping its rows and selection.

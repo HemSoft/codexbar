@@ -1,7 +1,7 @@
 name: Package
 
 # Builds the MSIX package and runs the release procedures on a clean runner: install from the App Installer file,
-# the app's own update check, upgrade, rollback and uninstall (#93).
+# the app's own update check, the widget provider's COM activation (#94), upgrade, rollback and uninstall (#93).
 on:
   pull_request:
     branches: [main, feat/rust-gpui-dashboard]
@@ -14,6 +14,7 @@ on:
       - scripts/Test-MsixChannel.ps1
       - crates/codexbar-app/src/package.rs
       - crates/codexbar-app/src/main.rs
+      - crates/codexbar-app/src/widgets/**
       - .github/workflows/package.yml
   workflow_dispatch:
 
