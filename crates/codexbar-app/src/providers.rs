@@ -7,7 +7,7 @@ use std::sync::Arc;
 use codexbar_providers::balance::{MoonshotProvider, OpenRouterProvider};
 use codexbar_providers::claude::{ClaudeProvider, default_credentials_path};
 use codexbar_providers::codex::{self, CodexCliRenewer, CodexProvider};
-use codexbar_providers::copilot::CopilotProvider;
+use codexbar_providers::copilot::{CopilotProvider, OrgBilling};
 use codexbar_providers::cursor::{self, CursorProvider};
 use codexbar_providers::opencode::OpenCodeProvider;
 use codexbar_providers::{SystemCommandRunner, UreqClient, UsageProvider};
@@ -33,17 +33,8 @@ pub fn enabled(hub: &SettingsHub) -> Vec<Arc<dyn UsageProvider>> {
     let mut providers: Vec<Arc<dyn UsageProvider>> = Vec::new();
     providers.extend(codex_adapters(hub));
 
-    let copilot = enabled_accounts(hub, names::COPILOT);
-    if !copilot.is_empty() {
-        let usernames: Vec<String> = copilot.iter().filter_map(|a| a.external_id.clone()).collect();
-        let provider = CopilotProvider::new(UreqClient::new(), SystemCommandRunner);
-        // Records without usernames mean "every gh account", as the WPF app's automatic discovery does.
-        let provider = if usernames.len() == copilot.len() {
-            provider.only_accounts(usernames)
-        } else {
-            provider
-        };
-        providers.push(Arc::new(provider));
+    if let Some(copilot) = copilot(hub) {
+        providers.push(copilot);
     }
 
     if !enabled_accounts(hub, names::CLAUDE).is_empty() {
@@ -165,6 +156,8 @@ pub fn owned_account_ids(hub: &SettingsHub) -> HashMap<String, String> {
 pub fn copilot_discovers_all(hub: &SettingsHub) -> bool {
     enabled_accounts(hub, names::COPILOT)
         .iter()
+        // An account CodexBar signs in is only ever its own user, signed in or not.
+        .filter(|record| !crate::github_sign_in::is_managed(record))
         .any(|record| record.external_id.as_deref().is_none_or(|user| user.trim().is_empty()))
 }
 
@@ -189,6 +182,57 @@ pub fn legacy_ids(hub: &SettingsHub) -> Vec<(&'static str, String)> {
     // the account signed in now may not be that one. It stays under the legacy id rather than be credited to someone
     // else.
     renames
+}
+
+/// One Copilot adapter for every Copilot account (#79): those CodexBar signed in fetch with their own token; those on
+/// the GitHub CLI's sign-in are found through `gh` (only the configured usernames, or every gh account when one has
+/// none). With only CodexBar's own accounts, the GitHub CLI isn't asked at all. Org billing is per username.
+fn copilot(hub: &SettingsHub) -> Option<Arc<dyn UsageProvider>> {
+    let records = enabled_accounts(hub, names::COPILOT);
+    if records.is_empty() {
+        return None;
+    }
+    let (managed, cli): (Vec<AccountRecord>, Vec<AccountRecord>) =
+        records.into_iter().partition(crate::github_sign_in::is_managed);
+    let mut provider = CopilotProvider::new(UreqClient::new(), SystemCommandRunner);
+    if cli.is_empty() {
+        provider = provider.without_cli();
+    } else {
+        let usernames: Vec<String> = cli.iter().filter_map(|a| a.external_id.clone()).collect();
+        // Records without usernames mean "every gh account", as the WPF app's automatic discovery does.
+        if usernames.len() == cli.len() {
+            provider = provider.only_accounts(usernames);
+        }
+    }
+    for record in &managed {
+        if let (Some(user), Some(token)) = (&record.external_id, crate::github_sign_in::token(hub, record)) {
+            provider = provider.with_login(user.clone(), token);
+        }
+    }
+    for record in managed.iter().chain(&cli) {
+        let field = |value: &Option<String>| {
+            value
+                .as_deref()
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .map(str::to_owned)
+        };
+        if let (Some(user), Some(enterprise), Some(organization)) = (
+            field(&record.external_id),
+            field(&record.copilot_enterprise),
+            field(&record.copilot_organization),
+        ) {
+            provider = provider.with_billing(
+                &user,
+                OrgBilling {
+                    enterprise,
+                    organization,
+                    pool_total: record.copilot_pool_total,
+                },
+            );
+        }
+    }
+    Some(Arc::new(provider))
 }
 
 /// Go and Zen share one dashboard account; either half can be switched off. Zen falls back to Go's cookie.

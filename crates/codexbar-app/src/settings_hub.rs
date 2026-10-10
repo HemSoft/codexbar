@@ -165,6 +165,9 @@ impl SettingsHub {
             external_id: None,
             workspace_id: None,
             legacy_card_key: Some(info.id.to_owned()),
+            copilot_enterprise: None,
+            copilot_organization: None,
+            copilot_pool_total: None,
         }
     }
 

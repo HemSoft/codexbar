@@ -7,6 +7,7 @@ mod catalog;
 mod codex_sign_in;
 mod dashboard;
 mod focus_cards;
+mod github_sign_in;
 mod groups_page;
 mod history_view;
 mod locale;
@@ -89,6 +90,7 @@ fn main() {
         gpui_kit::init(cx);
         settings_hub::SettingsHub::init(cx);
         codex_sign_in::init(cx);
+        github_sign_in::init(cx);
         let dir = settings_hub::SettingsHub::global(cx).dir().to_owned();
         if is_demo() {
             prefs_hub::PrefsHub::init_in_memory(cx);

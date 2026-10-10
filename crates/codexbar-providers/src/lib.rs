@@ -9,6 +9,7 @@ mod command;
 pub mod copilot;
 pub mod cursor;
 mod error;
+pub mod gh_login;
 mod http;
 mod jwt;
 pub mod oauth;
