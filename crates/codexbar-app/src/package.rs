@@ -148,9 +148,11 @@ pub fn install() -> Result<(), String> {
     use windows::core::PCWSTR;
     let result = (|| -> windows::core::Result<Option<String>> {
         let uri = Package::Current()?.GetAppInstallerInfo()?.Uri()?;
-        // Asks Windows to start CodexBar again once the update has replaced it.
-        // SAFETY: no command line (a null pointer) and no flags.
-        unsafe { RegisterApplicationRestart(PCWSTR::null(), REGISTER_APPLICATION_RESTART_FLAGS(0)) }?;
+        // Asks Windows to start CodexBar again once the update has replaced it. A null command line would cancel
+        // the registration, so it carries an argument CodexBar ignores.
+        let restart = windows::core::HSTRING::from(RESTART_ARG);
+        // SAFETY: a valid null-terminated command line and no flags.
+        unsafe { RegisterApplicationRestart(PCWSTR(restart.as_ptr()), REGISTER_APPLICATION_RESTART_FLAGS(0)) }?;
         let deployment = PackageManager::new()?
             .AddPackageByAppInstallerFileAsync(
                 &uri,
@@ -158,8 +160,17 @@ pub fn install() -> Result<(), String> {
                 None::<&PackageVolume>,
             )?
             .join()?;
+        // The result code says whether it worked; the text only describes a failure.
+        let code = deployment.ExtendedErrorCode()?;
+        if code.is_ok() {
+            return Ok(None);
+        }
         let text = deployment.ErrorText()?.to_string();
-        Ok((!text.is_empty()).then_some(text))
+        Ok(Some(if text.is_empty() {
+            windows::core::Error::from_hresult(code).message()
+        } else {
+            text
+        }))
     })();
     match result {
         Ok(None) => Ok(()),
@@ -290,6 +301,9 @@ pub fn write_status(path: &std::path::Path) -> std::io::Result<()> {
     };
     std::fs::write(path, status.to_string())
 }
+
+/// The argument Windows starts CodexBar with after Install and restart; nothing reads it.
+pub const RESTART_ARG: &str = "--after-update";
 
 /// How often the background check runs while CodexBar is open.
 const CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);

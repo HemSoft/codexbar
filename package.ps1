@@ -191,9 +191,6 @@ function Write-AppInstaller([string]$Version, [string]$PackageFile) {
 }
 
 New-Item -ItemType Directory -Path $Channel -Force | Out-Null
-$certificate = Get-SigningCertificate
-$cerPath = Join-Path $Channel 'CodexBar.cer'
-Export-Certificate -Cert $certificate -FilePath $cerPath | Out-Null
 
 if ($Rollback) {
     $version = $Rollback
@@ -201,8 +198,12 @@ if ($Rollback) {
     if (-not (Test-Path -LiteralPath $packageFile)) {
         throw "The channel has no CodexBar $version ($packageFile)."
     }
+    # The certificate that signed that package, which may be older than the current one after a renewal.
+    $certificate = (Get-AuthenticodeSignature -LiteralPath $packageFile).SignerCertificate
+    if (-not $certificate) { throw "CodexBar $version in the channel isn't signed." }
 }
 else {
+    $certificate = Get-SigningCertificate
     $cargo = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'Cargo.toml') -Raw
     if ($cargo -notmatch '(?ms)^\[workspace\.package\].*?^version\s*=\s*"(\d+)\.(\d+)\.(\d+)"') {
         throw 'Cargo.toml has no [workspace.package] version.'
@@ -269,6 +270,10 @@ else {
     Move-Item -LiteralPath $unsigned -Destination $packageFile
 }
 
+# The public certificate of the package the channel offers, for PCs that trust it by hand.
+$cerPath = Join-Path $Channel 'CodexBar.cer'
+Export-Certificate -Cert $certificate -FilePath $cerPath | Out-Null
+
 $appInstaller = Write-AppInstaller $version $packageFile
 Write-Information "Published CodexBar $version to $Channel." -InformationAction Continue
 
@@ -277,32 +282,37 @@ if ($Trust) {
 }
 
 if ($Install) {
-    # The copy run.ps1 started shares the single-instance lock, so it would keep the package from starting. Its Start
-    # with Windows entry moves to the package's startup task, which CodexBar turns on the next time it starts.
+    $currentUserSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    # CodexBar's tray app, packaged or from run.ps1; not the demo, the widget provider or a status check.
+    $running = @(
+        Get-CimInstance Win32_Process -Filter "Name = 'codexbar.exe'" |
+            Where-Object { $_.CommandLine -notmatch '(^|\s)(--demo|-RegisterProcessAsComServer|--package-status)(\s|$)' } |
+            Where-Object { (Invoke-CimMethod -InputObject $_ -MethodName GetOwnerSid).Sid -eq $currentUserSid }
+    )
+
+    # Through the App Installer file, rollbacks too, so the installation keeps its update channel. It closes a
+    # running packaged CodexBar; nothing else changes unless it succeeds.
+    Add-AppxPackage -AppInstallerFile $appInstaller -ForceTargetApplicationShutdown
+    $installed = Get-AppxPackage -Name $packageName
+    if ($installed.Version -ne $version) { throw "Windows installed CodexBar $($installed.Version), not $version." }
+
+    # The run.ps1 copy shares the single-instance lock and would keep the package from starting, so it stops. Its
+    # Start with Windows entry moves to the package's startup task, which CodexBar turns on when it next starts.
+    $running |
+        Where-Object { $_.ExecutablePath -and $_.ExecutablePath -notmatch '\\WindowsApps\\' } |
+        ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
     $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
     $settingsDir = if ($env:CODEXBAR_SETTINGS_DIR) { $env:CODEXBAR_SETTINGS_DIR } else { Join-Path $env:USERPROFILE '.codexbar' }
     if (Get-ItemProperty -LiteralPath $runKey -Name 'CodexBar' -ErrorAction SilentlyContinue) {
         New-Item -ItemType Directory -Path $settingsDir -Force | Out-Null
         New-Item -ItemType File -Path (Join-Path $settingsDir 'start-with-windows.migrate') -Force | Out-Null
         Remove-ItemProperty -LiteralPath $runKey -Name 'CodexBar'
-        Write-Information 'Start with Windows moves from the run.ps1 copy to the package.' -InformationAction Continue
+        Write-Information 'Start with Windows moved from the run.ps1 copy to the package.' -InformationAction Continue
     }
-    $currentUserSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-    $unpackaged = @(
-        Get-CimInstance Win32_Process -Filter "Name = 'codexbar.exe'" |
-            Where-Object { $_.ExecutablePath -and $_.ExecutablePath -notmatch '\\WindowsApps\\' } |
-            Where-Object { $_.CommandLine -notmatch '(^|\s)--demo(\s|$)' } |
-            Where-Object { (Invoke-CimMethod -InputObject $_ -MethodName GetOwnerSid).Sid -eq $currentUserSid }
-    )
-    $unpackaged | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 
-    # Through the App Installer file, rollbacks too, so the installation keeps its update channel.
-    Add-AppxPackage -AppInstallerFile $appInstaller -ForceTargetApplicationShutdown
-    $installed = Get-AppxPackage -Name $packageName
-    if ($installed.Version -ne $version) { throw "Windows installed CodexBar $($installed.Version), not $version." }
-    if ($unpackaged.Count -gt 0) {
+    if ($running.Count -gt 0) {
         Start-Process explorer.exe "shell:AppsFolder\$($installed.PackageFamilyName)!CodexBar"
-        Write-Information "Installed CodexBar $version and started it in place of the run.ps1 copy." -InformationAction Continue
+        Write-Information "Installed CodexBar $version and started it again." -InformationAction Continue
     }
     else {
         Write-Information "Installed CodexBar $version. Start it from the Start menu." -InformationAction Continue
