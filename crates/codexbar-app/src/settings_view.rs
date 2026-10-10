@@ -605,6 +605,15 @@ fn save_account(form: &AccountForm, existing: Option<AccountRecord>, window: &mu
     let mut record = existing.unwrap_or_else(|| AccountRecord::new(info.id, &label, method));
     record.label = label;
     record.method = method;
+    if info.id == names::COPILOT
+        && method != AuthMethod::OAuth
+        && username.is_empty()
+        && (!enterprise.is_empty() || !organization.is_empty() || pool_total.is_some())
+    {
+        *form.error.borrow_mut() = Some("Org billing needs this account's GitHub username.".into());
+        window.refresh();
+        return false;
+    }
     if info.id == names::COPILOT {
         // An account CodexBar signs in gets its username from the sign-in.
         if method != AuthMethod::OAuth {

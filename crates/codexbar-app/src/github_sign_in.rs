@@ -279,6 +279,10 @@ pub fn sign_in(record_id: &str, window: &mut Window, cx: &mut App) {
             let result = cx
                 .background_spawn(async move { pending.finish(SIGN_IN_TIMEOUT, waiting) })
                 .await;
+            // Closed after GitHub approved but before this ran: the user cancelled, so nothing is kept.
+            if cancel.load(Ordering::SeqCst) {
+                return;
+            }
             let _ = cx.update(|window, cx| match result {
                 Ok(account) => match remember(&record_id, &account, cx) {
                     Ok(()) => window.close_dialog(cx),

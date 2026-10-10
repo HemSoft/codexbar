@@ -132,6 +132,28 @@ fn codex_adapters(hub: &SettingsHub) -> Vec<Arc<dyn UsageProvider>> {
 /// Codex CLI's sign-in, Claude, Cursor, OpenCode, and Copilot without a username keep showing through the provider's
 /// own sign-in after their record is removed, so they own nothing here.
 pub fn owned_account_ids(hub: &SettingsHub) -> HashMap<String, String> {
+    // A Copilot organization card (#79) is owned while an enabled record has its org billing set, under a key of
+    // its own beside the record's user, so removing the last such record forgets the card.
+    let orgs = hub.settings().accounts().iter().filter_map(|record| {
+        let set = |value: &Option<String>| {
+            value
+                .as_deref()
+                .map(str::trim)
+                .filter(|v| !v.is_empty())
+                .map(str::to_owned)
+        };
+        let billed = record.enabled
+            && record.provider == names::COPILOT
+            && set(&record.copilot_enterprise).is_some()
+            && set(&record.external_id).is_some();
+        let organization = set(&record.copilot_organization).filter(|_| billed)?;
+        Some((
+            format!("{}#org", record.id),
+            codexbar_providers::copilot::org_account_id(&organization)
+                .as_str()
+                .to_owned(),
+        ))
+    });
     hub.settings()
         .accounts()
         .iter()
@@ -147,6 +169,7 @@ pub fn owned_account_ids(hub: &SettingsHub) -> HashMap<String, String> {
             };
             Some((record.id.clone(), owned))
         })
+        .chain(orgs)
         .collect()
 }
 

@@ -24,8 +24,9 @@ pub(crate) fn spawn(command: &mut Command) -> std::io::Result<Contained> {
     let mut child = command.spawn()?;
     #[cfg(windows)]
     {
+        // Without its job the process could outlive CodexBar (and a GitHub sign-in finish unseen), so it doesn't run.
         let job = job::Job::kill_on_close(&child);
-        if !job::resume(child.id()) {
+        if job.is_none() || !job::resume(child.id()) {
             let _ = child.kill();
             let _ = child.wait();
             return Err(std::io::Error::other("the process couldn't be started"));

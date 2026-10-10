@@ -2837,6 +2837,8 @@ mod github_fixture {
     #[derive(Clone, Default)]
     pub enum Outcome {
         SignsIn(&'static str),
+        /// GitHub approves, and the user closes the dialog in the same moment.
+        SignsInAsCancelled(&'static str),
         Fails,
         #[default]
         Waits,
@@ -2891,6 +2893,13 @@ mod github_fixture {
                     username: user.to_owned(),
                     token: format!("gho_token_for_{user}"),
                 }),
+                Outcome::SignsInAsCancelled(user) => {
+                    cancel.store(true, Ordering::SeqCst);
+                    Ok(GhAccount {
+                        username: user.to_owned(),
+                        token: format!("gho_token_for_{user}"),
+                    })
+                }
                 Outcome::Fails => Err(GhLoginError::Failed),
                 Outcome::Waits => {
                     assert!(!cancel.load(Ordering::SeqCst));
@@ -3122,4 +3131,58 @@ fn an_unreadable_copilot_token_is_shown_as_such(cx: &mut TestAppContext) {
         label_of(cx, "account-detail-gh-1").as_deref(),
         Some("OAuth · Its token couldn't be read from Windows Credential Manager")
     );
+}
+
+#[gpui_kit::test]
+fn a_sign_in_cancelled_as_github_approves_keeps_nothing(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("github-cancel-late", MANAGED_COPILOT);
+    let fake = FakeGitHub::new(github_fixture::Outcome::SignsInAsCancelled("octocat"));
+    let handle = open_copilot_accounts(cx, &settings, &fake);
+    click(cx, handle, "sign-in-gh-1");
+    assert_eq!(saved_settings(&settings).accounts()[0].external_id, None);
+    let stored =
+        cx.update(|cx| codexbar_store::credentials::read_long(SettingsHub::global(cx).credentials().as_ref(), "gh-1"));
+    assert_eq!(stored.ok().flatten(), None, "a cancelled sign-in keeps no token");
+}
+
+#[gpui_kit::test]
+fn org_billing_on_a_github_cli_account_needs_its_username(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "github-billing-username",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "cli-1", "providerId": "Copilot", "displayLabel": "Every gh account", "enabled": true,
+              "authenticationMethod": "CommandLine" } ] }"#,
+    );
+    let handle = open_copilot_accounts(cx, &settings, &FakeGitHub::default());
+    click(cx, handle, "edit-cli-1");
+    // Name, method, username (left blank), then Enterprise.
+    for _ in 0..3 {
+        press(cx, handle, "tab");
+    }
+    type_text(cx, handle, "acme");
+    click(cx, handle, "account-save");
+    assert_eq!(
+        label_of(cx, "account-error").as_deref(),
+        Some("Org billing needs this account's GitHub username.")
+    );
+    assert_eq!(saved_settings(&settings).accounts()[0].copilot_enterprise, None);
+}
+
+#[gpui_kit::test]
+fn an_organization_card_is_owned_while_an_account_bills_it(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "github-org-owned",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "cli-1", "providerId": "Copilot", "displayLabel": "Work", "enabled": true,
+              "authenticationMethod": "CommandLine", "externalAccountId": "dev",
+              "copilotEnterprise": "acme", "copilotOrganization": "Acme-Eng" },
+            { "id": "cli-2", "providerId": "Copilot", "displayLabel": "Off", "enabled": false,
+              "authenticationMethod": "CommandLine", "externalAccountId": "other",
+              "copilotEnterprise": "acme", "copilotOrganization": "other-org" } ] }"#,
+    );
+    cx.update(|cx| SettingsHub::init_with(cx, &settings.0, Arc::new(MemoryCredentialStore::default())));
+    let owned = cx.update(|cx| crate::providers::owned_account_ids(SettingsHub::global(cx)));
+    assert_eq!(owned.get("cli-1").map(String::as_str), Some("copilot-dev"));
+    assert_eq!(owned.get("cli-1#org").map(String::as_str), Some("copilotorg-acme-eng"));
+    assert!(!owned.contains_key("cli-2#org"), "a switched-off account bills nothing");
 }

@@ -139,7 +139,6 @@ impl std::fmt::Debug for Login {
 struct Seat {
     plan: Option<String>,
     organizations: Vec<String>,
-    premium_entitlement: Option<u64>,
 }
 
 fn parse_seat(payload: &str) -> Seat {
@@ -153,16 +152,13 @@ fn parse_seat(payload: &str) -> Seat {
             .and_then(Value::as_array)
             .map(|list| list.iter().filter_map(Value::as_str).map(str::to_owned).collect())
             .unwrap_or_default(),
-        premium_entitlement: json
-            .pointer("/quota_snapshots/premium_interactions/entitlement")
-            .and_then(Value::as_u64)
-            .filter(|entitlement| *entitlement > 0),
     }
 }
 
-/// The organization's dashboard account.
+/// The organization's dashboard account. Users are `copilot-<user>`; organizations use another prefix, so a user
+/// named like `org-acme` never shares an id with the organization `acme`.
 pub fn org_account_id(organization: &str) -> AccountId {
-    AccountId::new(format!("copilot-org-{}", organization.to_lowercase()))
+    AccountId::new(format!("copilotorg-{}", organization.to_lowercase()))
 }
 
 /// AI credits each seat gets in this month.
@@ -513,9 +509,9 @@ impl<H: HttpClient, C: CommandRunner> CopilotProvider<H, C> {
                 "Enterprise billing couldn't be read for this account. Its token needs access to enterprise billing.",
             );
         };
-        let allowance = seat
-            .premium_entitlement
-            .unwrap_or_else(|| credits_per_seat(now.year(), now.month()));
+        // AI credits are measured against the seat's monthly AI-credit allowance; the premium-request entitlement
+        // counts requests, a different unit.
+        let allowance = credits_per_seat(now.year(), now.month());
         let mut metrics = vec![credits_metric("AI credits", consumed, allowance, now)];
         metrics.extend(account.metrics().iter().cloned());
         let mut billed =
@@ -601,12 +597,30 @@ impl<H: HttpClient, C: CommandRunner> UsageProvider for CopilotProvider<H, C> {
     /// Accounts CodexBar signed in come with their own token; the GitHub CLI's are found with `gh auth status`.
     fn fetch_outcomes(&self, now: DateTime<Utc>) -> Result<Vec<AccountOutcome>, ProviderError> {
         let mut accounts = Vec::new();
+        let mut cli_failures = Vec::new();
         if self.use_cli {
             match self.cli_accounts() {
                 Ok(found) => accounts = found,
-                // Without the GitHub CLI, CodexBar's own accounts still fetch.
-                Err(err) if self.logins.is_empty() && self.unreadable.is_empty() => return Err(err),
-                Err(_) => {}
+                // Without the GitHub CLI, CodexBar's own accounts still fetch, and the configured GitHub CLI
+                // accounts report the failure (keeping their last usage). With every gh account wanted, which
+                // ones they are is unknown, so the provider fails as a whole and nothing is dropped.
+                // No GitHub CLI installed: it has no accounts to lose.
+                Err(ProviderError::NotSignedIn { hint: GH_MISSING })
+                    if !self.logins.is_empty() || !self.unreadable.is_empty() => {}
+                Err(err) => match &self.only {
+                    Some(only) if !self.logins.is_empty() || !self.unreadable.is_empty() => {
+                        cli_failures = only
+                            .iter()
+                            .filter(|user| self.login(user).is_none())
+                            .map(|user| AccountOutcome::Failed {
+                                account: account_id(user),
+                                label: Some(user.clone()),
+                                error: err.clone(),
+                            })
+                            .collect();
+                    }
+                    _ => return Err(err),
+                },
             }
             if let Some(only) = &self.only {
                 accounts.retain(|name| only.iter().any(|wanted| wanted.eq_ignore_ascii_case(name)));
@@ -617,7 +631,7 @@ impl<H: HttpClient, C: CommandRunner> UsageProvider for CopilotProvider<H, C> {
                 accounts.push(login.username.clone());
             }
         }
-        let mut outcomes = Vec::new();
+        let mut outcomes = cli_failures;
         // An account whose saved token couldn't be read is reported, not taken for signed out.
         for username in &self.unreadable {
             accounts.retain(|known| !known.eq_ignore_ascii_case(username));
@@ -1014,13 +1028,14 @@ mod tests {
         let outcomes = provider.fetch_outcomes(now()).unwrap();
         let fresh = fresh(&outcomes);
         let ids: Vec<&str> = fresh.iter().map(|a| a.id().as_str()).collect();
-        assert_eq!(ids, ["copilot-dev", "copilot-org-acme-eng"]);
-        // The user: 700 credits of a 1,000 allowance, then the premium quota, and the share of the org.
+        assert_eq!(ids, ["copilot-dev", "copilotorg-acme-eng"]);
+        // The user: 700 credits of the 3,900-credit allowance per seat, then the premium quota, and the share of
+        // the org.
         let user = fresh[0];
         let Some(Metric::Quota { label, used, limit, .. }) = user.primary() else {
             panic!("credits")
         };
-        assert_eq!((label.as_str(), *used, *limit), ("AI credits", 700, 1000));
+        assert_eq!((label.as_str(), *used, *limit), ("AI credits", 700, 3900));
         assert_eq!(user.metrics().len(), 2);
         assert!(
             user.messages()
@@ -1110,7 +1125,7 @@ mod tests {
         let AccountOutcome::Failed { account, error, .. } = &outcomes[1] else {
             panic!("org failure")
         };
-        assert_eq!(account.as_str(), "copilot-org-acme-eng");
+        assert_eq!(account.as_str(), "copilotorg-acme-eng");
         assert_eq!(error, &ProviderError::Http { status: 403 });
     }
 
@@ -1178,7 +1193,7 @@ mod tests {
         let AccountOutcome::Fresh(org) = &outcomes[2] else {
             panic!("the second member's token read the organization")
         };
-        assert_eq!(org.id().as_str(), "copilot-org-acme-eng");
+        assert_eq!(org.id().as_str(), "copilotorg-acme-eng");
         let Some(Metric::Quota { used, .. }) = org.primary() else {
             panic!("credits")
         };
@@ -1196,6 +1211,47 @@ mod tests {
         assert_eq!(parse_gh_accounts_json(&format!("{json}\n")), expected);
         assert_eq!(parse_gh_accounts_json(STATUS), None, "plain status output isn't JSON");
         assert_eq!(parse_gh_accounts_json(r#"{"hosts":{}}"#), None);
+    }
+
+    #[test]
+    fn a_github_cli_failure_keeps_its_configured_accounts_as_failures() {
+        struct BrokenGh;
+        impl CommandRunner for BrokenGh {
+            fn run(&self, _: &str, _: &[&str], _: StdDuration) -> Result<CommandOutput, CommandError> {
+                Err(CommandError::TimedOut)
+            }
+        }
+        let http = FakeHttp {
+            by_token: HashMap::from([("token gho_own".into(), ok(USER))]),
+            seen: Mutex::default(),
+        };
+        // gh times out: the named gh account fails (keeping its last usage) and CodexBar's own still fetches.
+        let provider = CopilotProvider::new(http, BrokenGh)
+            .only_accounts(vec!["cli-user".into()])
+            .with_login("HemSoft", "gho_own");
+        let outcomes = provider.fetch_outcomes(now()).unwrap();
+        let failed: Vec<&str> = outcomes
+            .iter()
+            .filter_map(|outcome| match outcome {
+                AccountOutcome::Failed { account, .. } => Some(account.as_str()),
+                AccountOutcome::Fresh(_) => None,
+            })
+            .collect();
+        assert_eq!(failed, ["copilot-cli-user"]);
+        assert_eq!(fresh(&outcomes).len(), 1);
+        // With every gh account wanted, they can't be named: the provider fails as a whole, so nothing is dropped.
+        let http = FakeHttp {
+            by_token: HashMap::from([("token gho_own".into(), ok(USER))]),
+            seen: Mutex::default(),
+        };
+        let provider = CopilotProvider::new(http, BrokenGh).with_login("HemSoft", "gho_own");
+        assert_eq!(provider.fetch_outcomes(now()).err(), Some(ProviderError::Network));
+    }
+
+    #[test]
+    fn organization_ids_never_collide_with_user_ids() {
+        assert_ne!(org_account_id("acme").as_str(), account_id("org-acme").as_str());
+        assert_eq!(org_account_id("Acme-Eng").as_str(), "copilotorg-acme-eng");
     }
 
     #[test]
