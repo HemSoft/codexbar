@@ -226,9 +226,13 @@ else {
     Write-Information "Building CodexBar $version ($commit)..." -InformationAction Continue
     $builtExe = $null
     $env:CODEXBAR_BUILD = $commit
+    # The C runtime is linked in, so the package runs on PCs without the Visual C++ Redistributable. Its own target
+    # folder keeps these flags from rebuilding run.ps1's copy every time.
+    $rustFlags = $env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS
+    $env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS = "$rustFlags -C target-feature=+crt-static".Trim()
     Push-Location $PSScriptRoot
     try {
-        cargo build --release --locked -p codexbar-app --message-format=json-render-diagnostics | ForEach-Object {
+        cargo build --release --locked -p codexbar-app --target-dir target\msix\build --message-format=json-render-diagnostics | ForEach-Object {
             try { $message = $_ | ConvertFrom-Json } catch { return }
             if ($message.reason -eq 'compiler-artifact' -and $message.target.name -eq 'codexbar' -and $message.executable) {
                 $builtExe = $message.executable
@@ -239,8 +243,13 @@ else {
     finally {
         Pop-Location
         Remove-Item Env:\CODEXBAR_BUILD -ErrorAction SilentlyContinue
+        $env:CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS = $rustFlags
     }
     if (-not $builtExe) { throw 'Cargo did not report the codexbar executable.' }
+    $imports = [Text.Encoding]::ASCII.GetString([IO.File]::ReadAllBytes($builtExe))
+    if ($imports -match '(?i)VCRUNTIME140|MSVCP140') {
+        throw 'codexbar.exe still needs the Visual C++ runtime DLLs; the static C runtime did not apply.'
+    }
 
     $layout = Join-Path $PSScriptRoot 'target\msix\layout'
     if (Test-Path -LiteralPath $layout) { Remove-Item -LiteralPath $layout -Recurse -Force }
@@ -268,11 +277,34 @@ if ($Trust) {
 }
 
 if ($Install) {
-    if ($Rollback) {
-        Add-AppxPackage -Path $packageFile -ForceUpdateFromAnyVersion -ForceApplicationShutdown
+    # The copy run.ps1 started shares the single-instance lock, so it would keep the package from starting. Its Start
+    # with Windows entry moves to the package's startup task, which CodexBar turns on the next time it starts.
+    $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+    $settingsDir = if ($env:CODEXBAR_SETTINGS_DIR) { $env:CODEXBAR_SETTINGS_DIR } else { Join-Path $env:USERPROFILE '.codexbar' }
+    if (Get-ItemProperty -LiteralPath $runKey -Name 'CodexBar' -ErrorAction SilentlyContinue) {
+        New-Item -ItemType Directory -Path $settingsDir -Force | Out-Null
+        New-Item -ItemType File -Path (Join-Path $settingsDir 'start-with-windows.migrate') -Force | Out-Null
+        Remove-ItemProperty -LiteralPath $runKey -Name 'CodexBar'
+        Write-Information 'Start with Windows moves from the run.ps1 copy to the package.' -InformationAction Continue
+    }
+    $currentUserSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    $unpackaged = @(
+        Get-CimInstance Win32_Process -Filter "Name = 'codexbar.exe'" |
+            Where-Object { $_.ExecutablePath -and $_.ExecutablePath -notmatch '\\WindowsApps\\' } |
+            Where-Object { $_.CommandLine -notmatch '(^|\s)--demo(\s|$)' } |
+            Where-Object { (Invoke-CimMethod -InputObject $_ -MethodName GetOwnerSid).Sid -eq $currentUserSid }
+    )
+    $unpackaged | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+
+    # Through the App Installer file, rollbacks too, so the installation keeps its update channel.
+    Add-AppxPackage -AppInstallerFile $appInstaller -ForceTargetApplicationShutdown
+    $installed = Get-AppxPackage -Name $packageName
+    if ($installed.Version -ne $version) { throw "Windows installed CodexBar $($installed.Version), not $version." }
+    if ($unpackaged.Count -gt 0) {
+        Start-Process explorer.exe "shell:AppsFolder\$($installed.PackageFamilyName)!CodexBar"
+        Write-Information "Installed CodexBar $version and started it in place of the run.ps1 copy." -InformationAction Continue
     }
     else {
-        Add-AppxPackage -AppInstallerFile $appInstaller -ForceApplicationShutdown
+        Write-Information "Installed CodexBar $version. Start it from the Start menu." -InformationAction Continue
     }
-    Write-Information "Installed CodexBar $version. Start it from the Start menu." -InformationAction Continue
 }

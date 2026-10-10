@@ -125,6 +125,10 @@ fn main() {
         zoom::init(cx);
         // The demo never checks the real update channel.
         package::Updates::init(cx, !is_demo());
+        if !is_demo() {
+            package::migrate_startup(&dir);
+        }
+        package::StartupSetting::init(cx);
 
         let bounds = Bounds::centered(None, size(px(1440.), px(960.)), cx);
         let options = WindowOptions {

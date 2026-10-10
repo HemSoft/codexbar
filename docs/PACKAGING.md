@@ -68,8 +68,16 @@ folder, such as a network share other PCs can read.
 App Installer file, which records the channel, so later updates find it. Start
 CodexBar from the Start menu. It uses the same settings, keys and history as the
 build from source (`%USERPROFILE%\.codexbar` and Credential Manager), and only
-one of the two runs at a time. Quit the `run.ps1` copy before starting the
-package.
+one of the two runs at a time. `-Install` therefore stops a running `run.ps1`
+copy and starts the package in its place. If that copy started with Windows,
+the `Run` entry is removed and the package's own startup task is turned on the
+next time CodexBar starts. **Settings › General › Start with Windows** switches
+it afterwards.
+
+The executable links the C runtime statically, so the package needs no Visual
+C++ Redistributable. `package.ps1` builds it in its own target folder
+(`target\msix\build`) and refuses an executable that still imports
+`VCRUNTIME140.dll`.
 
 **Updates.** Publishing puts the new package next to the old ones and points the
 App Installer file at it. Windows checks the file when CodexBar starts (and in
@@ -83,7 +91,8 @@ unreadable channel never stops CodexBar from starting.
 **Rollback.** `-Rollback <version>` points the App Installer file at an earlier
 package that is still in the channel folder. Nothing is rebuilt. The file allows
 moving to any version, so every installation goes back the next time CodexBar
-starts; `-Install` does it right away on this PC. To move forward again, publish
+starts. `-Install` does it right away on this PC, through the App Installer file
+so the installation keeps its channel. To move forward again, publish
 a newer build. Keep old packages in the channel for as long as you might roll
 back to them.
 
@@ -109,9 +118,11 @@ procedures end to end in a throwaway channel:
 2. The installed app reports its version and channel (`codexbar --package-status`,
    run inside the package).
 3. A published build is seen by the app's own update check, then installed.
-4. Rollback.
+4. Rollback, which keeps the channel.
 5. Uninstall.
 
 The **Package** workflow runs it on a clean Windows runner for every pull request
 that touches packaging. It refuses to run on a PC where CodexBar is installed,
-because it would replace and then remove that installation.
+because it would replace and then remove that installation. It runs as
+administrator. Afterwards it removes the certificate trust it added and any
+signing certificate it created.

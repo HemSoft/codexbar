@@ -6,8 +6,8 @@ Verifies the MSIX release procedures end to end: clean install, update check, up
 Publishes two builds to a throwaway channel with package.ps1, installs the first from the App Installer file, asks the
 installed app (codexbar --package-status, inside its package) for its version and update check, upgrades, rolls
 back and uninstalls. CI runs it on a clean runner. It refuses to run where CodexBar is already installed, because it
-would replace and then remove that installation. The first run trusts the signing certificate (administrator
-approval).
+would replace and then remove that installation. It runs as administrator, trusts the signing certificate for the
+test, and afterwards removes the trust and any signing certificate it created.
 #>
 [CmdletBinding()]
 param(
@@ -31,6 +31,15 @@ $second = "$base.2"
 if (Get-AppxPackage -Name $name) {
     throw "CodexBar is installed on this PC; this test would replace and remove it. Run it on a clean machine or in CI."
 }
+$principal = [Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
+if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    throw 'Run this test as administrator: it trusts the signing certificate and removes that trust afterwards.'
+}
+
+# What the test adds to the certificate stores, so the cleanup removes only that.
+$publisher = 'CN=HemSoft CodexBar Self-Signed'
+$signingBefore = @(Get-ChildItem Cert:\CurrentUser\My | Where-Object Subject -eq $publisher | ForEach-Object Thumbprint)
+$trustedBefore = @(Get-ChildItem Cert:\LocalMachine\TrustedPeople | Where-Object Subject -eq $publisher | ForEach-Object Thumbprint)
 
 function Assert-Installed([string]$Expected) {
     $installed = Get-AppxPackage -Name $name
@@ -77,19 +86,26 @@ try {
     $status = Get-PackageStatus
     if (-not $status.updateAvailable) { throw "The app didn't see the published update: $($status.update)" }
     Write-Information "OK: the app sees the update: $($status.update)" -InformationAction Continue
-    Add-AppxPackage -AppInstallerFile (Join-Path $Channel 'CodexBar.appinstaller') -ForceApplicationShutdown
+    Add-AppxPackage -AppInstallerFile (Join-Path $Channel 'CodexBar.appinstaller') -ForceTargetApplicationShutdown
     Assert-Installed $second
 
     # Rollback to the earlier build in the channel.
     & $package -Channel $Channel -Rollback $first -Install
     Assert-Installed $first
     $status = Get-PackageStatus
+    if (-not $status.channel) { throw 'After the rollback the package lost its update channel.' }
     if ($status.updateAvailable) { throw "After the rollback the channel points at this version, but: $($status.update)" }
-    Write-Information 'OK: rolled back, and the channel no longer offers the newer build.' -InformationAction Continue
+    Write-Information 'OK: rolled back through the channel, which no longer offers the newer build.' -InformationAction Continue
 }
 finally {
     Get-AppxPackage -Name $name | Remove-AppxPackage
     if (Test-Path -LiteralPath $Channel) { Remove-Item -LiteralPath $Channel -Recurse -Force }
+    Get-ChildItem Cert:\LocalMachine\TrustedPeople |
+        Where-Object { $_.Subject -eq $publisher -and $_.Thumbprint -notin $trustedBefore } |
+        Remove-Item
+    Get-ChildItem Cert:\CurrentUser\My |
+        Where-Object { $_.Subject -eq $publisher -and $_.Thumbprint -notin $signingBefore } |
+        Remove-Item
 }
 if (Get-AppxPackage -Name $name) { throw 'CodexBar is still installed after Remove-AppxPackage.' }
 Write-Information 'OK: uninstalled.' -InformationAction Continue

@@ -96,7 +96,7 @@ fn general_page(cx: &App) -> SettingPage {
         .iter()
         .map(|minutes| (SharedString::from(minutes.to_string()), minutes_label(*minutes)))
         .collect();
-    SettingPage::new("General")
+    let page = SettingPage::new("General")
         .icon(IconName::Settings)
         .default_open(true)
         .group(
@@ -118,7 +118,30 @@ fn general_page(cx: &App) -> SettingPage {
                 )
                 .description("How often usage is fetched in the background. Refresh now is always in the title bar."),
             ),
+        );
+    // The package's startup task (#93); the build from source has none.
+    if crate::package::installed().is_none() {
+        return page;
+    }
+    {
+        use crate::package::StartupSetting;
+        let note = StartupSetting::get(cx).map_or(
+            "Windows didn't say whether CodexBar starts with it.",
+            crate::package::Startup::note,
+        );
+        page.group(
+            SettingGroup::new().title("Startup").item(
+                SettingItem::new(
+                    "Start with Windows",
+                    SettingField::switch(
+                        |cx: &App| StartupSetting::get(cx).is_some_and(crate::package::Startup::is_on),
+                        |on: bool, cx: &mut App| StartupSetting::set(cx, on),
+                    ),
+                )
+                .description(note),
+            ),
         )
+    }
 }
 
 fn accounts_page(cx: &App) -> SettingPage {

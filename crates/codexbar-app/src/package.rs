@@ -168,6 +168,106 @@ pub fn install() -> Result<(), String> {
     }
 }
 
+/// The `StartupTask` in the manifest: Start with Windows for the package.
+pub const STARTUP_TASK: &str = "CodexBarStartup";
+/// `package.ps1 -Install` leaves this file in the settings folder when it moved run.ps1's `Run` entry to the package.
+pub const STARTUP_MIGRATION: &str = "start-with-windows.migrate";
+
+/// Whether the package starts with Windows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Startup {
+    On,
+    Off,
+    /// Turned off in Task Manager; only the user can turn it on again there.
+    OffByUser,
+    /// Set by the organization's policy, on or off.
+    ByPolicy(bool),
+}
+
+impl Startup {
+    pub fn is_on(self) -> bool {
+        matches!(self, Self::On | Self::ByPolicy(true))
+    }
+
+    pub fn note(self) -> &'static str {
+        match self {
+            Self::On | Self::Off => "Starts CodexBar in the notification area when you sign in to Windows.",
+            Self::OffByUser => {
+                "Turned off in Task Manager › Startup apps. Turn CodexBar on there to start it with Windows again."
+            }
+            Self::ByPolicy(_) => "Set by your organization's policy.",
+        }
+    }
+}
+
+fn startup_task() -> windows::core::Result<windows::ApplicationModel::StartupTask> {
+    windows::ApplicationModel::StartupTask::GetAsync(&windows::core::HSTRING::from(STARTUP_TASK))?.join()
+}
+
+fn startup_from(state: windows::ApplicationModel::StartupTaskState) -> Startup {
+    use windows::ApplicationModel::StartupTaskState;
+    match state {
+        StartupTaskState::Enabled => Startup::On,
+        StartupTaskState::DisabledByUser => Startup::OffByUser,
+        StartupTaskState::EnabledByPolicy => Startup::ByPolicy(true),
+        StartupTaskState::DisabledByPolicy => Startup::ByPolicy(false),
+        _ => Startup::Off,
+    }
+}
+
+/// The package's Start with Windows state; `None` for the unpackaged build or when Windows can't say.
+pub fn startup() -> Option<Startup> {
+    installed()?;
+    Some(startup_from(startup_task().ok()?.State().ok()?))
+}
+
+/// Turns Start with Windows on or off and returns the state Windows ends up in (a user's or a policy's choice wins).
+pub fn set_startup(on: bool) -> Option<Startup> {
+    installed()?;
+    let task = startup_task().ok()?;
+    if on {
+        task.RequestEnableAsync().ok()?.join().ok().map(startup_from)
+    } else {
+        task.Disable().ok()?;
+        Some(startup_from(task.State().ok()?))
+    }
+}
+
+/// Turns Start with Windows on once, if `package.ps1` moved it over from run.ps1's `Run` entry.
+pub fn migrate_startup(dir: &std::path::Path) {
+    let marker = dir.join(STARTUP_MIGRATION);
+    if installed().is_some() && marker.exists() && set_startup(true).is_some() {
+        let _ = std::fs::remove_file(marker);
+    }
+}
+
+/// The Start with Windows state Settings shows, read once and after each change.
+pub struct StartupSetting(pub Option<Startup>);
+
+impl Global for StartupSetting {}
+
+impl StartupSetting {
+    pub fn init(cx: &mut App) {
+        cx.set_global(Self(startup()));
+    }
+
+    pub fn get(cx: &App) -> Option<Startup> {
+        cx.try_global::<Self>().and_then(|setting| setting.0)
+    }
+
+    pub fn set(cx: &mut App, on: bool) {
+        let task = cx.background_executor().spawn(async move { set_startup(on) });
+        cx.spawn(async move |cx| {
+            let state = task.await;
+            cx.update(|cx| {
+                cx.set_global(Self(state));
+                cx.refresh_windows();
+            });
+        })
+        .detach();
+    }
+}
+
 /// `codexbar --package-status <file>`: writes the package identity and a fresh update check to `file` as JSON and
 /// exits, so the package can be verified without opening a window (`scripts/Test-MsixChannel.ps1`).
 pub fn write_status(path: &std::path::Path) -> std::io::Result<()> {
@@ -332,6 +432,34 @@ mod tests {
     fn the_manifest_declares_the_application_id() {
         let manifest = include_str!("../../../packaging/AppxManifest.xml");
         assert!(manifest.contains(&format!(r#"<Application Id="{APPLICATION_ID}""#)));
+    }
+
+    #[test]
+    fn the_manifest_declares_the_startup_task_off() {
+        let manifest = include_str!("../../../packaging/AppxManifest.xml");
+        assert!(manifest.contains(&format!(
+            r#"<desktop:StartupTask TaskId="{STARTUP_TASK}" Enabled="false""#
+        )));
+    }
+
+    #[test]
+    fn startup_is_unknown_unpackaged_and_the_migration_marker_stays() {
+        assert_eq!(startup(), None);
+        assert_eq!(set_startup(true), None);
+        let dir = std::env::temp_dir().join(format!("codexbar-startup-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(STARTUP_MIGRATION), "").unwrap();
+        migrate_startup(&dir);
+        let kept = dir.join(STARTUP_MIGRATION).exists();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(kept, "only the package moves Start with Windows over");
+    }
+
+    #[test]
+    fn startup_states_read_as_on_or_off() {
+        assert!(Startup::On.is_on() && Startup::ByPolicy(true).is_on());
+        assert!(!Startup::Off.is_on() && !Startup::OffByUser.is_on() && !Startup::ByPolicy(false).is_on());
+        assert!(Startup::OffByUser.note().contains("Task Manager"));
     }
 
     #[test]
