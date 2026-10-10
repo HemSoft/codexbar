@@ -1,20 +1,30 @@
 #!/bin/sh
 # CodexBar pre-commit hook
-# Runs quality gates before allowing commits
+# Runs the Rust app's quality gates before allowing a commit. The retired C# / WPF app's gates (format, build,
+# tests) run only when the commit touches its files, so its desktop UI Automation tests don't gate Rust work.
 
 set -e
 
 echo "🔍 Running pre-commit checks..."
 
-# Run format check
-echo "  → Checking code formatting..."
-dotnet format --verify-no-changes
+echo "  → Checking Rust formatting..."
+cargo fmt --all --check
 
-# Build first, then run tests
-echo "  → Building..."
-dotnet build --no-restore
+echo "  → Running Clippy..."
+cargo clippy --workspace --all-targets --locked --quiet -- -D warnings
 
-echo "  → Running tests..."
-dotnet test --no-build
+echo "  → Running Rust tests..."
+cargo test --workspace --locked --quiet
+
+if git diff --cached --name-only | grep -Eq '^src/|\.(cs|csproj|sln|props|targets|xaml)$'; then
+    echo "  → C# files changed: checking formatting..."
+    dotnet format --verify-no-changes
+
+    echo "  → Building..."
+    dotnet build --no-restore
+
+    echo "  → Running tests..."
+    dotnet test --no-build
+fi
 
 echo "✅ All pre-commit checks passed!"
