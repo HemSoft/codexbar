@@ -325,9 +325,15 @@ impl StartupSetting {
 
 /// `codexbar --package-status <file>`: writes the package identity and a fresh update check to `file` as JSON and
 /// exits, so the package can be verified without opening a window (`scripts/Test-MsixChannel.ps1`).
-pub fn write_status(path: &std::path::Path) -> std::io::Result<()> {
+pub fn write_status(path: &std::path::Path, trigger: Option<&std::path::Path>) -> std::io::Result<()> {
     // A marker first, so a caller waiting on the status can tell "never started" from "still checking".
     let _ = std::fs::write(path.with_extension("started"), "");
+    if let Some(trigger) = trigger {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15 * 60);
+        while !trigger.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
+    }
     let status = match installed() {
         None => serde_json::json!({ "packaged": false }),
         Some(installed) => {
@@ -525,7 +531,7 @@ mod tests {
     #[test]
     fn the_status_file_says_unpackaged() {
         let path = std::env::temp_dir().join(format!("codexbar-package-status-{}.json", std::process::id()));
-        write_status(&path).unwrap();
+        write_status(&path, None).unwrap();
         let written = std::fs::read_to_string(&path).unwrap();
         let _ = std::fs::remove_file(&path);
         assert_eq!(written, r#"{"packaged":false}"#);

@@ -57,7 +57,7 @@ function Stop-CodexBar {
 }
 
 # What Windows was doing when a step got stuck: the package, CodexBar's processes and recent deployment events.
-function Write-Diagnostics([string]$File) {
+function Write-Diagnostics {
     Write-Information '--- diagnostics ---' -InformationAction Continue
     Get-AppxPackage -Name $name | Format-List Name, Version, Status, InstallLocation | Out-Host
     Get-CimInstance Win32_Process -Filter "Name = 'codexbar.exe'" | Format-Table ProcessId, CommandLine -AutoSize -Wrap | Out-Host
@@ -67,35 +67,54 @@ function Write-Diagnostics([string]$File) {
         Format-Table TimeCreated, Id, Message -AutoSize -Wrap | Out-Host
 }
 
-function Get-PackageStatus {
+# Runs a PowerShell command in its own process, which can be killed if Windows never returns from it.
+function Start-Isolated([string]$Command) {
+    $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($Command))
+    Start-Process -FilePath (Get-Process -Id $PID).Path -ArgumentList "-NoProfile -EncodedCommand $encoded" -PassThru -WindowStyle Hidden
+}
+
+function Quote([string]$Text) { "'" + ($Text -replace "'", "''") + "'" }
+
+# Starts codexbar --package-status inside the installed package. With -Trigger the app waits for that file before
+# it checks for updates, the way a CodexBar that is already running meets a build published later.
+function Start-PackageStatus([string]$Trigger) {
     $installed = Get-AppxPackage -Name $name
     # Outside AppData, which Windows virtualizes for packaged processes.
     $folder = Join-Path $root 'target\msix'
     New-Item -ItemType Directory -Path $folder -Force | Out-Null
     $file = Join-Path $folder "status-$([guid]::NewGuid()).json"
     $exe = Join-Path $installed.InstallLocation 'codexbar.exe'
-    # Invoke-CommandInDesktopPackage can wait for the process, so it runs in a job and the file decides.
-    $job = Start-ThreadJob -ArgumentList $installed.PackageFamilyName, $exe, $file -ScriptBlock {
-        param($family, $exe, $file)
-        Invoke-CommandInDesktopPackage -PackageFamilyName $family -AppId 'CodexBar' -Command $exe -Args "--package-status `"$file`""
-    }
+    $arguments = "--package-status `"$file`""
+    if ($Trigger) { $arguments += " `"$Trigger`"" }
+    $launcher = Start-Isolated ("Invoke-CommandInDesktopPackage -PackageFamilyName $(Quote $installed.PackageFamilyName) " +
+        "-AppId 'CodexBar' -Command $(Quote $exe) -Args $(Quote $arguments)")
+    [pscustomobject]@{ File = $file; Started = [IO.Path]::ChangeExtension($file, 'started'); Launcher = $launcher }
+}
+
+function Wait-PackageFile($Status, [string]$Path, [string]$What) {
     $deadline = (Get-Date).AddMinutes(3)
-    while (-not (Test-Path -LiteralPath $file)) {
+    while (-not (Test-Path -LiteralPath $Path)) {
         if ((Get-Date) -gt $deadline) {
-            Write-Diagnostics $file
-            $job | Receive-Job -ErrorAction SilentlyContinue | Out-Host
+            Write-Diagnostics
+            Stop-Process -Id $Status.Launcher.Id -Force -ErrorAction SilentlyContinue
             Stop-CodexBar
-            $started = Test-Path -LiteralPath ([IO.Path]::ChangeExtension($file, 'started'))
-            throw "codexbar --package-status wrote nothing within 3 minutes (process started: $started)."
+            $started = Test-Path -LiteralPath $Status.Started
+            throw "codexbar --package-status $What within 3 minutes (process started: $started)."
         }
         Start-Sleep -Milliseconds 500
     }
-    $job | Stop-Job -PassThru | Remove-Job -Force
-    Start-Sleep -Milliseconds 500
-    $status = Get-Content -LiteralPath $file -Raw | ConvertFrom-Json
-    Remove-Item -LiteralPath $file -Force
-    $status
 }
+
+function Wait-PackageStatus($Status) {
+    Wait-PackageFile $Status $Status.File 'wrote nothing'
+    Start-Sleep -Milliseconds 500
+    Stop-Process -Id $Status.Launcher.Id -Force -ErrorAction SilentlyContinue
+    $result = Get-Content -LiteralPath $Status.File -Raw | ConvertFrom-Json
+    Remove-Item -LiteralPath $Status.File, $Status.Started -Force -ErrorAction SilentlyContinue
+    $result
+}
+
+function Get-PackageStatus { Wait-PackageStatus (Start-PackageStatus) }
 
 if (Test-Path -LiteralPath $Channel) { Remove-Item -LiteralPath $Channel -Recurse -Force }
 try {
@@ -109,9 +128,16 @@ try {
     if ($status.updateAvailable) { throw "No update was published yet, but the app reports: $($status.update)" }
     Write-Information "OK: the app runs from its package with the channel $($status.channel): $($status.update)" -InformationAction Continue
 
-    # A newer build in the channel: the app's own update check sees it, and the App Installer file installs it.
+    # A newer build in the channel. CodexBar is already running when it is published, as in real use (a launch
+    # after publishing is Windows' own update-at-launch instead), and its own update check sees it. Then the App
+    # Installer file installs it.
+    $trigger = Join-Path $root "target\msix\trigger-$([guid]::NewGuid())"
+    $running = Start-PackageStatus -Trigger $trigger
+    Wait-PackageFile $running $running.Started 'did not start'
     & $package -Channel $Channel -Revision 2
-    $status = Get-PackageStatus
+    New-Item -ItemType File -Path $trigger | Out-Null
+    $status = Wait-PackageStatus $running
+    Remove-Item -LiteralPath $trigger -Force
     if (-not $status.updateAvailable) { throw "The app didn't see the published update: $($status.update)" }
     Write-Information "OK: the app sees the update: $($status.update)" -InformationAction Continue
     Add-AppxPackage -AppInstallerFile (Join-Path $Channel 'CodexBar.appinstaller') -ForceTargetApplicationShutdown
@@ -128,13 +154,11 @@ try {
 finally {
     Stop-CodexBar
     # Bounded too: a deployment Windows still runs for the package can hold the removal up.
-    $removal = Start-ThreadJob -ArgumentList $name -ScriptBlock { param($name) Get-AppxPackage -Name $name | Remove-AppxPackage }
-    if (-not (Wait-Job $removal -Timeout 300)) {
-        Write-Diagnostics ''
-        $removal | Stop-Job
+    $removal = Start-Isolated "Get-AppxPackage -Name '$name' | Remove-AppxPackage"
+    if (-not $removal.WaitForExit(300000)) {
+        Write-Diagnostics
+        Stop-Process -Id $removal.Id -Force -ErrorAction SilentlyContinue
     }
-    $removal | Receive-Job -ErrorAction Continue
-    $removal | Remove-Job -Force
     if (Test-Path -LiteralPath $Channel) { Remove-Item -LiteralPath $Channel -Recurse -Force }
     Get-ChildItem Cert:\LocalMachine\TrustedPeople |
         Where-Object { $_.Subject -eq $publisher -and $_.Thumbprint -notin $trustedBefore } |

@@ -86,13 +86,13 @@ fn already_running() -> bool {
 }
 
 fn main() {
-    // `--package-status <file>` reports the MSIX package and exits (#93); it runs beside an open CodexBar.
+    // `--package-status <file> [<trigger>]` reports the MSIX package and exits (#93); it runs beside an open
+    // CodexBar. With a trigger file it first waits for that file, the way a running CodexBar meets a later update.
     let mut args = std::env::args().skip_while(|arg| arg != "--package-status");
     if args.next().is_some() {
-        let written = args
-            .next()
-            .map(std::path::PathBuf::from)
-            .map(|path| package::write_status(&path));
+        let file = args.next().map(std::path::PathBuf::from);
+        let trigger = args.next().map(std::path::PathBuf::from);
+        let written = file.map(|path| package::write_status(&path, trigger.as_deref()));
         std::process::exit(if matches!(written, Some(Ok(()))) { 0 } else { 1 });
     }
     if already_running() {
