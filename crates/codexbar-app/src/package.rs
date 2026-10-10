@@ -118,8 +118,14 @@ impl UpdateState {
 /// Asks Windows whether the App Installer channel has a newer version. Blocking: run it off the UI thread.
 pub fn check() -> UpdateState {
     use windows::ApplicationModel::{Package, PackageUpdateAvailability};
+    use windows::Management::Deployment::PackageManager;
     let result = (|| -> windows::core::Result<UpdateState> {
-        let result = Package::Current()?.CheckUpdateAvailabilityAsync()?.join()?;
+        // Windows refuses the check on `Package::Current()` (access denied); the same package found through the
+        // package manager may ask (an empty user security id means the current user).
+        let full_name = Package::Current()?.Id()?.FullName()?;
+        let package = PackageManager::new()?
+            .FindPackageByUserSecurityIdPackageFullName(&windows::core::HSTRING::new(), &full_name)?;
+        let result = package.CheckUpdateAvailabilityAsync()?.join()?;
         Ok(match result.Availability()? {
             PackageUpdateAvailability::Available => UpdateState::Available { required: false },
             PackageUpdateAvailability::Required => UpdateState::Available { required: true },

@@ -1023,7 +1023,7 @@ fn about_page() -> SettingPage {
     let installed = package::installed();
     let version = installed.map_or_else(
         || SharedString::from(env!("CARGO_PKG_VERSION")),
-        |installed| SharedString::from(installed.version.clone()),
+        |installed| SharedString::from(format!("{} (package {})", env!("CARGO_PKG_VERSION"), installed.version)),
     );
     let build = SharedString::from(package::BUILD.unwrap_or("Development build"));
     let source = SharedString::from(match installed {

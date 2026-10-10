@@ -20,6 +20,12 @@ there. That needs administrator approval once per PC (Windows shows a prompt).
 This trust applies to all users of the PC; remove it when you no longer need it
 (see [Uninstall](#uninstall)).
 
+The certificate is valid for five years. `package.ps1` keeps using it, and warns
+when fewer than 30 days remain. It never replaces the certificate on its own:
+PCs that trust only the old certificate would refuse every update signed with a
+new one. Renew it with `-RenewCertificate`, then trust the new `CodexBar.cer` on
+every PC that installs CodexBar.
+
 A public release later needs a certificate that every PC already trusts. The
 options are the Microsoft Store (free, and it signs the package for you), Azure
 Artifact Signing, or an OV code-signing certificate. That decision is open and
@@ -30,8 +36,11 @@ installed.
 
 ## Versions
 
-The package version is the workspace version in `Cargo.toml` plus the commit
-count, for example `0.1.0.312`. Use `-Revision <n>` to override the commit count.
+The package version comes from the workspace version in `Cargo.toml`, with its
+major part plus one, followed by the commit count. App Installer rejects a zero
+major part, so Cargo `0.1.0` at commit 312 becomes package `1.1.0.312`. Use
+`-Revision <n>` to override the commit count. **Settings › About › Version**
+shows both, for example `0.1.0 (package 1.1.0.312)`.
 The build ID, the commit with `-modified` when the working tree had uncommitted
 changes, appears under **Settings › About › Build**.
 
@@ -51,7 +60,8 @@ folder, such as a network share other PCs can read.
 | Publish an update | `.\package.ps1` |
 | Publish and install an update now | `.\package.ps1 -Install` |
 | Install a published update now | **Settings › About › Install and restart**, or `Add-AppxPackage -AppInstallerFile <channel>\CodexBar.appinstaller` |
-| Roll back | `.\package.ps1 -Rollback 0.1.0.311 -Install` |
+| Roll back | `.\package.ps1 -Rollback 1.1.0.311 -Install` |
+| Renew the signing certificate | `.\package.ps1 -RenewCertificate -Trust`, then trust the new `CodexBar.cer` on every other PC |
 | Install on another PC | `Import-Certificate -FilePath <channel>\CodexBar.cer -CertStoreLocation Cert:\LocalMachine\TrustedPeople` as administrator, then `Add-AppxPackage -AppInstallerFile <channel>\CodexBar.appinstaller` |
 
 **Clean install.** `-Trust` trusts the certificate. `-Install` installs from the

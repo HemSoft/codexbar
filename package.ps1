@@ -8,8 +8,9 @@ self-signed certificate kept in your certificate store (created on first use, pr
 the package plus CodexBar.appinstaller into the channel folder. Windows checks that file for updates when CodexBar
 starts, so publishing a newer build updates every installation from the channel.
 
-The package version is the workspace version from Cargo.toml plus the commit count, for example 0.1.0.312. Commit
-before publishing again, or pass -Revision.
+The package version is the workspace version from Cargo.toml with its major part plus one (App Installer rejects a
+zero major), plus the commit count: Cargo 0.1.0 at commit 312 is 1.1.0.312. Commit before publishing again, or pass
+-Revision.
 
 Windows installs a self-signed package only after its certificate is trusted on the PC: -Trust adds it to the local
 machine's Trusted People store, which asks once for administrator approval. See docs\PACKAGING.md.
@@ -26,6 +27,10 @@ Trusts the signing certificate on this PC (administrator approval), so Windows i
 .PARAMETER Install
 Installs or updates CodexBar from the channel after publishing.
 
+.PARAMETER RenewCertificate
+Creates a new signing certificate even though one exists, for when the current one is about to expire. Every PC that
+installs CodexBar must trust the new one (-Trust here, Import-Certificate elsewhere) before it can install updates.
+
 .PARAMETER Rollback
 Points the channel at an earlier version already in the channel folder instead of building. Installations move back
 to it the next time CodexBar starts (or right away with -Install).
@@ -34,7 +39,7 @@ to it the next time CodexBar starts (or right away with -Install).
 .\package.ps1 -Trust -Install
 
 .EXAMPLE
-.\package.ps1 -Rollback 0.1.0.311 -Install
+.\package.ps1 -Rollback 1.1.0.311 -Install
 #>
 [CmdletBinding()]
 param(
@@ -43,6 +48,7 @@ param(
     [int]$Revision = -1,
     [switch]$Trust,
     [switch]$Install,
+    [switch]$RenewCertificate,
     [string]$Rollback
 )
 
@@ -111,12 +117,22 @@ function New-Logo([string]$Path, [int]$Width, [int]$Height) {
     }
 }
 
+# The certificate is created once and then kept: a new one would make every PC that trusts the old one refuse updates,
+# so renewing is an explicit step (-RenewCertificate).
 function Get-SigningCertificate {
     $existing = Get-ChildItem Cert:\CurrentUser\My -CodeSigningCert |
-        Where-Object { $_.Subject -eq $publisher -and $_.HasPrivateKey -and $_.NotAfter -gt (Get-Date).AddDays(30) } |
+        Where-Object { $_.Subject -eq $publisher -and $_.HasPrivateKey } |
         Sort-Object NotAfter -Descending |
         Select-Object -First 1
-    if ($existing) { return $existing }
+    if ($existing -and -not $RenewCertificate) {
+        if ($existing.NotAfter -lt (Get-Date)) {
+            throw "The signing certificate expired on $($existing.NotAfter). Run with -RenewCertificate, then trust the new certificate on every PC."
+        }
+        if ($existing.NotAfter -lt (Get-Date).AddDays(30)) {
+            Write-Warning "The signing certificate expires on $($existing.NotAfter). Run with -RenewCertificate and trust the new one on every PC before then."
+        }
+        return $existing
+    }
     Write-Information "Creating the self-signed signing certificate '$publisher' in your certificate store..." -InformationAction Continue
     New-SelfSignedCertificate -Type Custom -Subject $publisher -FriendlyName 'CodexBar package signing (self-signed)' `
         -KeyUsage DigitalSignature -KeyExportPolicy NonExportable -CertStoreLocation Cert:\CurrentUser\My `
@@ -191,7 +207,8 @@ else {
     if ($cargo -notmatch '(?ms)^\[workspace\.package\].*?^version\s*=\s*"(\d+)\.(\d+)\.(\d+)"') {
         throw 'Cargo.toml has no [workspace.package] version.'
     }
-    $base = "$($Matches[1]).$($Matches[2]).$($Matches[3])"
+    # App Installer requires a nonzero major version, so the package's major is Cargo's plus one.
+    $base = "$([int]$Matches[1] + 1).$($Matches[2]).$($Matches[3])"
     if ($Revision -lt 0) {
         $Revision = [int](git -C $PSScriptRoot rev-list --count HEAD)
         if ($LASTEXITCODE -ne 0) { throw 'git rev-list failed; pass -Revision.' }

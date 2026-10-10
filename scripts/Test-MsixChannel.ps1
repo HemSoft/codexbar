@@ -21,6 +21,13 @@ $root = Split-Path -Parent $PSScriptRoot
 $package = Join-Path $root 'package.ps1'
 $name = 'HemSoft.CodexBar'
 
+# The versions package.ps1 gives revisions 1 and 2: Cargo's version with the major plus one.
+$cargo = Get-Content -LiteralPath (Join-Path $root 'Cargo.toml') -Raw
+if ($cargo -notmatch '(?ms)^\[workspace\.package\].*?^version\s*=\s*"(\d+)\.(\d+)\.(\d+)"') { throw 'No workspace version.' }
+$base = "$([int]$Matches[1] + 1).$($Matches[2]).$($Matches[3])"
+$first = "$base.1"
+$second = "$base.2"
+
 if (Get-AppxPackage -Name $name) {
     throw "CodexBar is installed on this PC; this test would replace and remove it. Run it on a clean machine or in CI."
 }
@@ -57,9 +64,9 @@ if (Test-Path -LiteralPath $Channel) { Remove-Item -LiteralPath $Channel -Recurs
 try {
     # Clean install from the App Installer file.
     & $package -Channel $Channel -Revision 1 -Trust -Install
-    Assert-Installed '0.1.0.1'
+    Assert-Installed $first
     $status = Get-PackageStatus
-    if (-not $status.packaged -or $status.version -ne '0.1.0.1' -or -not $status.channel) {
+    if (-not $status.packaged -or $status.version -ne $first -or -not $status.channel) {
         throw "The installed app reports $($status | ConvertTo-Json -Compress)."
     }
     if ($status.updateAvailable) { throw "No update was published yet, but the app reports: $($status.update)" }
@@ -71,11 +78,11 @@ try {
     if (-not $status.updateAvailable) { throw "The app didn't see the published update: $($status.update)" }
     Write-Information "OK: the app sees the update: $($status.update)" -InformationAction Continue
     Add-AppxPackage -AppInstallerFile (Join-Path $Channel 'CodexBar.appinstaller') -ForceApplicationShutdown
-    Assert-Installed '0.1.0.2'
+    Assert-Installed $second
 
     # Rollback to the earlier build in the channel.
-    & $package -Channel $Channel -Rollback '0.1.0.1' -Install
-    Assert-Installed '0.1.0.1'
+    & $package -Channel $Channel -Rollback $first -Install
+    Assert-Installed $first
     $status = Get-PackageStatus
     if ($status.updateAvailable) { throw "After the rollback the channel points at this version, but: $($status.update)" }
     Write-Information 'OK: rolled back, and the channel no longer offers the newer build.' -InformationAction Continue

@@ -7,6 +7,7 @@ on:
     branches: [main, feat/rust-gpui-dashboard]
     paths:
       - package.ps1
+      - Cargo.toml
       - packaging/**
       - scripts/Test-MsixChannel.ps1
       - crates/codexbar-app/src/package.rs
