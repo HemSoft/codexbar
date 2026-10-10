@@ -988,6 +988,10 @@ fn open_live_dyn(
         crate::prefs_hub::PrefsHub::init(cx, &settings.0);
         zoom::init(cx);
         crate::notifications::Notifications::init(cx, Arc::new(RecordingNotifier::default()), false);
+        // Never the real Codex CLI or browser; tests that sign in install their own fake.
+        if cx.try_global::<crate::codex_sign_in::Service>().is_none() {
+            crate::codex_sign_in::init_with(cx, Arc::new(codex_fixture::FakeCodexSignIn::default()));
+        }
     });
     let factory: crate::dashboard::ProviderFactory = Arc::new(move |_| providers.clone());
     let mut dashboard = None;
@@ -2367,4 +2371,332 @@ fn a_saved_cursor_account_is_not_restored_after_a_switch(cx: &mut TestAppContext
         !shown.contains(&"cursor-aaaaaaaaaaaa".to_owned()),
         "the previous Cursor account isn't shown: {shown:?}"
     );
+}
+
+// Codex accounts CodexBar signs in (#78): browser sign-in, failure, cancellation, sign-out and removal, with a fake
+// standing in for the Codex CLI, so no test starts Codex or a browser.
+
+mod codex_fixture {
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    use codexbar_providers::codex_app_server::AppServerError;
+
+    use crate::codex_sign_in::{PendingSignIn, SignInService};
+
+    /// How a fake sign-in ends.
+    #[derive(Clone, Default)]
+    pub enum Outcome {
+        /// Writes a sign-in for this user and email to the home.
+        SignsIn(&'static str, &'static str),
+        /// Fails with Codex's message.
+        Fails(&'static str),
+        /// Still waiting for the browser: the dialog stays open until it is closed.
+        #[default]
+        Waits,
+    }
+
+    #[derive(Default)]
+    pub struct State {
+        pub outcome: Mutex<Outcome>,
+        pub begun: Mutex<Vec<PathBuf>>,
+        pub signed_out: Mutex<Vec<PathBuf>>,
+        pub cancel: Mutex<Option<Arc<AtomicBool>>>,
+    }
+
+    #[derive(Default, Clone)]
+    pub struct FakeCodexSignIn(pub Arc<State>);
+
+    impl FakeCodexSignIn {
+        pub fn new(outcome: Outcome) -> Self {
+            let fake = Self::default();
+            *fake.0.outcome.lock().unwrap() = outcome;
+            fake
+        }
+    }
+
+    impl SignInService for FakeCodexSignIn {
+        fn begin(&self, home: &Path) -> Result<Box<dyn PendingSignIn>, AppServerError> {
+            self.0.begun.lock().unwrap().push(home.to_owned());
+            Ok(Box::new(Pending {
+                state: self.0.clone(),
+                home: home.to_owned(),
+            }))
+        }
+
+        fn sign_out(&self, home: &Path) -> Result<(), AppServerError> {
+            self.0.signed_out.lock().unwrap().push(home.to_owned());
+            let _ = std::fs::remove_file(home.join("auth.json"));
+            Ok(())
+        }
+    }
+
+    struct Pending {
+        state: Arc<State>,
+        home: PathBuf,
+    }
+
+    impl PendingSignIn for Pending {
+        fn url(&self) -> String {
+            "https://auth.example/start".to_owned()
+        }
+
+        fn finish(self: Box<Self>, _: Duration, cancel: Arc<AtomicBool>) -> Result<(), AppServerError> {
+            *self.state.cancel.lock().unwrap() = Some(cancel.clone());
+            match self.state.outcome.lock().unwrap().clone() {
+                Outcome::SignsIn(user, email) => {
+                    std::fs::write(self.home.join("auth.json"), sign_in(user, email)).unwrap();
+                    Ok(())
+                }
+                Outcome::Fails(message) => Err(AppServerError::Refused(message.to_owned())),
+                // The real sign-in ends this way once the dialog sets `cancel`; until then the dialog keeps waiting.
+                Outcome::Waits => {
+                    assert!(!cancel.load(Ordering::SeqCst));
+                    Err(AppServerError::Cancelled)
+                }
+            }
+        }
+    }
+
+    /// A Codex `auth.json` for this user and email, with an unsigned ID token.
+    pub fn sign_in(user: &str, email: &str) -> String {
+        let claims = serde_json::json!({"sub": user, "email": email}).to_string();
+        let id_token = format!("e30.{}.sig", base64url(claims.as_bytes()));
+        serde_json::json!({"tokens": {"access_token": "access", "account_id": "workspace-1", "id_token": id_token}})
+            .to_string()
+    }
+
+    fn base64url(bytes: &[u8]) -> String {
+        const DIGITS: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+        let mut out = String::new();
+        for chunk in bytes.chunks(3) {
+            let n = chunk
+                .iter()
+                .enumerate()
+                .fold(0u32, |acc, (ix, byte)| acc | u32::from(*byte) << (16 - 8 * ix));
+            for ix in 0..=chunk.len() {
+                out.push(DIGITS[(n >> (18 - 6 * ix) & 63) as usize] as char);
+            }
+        }
+        out
+    }
+}
+
+use codex_fixture::{FakeCodexSignIn, Outcome};
+
+const MANAGED_CODEX: &str = r#"{ "accountConfigurationVersion": 1, "accounts": [
+    { "id": "cx-1", "providerId": "Codex", "displayLabel": "Work", "enabled": true,
+      "authenticationMethod": "OAuth" } ] }"#;
+
+/// The Accounts page with `fake` standing in for the Codex CLI.
+fn open_codex_accounts(cx: &mut TestAppContext, settings: &TempSettings, fake: &FakeCodexSignIn) -> AnyWindowHandle {
+    let fake = fake.clone();
+    cx.update(|cx| crate::codex_sign_in::init_with(cx, Arc::new(fake)));
+    open_settings_page(cx, settings, MemoryCredentialStore::default(), 1)
+}
+
+fn codex_home(settings: &TempSettings, id: &str) -> PathBuf {
+    settings.0.join("codex").join(id)
+}
+
+#[gpui_kit::test]
+fn a_codex_account_signs_in_through_the_browser_and_shows_who_it_is(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("codex-sign-in", MANAGED_CODEX);
+    let fake = FakeCodexSignIn::new(Outcome::SignsIn("user-1", "dev@example.com"));
+    let handle = open_codex_accounts(cx, &settings, &fake);
+    assert_eq!(
+        label_of(cx, "account-detail-cx-1").as_deref(),
+        Some("OAuth · Not signed in")
+    );
+    assert!(!exists(cx, handle, "sign-out-cx-1"));
+    let requests = cx.update(|cx| SettingsHub::refresh_requests(cx));
+
+    click(cx, handle, "sign-in-cx-1");
+    let home = codex_home(&settings, "cx-1");
+    assert_eq!(*fake.0.begun.lock().unwrap(), std::slice::from_ref(&home));
+    // The home keeps its sign-in in a file the usage fetch reads.
+    let config = std::fs::read_to_string(home.join("config.toml")).unwrap();
+    assert!(config.contains("cli_auth_credentials_store = \"file\""));
+    // Signed in: the dialog closes, the account holds that identity, and the dashboard fetches again.
+    assert!(!exists(cx, handle, "sign-in-status"));
+    let identity = codexbar_providers::codex::signed_in_account(&home.join("auth.json")).unwrap();
+    assert_eq!(
+        saved_settings(&settings).accounts()[0].external_id.as_deref(),
+        Some(identity.as_str())
+    );
+    assert_eq!(
+        label_of(cx, "account-detail-cx-1").as_deref(),
+        Some("OAuth · dev@example.com")
+    );
+    let after_sign_in = cx.update(|cx| SettingsHub::refresh_requests(cx));
+    assert!(after_sign_in > requests);
+    let owned = cx.update(|cx| crate::providers::owned_account_ids(SettingsHub::global(cx)));
+    assert_eq!(owned.get("cx-1"), Some(&identity.as_str().to_owned()));
+
+    // Signing out keeps the account and its identity, so its history waits for the next sign-in.
+    click(cx, handle, "sign-out-cx-1");
+    assert_eq!(*fake.0.signed_out.lock().unwrap(), std::slice::from_ref(&home));
+    assert_eq!(
+        label_of(cx, "account-detail-cx-1").as_deref(),
+        Some("OAuth · Not signed in")
+    );
+    assert_eq!(
+        saved_settings(&settings).accounts()[0].external_id.as_deref(),
+        Some(identity.as_str())
+    );
+    assert!(cx.update(|cx| SettingsHub::refresh_requests(cx)) > after_sign_in);
+}
+
+#[gpui_kit::test]
+fn signing_an_account_in_to_another_identity_replaces_the_one_it_held(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("codex-switch", MANAGED_CODEX);
+    let fake = FakeCodexSignIn::new(Outcome::SignsIn("user-1", "one@example.com"));
+    let handle = open_codex_accounts(cx, &settings, &fake);
+    click(cx, handle, "sign-in-cx-1");
+    let first = saved_settings(&settings).accounts()[0].external_id.clone().unwrap();
+    *fake.0.outcome.lock().unwrap() = Outcome::SignsIn("user-2", "two@example.com");
+    click(cx, handle, "sign-in-cx-1");
+    let second = saved_settings(&settings).accounts()[0].external_id.clone().unwrap();
+    assert_ne!(first, second);
+    assert_eq!(
+        label_of(cx, "account-detail-cx-1").as_deref(),
+        Some("OAuth · two@example.com")
+    );
+}
+
+#[gpui_kit::test]
+fn a_failed_codex_sign_in_says_why_and_changes_nothing(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("codex-sign-in-fails", MANAGED_CODEX);
+    let fake = FakeCodexSignIn::new(Outcome::Fails("Login was cancelled in the browser"));
+    let handle = open_codex_accounts(cx, &settings, &fake);
+    click(cx, handle, "sign-in-cx-1");
+    assert_eq!(
+        label_of(cx, "sign-in-error").as_deref(),
+        Some("Codex: Login was cancelled in the browser")
+    );
+    assert_eq!(saved_settings(&settings).accounts()[0].external_id, None);
+    press(cx, handle, "escape");
+    assert!(!exists(cx, handle, "sign-in-error"));
+}
+
+#[gpui_kit::test]
+fn closing_the_sign_in_dialog_cancels_the_sign_in(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("codex-sign-in-cancel", MANAGED_CODEX);
+    let fake = FakeCodexSignIn::new(Outcome::Waits);
+    let handle = open_codex_accounts(cx, &settings, &fake);
+    click(cx, handle, "sign-in-cx-1");
+    let status = label_of(cx, "sign-in-status").unwrap();
+    assert!(
+        status.starts_with("Finish signing in to ChatGPT in your browser"),
+        "{status}"
+    );
+    assert!(exists(cx, handle, "sign-in-copy"));
+    let cancel = fake.0.cancel.lock().unwrap().clone().unwrap();
+    assert!(!cancel.load(std::sync::atomic::Ordering::SeqCst));
+    press(cx, handle, "escape");
+    assert!(!exists(cx, handle, "sign-in-status"));
+    assert!(
+        cancel.load(std::sync::atomic::Ordering::SeqCst),
+        "closing the dialog cancels the sign-in"
+    );
+    assert_eq!(saved_settings(&settings).accounts()[0].external_id, None);
+}
+
+#[gpui_kit::test]
+fn removing_a_codex_account_signs_it_out_and_deletes_its_folder(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("codex-remove", MANAGED_CODEX);
+    let home = codex_home(&settings, "cx-1");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(
+        home.join("auth.json"),
+        codex_fixture::sign_in("user-1", "dev@example.com"),
+    )
+    .unwrap();
+    let fake = FakeCodexSignIn::default();
+    let handle = open_codex_accounts(cx, &settings, &fake);
+    assert!(exists(cx, handle, "sign-out-cx-1"));
+    click(cx, handle, "remove-cx-1");
+    press(cx, handle, "enter");
+    assert!(saved_settings(&settings).accounts().is_empty());
+    assert_eq!(*fake.0.signed_out.lock().unwrap(), std::slice::from_ref(&home));
+    assert!(!home.exists());
+}
+
+#[gpui_kit::test]
+fn each_codex_account_gets_its_own_adapter(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "codex-adapters",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "cx-1", "providerId": "Codex", "displayLabel": "Work", "enabled": true,
+              "authenticationMethod": "OAuth", "externalAccountId": "codex-aaaaaaaaaaaa" },
+            { "id": "cx-2", "providerId": "Codex", "displayLabel": "Personal", "enabled": true,
+              "authenticationMethod": "OAuth" },
+            { "id": "cx-3", "providerId": "Codex", "displayLabel": "Off", "enabled": false,
+              "authenticationMethod": "OAuth" } ] }"#,
+    );
+    cx.update(|cx| SettingsHub::init_with(cx, &settings.0, Arc::new(MemoryCredentialStore::default())));
+    let adapters = cx.update(|cx| crate::providers::enabled(SettingsHub::global(cx)));
+    let codex: Vec<(Option<String>, Option<String>)> = adapters
+        .iter()
+        .filter(|provider| provider.name() == "ChatGPT · Codex")
+        .map(|provider| {
+            (
+                provider.account_id().map(str::to_owned),
+                provider.account_label().map(str::to_owned),
+            )
+        })
+        .collect();
+    // The identity a signed-in account holds; the record itself before its first sign-in. Disabled accounts don't run.
+    assert_eq!(
+        codex,
+        [
+            (Some("codex-aaaaaaaaaaaa".to_owned()), Some("Work".to_owned())),
+            (Some("cx-2".to_owned()), Some("Personal".to_owned())),
+        ]
+    );
+    let owned = cx.update(|cx| crate::providers::owned_account_ids(SettingsHub::global(cx)));
+    assert_eq!(owned.get("cx-1").map(String::as_str), Some("codex-aaaaaaaaaaaa"));
+    assert!(!owned.contains_key("cx-2"));
+}
+
+#[gpui_kit::test]
+fn a_refresh_request_from_settings_fetches_again(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("refresh-request", "{}");
+    let codex = FakeProvider::new(Provider::Codex, "codex-1", Some(0.3));
+    let _dashboard = open_live(cx, &settings, vec![codex.clone()]);
+    cx.run_until_parked();
+    assert_eq!(codex.calls(), 1);
+    cx.update(SettingsHub::request_refresh);
+    cx.run_until_parked();
+    assert_eq!(
+        codex.calls(),
+        2,
+        "a sign-in is fetched at once, not at the next scheduled refresh"
+    );
+}
+
+#[gpui_kit::test]
+fn adding_a_codex_account_with_oauth_signs_it_in_right_away(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("codex-add", "{}");
+    let fake = FakeCodexSignIn::new(Outcome::SignsIn("user-1", "dev@example.com"));
+    let handle = open_codex_accounts(cx, &settings, &fake);
+    click(cx, handle, "add-Codex");
+    type_text(cx, handle, "Work");
+    // Tab to the sign-in method and choose OAuth: from Automatic, four Downs (the first opens the list) reach it.
+    press(cx, handle, "tab");
+    for _ in 0..4 {
+        press(cx, handle, "down");
+    }
+    press(cx, handle, "enter");
+    click(cx, handle, "account-save");
+    let saved = saved_settings(&settings);
+    let record = &saved.accounts()[0];
+    assert_eq!(
+        (record.label.as_str(), record.method),
+        ("Work", codexbar_store::settings::AuthMethod::OAuth)
+    );
+    assert_eq!(*fake.0.begun.lock().unwrap(), [codex_home(&settings, &record.id)]);
+    assert!(record.external_id.is_some(), "the finished sign-in is remembered");
 }

@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use codexbar_providers::balance::{MoonshotProvider, OpenRouterProvider};
 use codexbar_providers::claude::{ClaudeProvider, default_credentials_path};
-use codexbar_providers::codex::{CodexProvider, default_auth_path};
+use codexbar_providers::codex::{self, CodexCliRenewer, CodexProvider};
 use codexbar_providers::copilot::CopilotProvider;
 use codexbar_providers::cursor::{self, CursorProvider};
 use codexbar_providers::opencode::OpenCodeProvider;
@@ -31,8 +31,32 @@ fn enabled_accounts(hub: &SettingsHub, provider: &str) -> Vec<AccountRecord> {
 
 pub fn enabled(hub: &SettingsHub) -> Vec<Arc<dyn UsageProvider>> {
     let mut providers: Vec<Arc<dyn UsageProvider>> = Vec::new();
-    if !enabled_accounts(hub, names::CODEX).is_empty() {
-        providers.push(Arc::new(CodexProvider::new(UreqClient::new(), default_auth_path())));
+    // One adapter per Codex home (#78): the Codex CLI's own, and one for each account CodexBar signed in.
+    let codex = enabled_accounts(hub, names::CODEX);
+    let several = codex.len() > 1;
+    let mut homes = Vec::new();
+    for record in codex {
+        let path = crate::codex_sign_in::auth_path(hub.dir(), &record);
+        // Two accounts on the Codex CLI's own sign-in would show one ChatGPT account twice.
+        if homes.contains(&path) {
+            continue;
+        }
+        homes.push(path.clone());
+        let managed = crate::codex_sign_in::is_managed(&record);
+        let mut provider = CodexProvider::new(UreqClient::new(), path.clone()).with_renewer(Arc::new(CodexCliRenewer));
+        if managed {
+            provider = provider.managed();
+        }
+        if managed || several {
+            // The identity it was signed in to; before the first sign-in, the record itself.
+            let id = if managed {
+                record.external_id.clone()
+            } else {
+                codex::signed_in_account(&path).map(|id| id.as_str().to_owned())
+            };
+            provider = provider.with_account(id.unwrap_or_else(|| record.id.clone()), record.label.clone());
+        }
+        providers.push(Arc::new(provider));
     }
 
     let copilot = enabled_accounts(hub, names::COPILOT);
@@ -104,9 +128,10 @@ pub fn enabled(hub: &SettingsHub) -> Vec<Arc<dyn UsageProvider>> {
 }
 
 /// The dashboard account each configured record owns (#85), by record id: OpenRouter and Moonshot records report under
-/// their own id, and a Copilot record for one username under that user's id. Removing such a record removes that
-/// dashboard account. Codex, Claude, Cursor, OpenCode, and Copilot without a username keep showing through the
-/// provider's own sign-in after their record is removed, so they own nothing here.
+/// their own id, a Copilot record for one username under that user's id, and a Codex account CodexBar signed in
+/// under the ChatGPT identity it holds (#78). Removing such a record removes that dashboard account. Codex on the
+/// Codex CLI's sign-in, Claude, Cursor, OpenCode, and Copilot without a username keep showing through the provider's
+/// own sign-in after their record is removed, so they own nothing here.
 pub fn owned_account_ids(hub: &SettingsHub) -> HashMap<String, String> {
     hub.settings()
         .accounts()
@@ -114,6 +139,7 @@ pub fn owned_account_ids(hub: &SettingsHub) -> HashMap<String, String> {
         .filter_map(|record| {
             let owned = match record.provider.as_str() {
                 names::OPENROUTER | names::MOONSHOT => record.id.clone(),
+                names::CODEX if crate::codex_sign_in::is_managed(record) => record.external_id.clone()?,
                 names::COPILOT => {
                     let user = record.external_id.as_deref()?.trim();
                     (!user.is_empty()).then(|| codexbar_providers::copilot::account_id(user).as_str().to_owned())?

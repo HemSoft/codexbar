@@ -1,21 +1,36 @@
-//! ChatGPT / Codex subscription limits, read with the ChatGPT sign-in the Codex CLI keeps in `~/.codex/auth.json`.
+//! ChatGPT / Codex subscription limits, read with the ChatGPT sign-in the Codex CLI keeps in a Codex home's
+//! `auth.json`: the CLI's own `~/.codex`, or a home CodexBar signed in through the Codex CLI (#78). Codex writes the
+//! file; this module only reads it, and asks the Codex CLI to renew it shortly before it expires.
 
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use chrono::{DateTime, Duration, TimeZone, Utc};
 use codexbar_core::{AccountId, AccountSnapshot, Metric, Pace, Provider};
 use serde_json::Value;
+use sha2::{Digest as _, Sha256};
 
+use crate::codex_app_server::{AppServer, AppServerError};
 use crate::pace::elapsed_pace;
-use crate::{HttpClient, ProviderError, UsageProvider};
+use crate::{AccountOutcome, HttpClient, ProviderError, UsageProvider};
 
 const USAGE_ENDPOINT: &str = "https://chatgpt.com/backend-api/wham/usage";
 const SIGN_IN_HINT: &str = "Run `codex` and sign in with ChatGPT.";
+/// The hint for a Codex home CodexBar signed in (#78).
+pub const MANAGED_SIGN_IN_HINT: &str = "Sign in again in Settings > Accounts.";
+/// The account of a sign-in whose user can't be read (no ID token).
+const LEGACY_ID: &str = "codex-chatgpt";
+/// A sign-in is renewed when its access token expires within this long.
+const RENEW_AHEAD: Duration = Duration::hours(24);
+/// At most one renewal is tried per home in this long, so a failing one isn't retried on every refresh.
+const RENEW_BACKOFF: std::time::Duration = std::time::Duration::from_secs(15 * 60);
 /// The parts of the Codex sign-in this provider uses.
 #[derive(Clone, PartialEq, Eq)]
 pub struct Credentials {
     access_token: String,
     account_id: Option<String>,
+    id_token: Option<String>,
 }
 
 impl std::fmt::Debug for Credentials {
@@ -23,8 +38,50 @@ impl std::fmt::Debug for Credentials {
         f.debug_struct("Credentials")
             .field("access_token", &"<redacted>")
             .field("account_id", &self.account_id.as_ref().map(|_| "<present>"))
+            .field("id_token", &self.id_token.as_ref().map(|_| "<present>"))
             .finish()
     }
+}
+
+impl Credentials {
+    /// The dashboard account this sign-in belongs to: `codex-` and a short hash of the ChatGPT user and workspace, so
+    /// each identity keeps its own history, label and alerts, and signing a home in to another account never inherits
+    /// them (#78). A sign-in without a readable ID token keeps the legacy id.
+    pub fn account(&self) -> AccountId {
+        let Some(user) = self
+            .claims()
+            .and_then(|claims| crate::jwt::string_claim(&claims, "sub"))
+        else {
+            return AccountId::new(LEGACY_ID);
+        };
+        let workspace = self.account_id.as_deref().unwrap_or_default();
+        let digest = Sha256::digest(format!("{user}\n{workspace}").as_bytes());
+        let short: String = digest.iter().take(6).map(|byte| format!("{byte:02x}")).collect();
+        AccountId::new(format!("codex-{short}"))
+    }
+
+    /// The signed-in email, from the ID token.
+    pub fn email(&self) -> Option<String> {
+        crate::jwt::string_claim(&self.claims()?, "email")
+    }
+
+    fn claims(&self) -> Option<Value> {
+        crate::jwt::claims(self.id_token.as_deref()?)
+    }
+
+    fn expires_at(&self) -> Option<DateTime<Utc>> {
+        crate::jwt::expires_at(&self.access_token)
+    }
+}
+
+/// The account the sign-in in `path` belongs to, when there is one.
+pub fn signed_in_account(path: &Path) -> Option<AccountId> {
+    read_credentials(path).ok().map(|credentials| credentials.account())
+}
+
+/// The email the sign-in in `path` belongs to, when it is known.
+pub fn signed_in_email(path: &Path) -> Option<String> {
+    read_credentials(path).ok()?.email()
 }
 
 /// `$CODEX_HOME/auth.json`, or `~/.codex/auth.json`.
@@ -55,6 +112,7 @@ pub fn read_credentials(path: &Path) -> Result<Credentials, ProviderError> {
     Ok(Credentials {
         access_token,
         account_id: token("account_id", "accountId"),
+        id_token: token("id_token", "idToken"),
     })
 }
 
@@ -152,15 +210,116 @@ impl Window {
     }
 }
 
-/// The Codex provider, generic over HTTP so tests never touch the network.
+/// Asks the Codex CLI to renew a Codex home's sign-in. A seam, so tests never start Codex.
+pub trait Renewer: Send + Sync {
+    fn renew(&self, home: &Path) -> Result<(), AppServerError>;
+}
+
+/// Renews through `codex app-server`, which runs Codex's own token refresh and writes the home's `auth.json`.
+pub struct CodexCliRenewer;
+
+impl Renewer for CodexCliRenewer {
+    fn renew(&self, home: &Path) -> Result<(), AppServerError> {
+        AppServer::start(home)?.renew()
+    }
+}
+
+/// When each home last had a renewal tried. Process-wide, because the dashboard builds its providers anew for every
+/// refresh.
+static LAST_RENEWAL: Mutex<Vec<(PathBuf, Instant)>> = Mutex::new(Vec::new());
+/// The account each sign-in file last fetched for, so a switch between refreshes is noticed.
+static LAST_ACCOUNTS: Mutex<Vec<(PathBuf, AccountId)>> = Mutex::new(Vec::new());
+
+/// The Codex provider for one Codex home, generic over HTTP so tests never touch the network.
 pub struct CodexProvider<H: HttpClient> {
     http: H,
     auth_path: PathBuf,
+    /// The dashboard account and name this adapter reports, when it serves one configured account of several.
+    account: Option<(String, String)>,
+    hint: &'static str,
+    renewer: Option<Arc<dyn Renewer>>,
 }
 
 impl<H: HttpClient> CodexProvider<H> {
     pub fn new(http: H, auth_path: PathBuf) -> Self {
-        Self { http, auth_path }
+        Self {
+            http,
+            auth_path,
+            account: None,
+            hint: SIGN_IN_HINT,
+            renewer: None,
+        }
+    }
+
+    /// Reports one configured account: `id` is the dashboard account it is expected under (its signed-in identity, or
+    /// the record id before a sign-in), `label` its name ("Work", shown as "Work · Pro").
+    pub fn with_account(mut self, id: impl Into<String>, label: impl Into<String>) -> Self {
+        self.account = Some((id.into(), label.into()));
+        self
+    }
+
+    /// A home CodexBar signed in: signing in again happens in Settings, not with `codex`.
+    pub fn managed(mut self) -> Self {
+        self.hint = MANAGED_SIGN_IN_HINT;
+        self
+    }
+
+    /// Renews sign-ins that are about to expire, or were refused, through `renewer`.
+    pub fn with_renewer(mut self, renewer: Arc<dyn Renewer>) -> Self {
+        self.renewer = Some(renewer);
+        self
+    }
+
+    fn read(&self) -> Result<Credentials, ProviderError> {
+        let not_signed_in = ProviderError::NotSignedIn { hint: self.hint };
+        match read_credentials(&self.auth_path) {
+            Ok(credentials) => Ok(credentials),
+            // Codex may be replacing the file right now; one more read after a moment sees the finished file.
+            Err(_) if self.auth_path.is_file() => {
+                std::thread::sleep(std::time::Duration::from_millis(150));
+                read_credentials(&self.auth_path).map_err(|_| not_signed_in)
+            }
+            Err(_) => Err(not_signed_in),
+        }
+    }
+
+    /// Tries a renewal, at most once per home in [`RENEW_BACKOFF`]. True when Codex renewed the sign-in.
+    fn renew(&self) -> bool {
+        let (Some(renewer), Some(home)) = (&self.renewer, self.auth_path.parent()) else {
+            return false;
+        };
+        {
+            let mut last = LAST_RENEWAL.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+            let now = Instant::now();
+            match last.iter_mut().find(|(path, _)| *path == self.auth_path) {
+                Some((_, at)) if now.duration_since(*at) < RENEW_BACKOFF => return false,
+                Some((_, at)) => *at = now,
+                None => last.push((self.auth_path.clone(), now)),
+            }
+        }
+        renewer.renew(home).is_ok()
+    }
+
+    fn usage(&self, credentials: &Credentials, now: DateTime<Utc>) -> Result<AccountSnapshot, ProviderError> {
+        let bearer = format!("Bearer {}", credentials.access_token);
+        let mut headers = vec![("Authorization", bearer.as_str()), ("Accept", "application/json")];
+        if let Some(account_id) = credentials.account_id.as_deref() {
+            headers.push(("ChatGPT-Account-Id", account_id));
+        }
+        let response = self.http.get(USAGE_ENDPOINT, &headers)?;
+        match response.status {
+            200..=299 => parse_usage(&response.body, now),
+            401 | 403 => Err(ProviderError::Expired { hint: self.hint }),
+            status => Err(ProviderError::Http { status }),
+        }
+    }
+
+    fn label_for(&self, plan: Option<&str>) -> Option<String> {
+        match (self.account.as_ref().map(|(_, label)| label.trim()), plan) {
+            (Some(label), Some(plan)) if !label.is_empty() => Some(format!("{label} · {plan}")),
+            (Some(label), None) if !label.is_empty() => Some(label.to_owned()),
+            (_, plan) => plan.map(str::to_owned),
+        }
     }
 }
 
@@ -170,18 +329,70 @@ impl<H: HttpClient> UsageProvider for CodexProvider<H> {
     }
 
     fn fetch(&self, now: DateTime<Utc>) -> Result<Vec<AccountSnapshot>, ProviderError> {
-        let credentials = read_credentials(&self.auth_path)?;
-        let bearer = format!("Bearer {}", credentials.access_token);
-        let mut headers = vec![("Authorization", bearer.as_str()), ("Accept", "application/json")];
-        if let Some(account_id) = credentials.account_id.as_deref() {
-            headers.push(("ChatGPT-Account-Id", account_id));
+        self.fetch_outcomes(now)?
+            .into_iter()
+            .map(|outcome| match outcome {
+                AccountOutcome::Fresh(account) => Ok(account),
+                AccountOutcome::Failed { error, .. } => Err(error),
+            })
+            .collect()
+    }
+
+    /// No sign-in fails the adapter as a whole. A sign-in that expires within a day is renewed first, and a refused
+    /// one is renewed and tried once more. Once the sign-in is read its account is known, so a failed fetch is that
+    /// account's failure, never another identity's.
+    fn fetch_outcomes(&self, now: DateTime<Utc>) -> Result<Vec<AccountOutcome>, ProviderError> {
+        let mut credentials = self.read()?;
+        let mut renewed = false;
+        if credentials.expires_at().is_some_and(|at| at - now < RENEW_AHEAD) && self.renew() {
+            renewed = true;
+            credentials = self.read()?;
         }
-        let response = self.http.get(USAGE_ENDPOINT, &headers)?;
-        match response.status {
-            200..=299 => parse_usage(&response.body, now).map(|account| vec![account]),
-            401 | 403 => Err(ProviderError::Expired { hint: SIGN_IN_HINT }),
-            status => Err(ProviderError::Http { status }),
+        let mut result = self.usage(&credentials, now);
+        if matches!(result, Err(ProviderError::Expired { .. })) && !renewed && self.renew() {
+            credentials = self.read()?;
+            result = self.usage(&credentials, now);
         }
+        let id = credentials.account();
+        let outcome = match result {
+            Ok(usage) => {
+                let mut account = AccountSnapshot::new(id.clone(), Provider::Codex, usage.metrics().to_vec(), now);
+                if let Some(label) = self.label_for(usage.label()) {
+                    account = account.with_label(label);
+                }
+                let mut last = LAST_ACCOUNTS.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+                match last.iter_mut().find(|(path, _)| *path == self.auth_path) {
+                    Some((_, previous)) => {
+                        if *previous != id {
+                            account = account.with_message(
+                                "Signed in to a different ChatGPT account. The previous account's usage stays with it.",
+                            );
+                        }
+                        *previous = id;
+                    }
+                    None => last.push((self.auth_path.clone(), id)),
+                }
+                AccountOutcome::Fresh(account)
+            }
+            Err(error) => AccountOutcome::Failed {
+                account: id,
+                label: self.label_for(None),
+                error,
+            },
+        };
+        Ok(vec![outcome])
+    }
+
+    fn account_id(&self) -> Option<&str> {
+        self.account.as_ref().map(|(id, _)| id.as_str())
+    }
+
+    fn account_label(&self) -> Option<&str> {
+        self.account.as_ref().map(|(_, label)| label.as_str())
+    }
+
+    fn signed_in_account(&self) -> Option<AccountId> {
+        signed_in_account(&self.auth_path)
     }
 }
 
@@ -351,6 +562,224 @@ mod tests {
     fn provider_error_display_never_includes_token() {
         let message = ProviderError::Expired { hint: SIGN_IN_HINT }.to_string();
         assert_eq!(message, "Sign-in expired. Run `codex` and sign in with ChatGPT.");
+    }
+
+    /// Answers each GET with the next status in turn, recording the bearer token each one carried.
+    struct Sequence {
+        statuses: Mutex<Vec<u16>>,
+        bearers: Mutex<Vec<String>>,
+    }
+
+    impl Sequence {
+        fn new(statuses: &[u16]) -> Self {
+            Self {
+                statuses: Mutex::new(statuses.iter().rev().copied().collect()),
+                bearers: Mutex::default(),
+            }
+        }
+    }
+
+    impl HttpClient for Sequence {
+        fn get(&self, _: &str, headers: &[(&str, &str)]) -> Result<HttpResponse, ProviderError> {
+            let bearer = headers
+                .iter()
+                .find(|(name, _)| *name == "Authorization")
+                .map(|(_, v)| (*v).to_owned());
+            self.bearers.lock().unwrap().push(bearer.unwrap_or_default());
+            let status = self.statuses.lock().unwrap().pop().unwrap_or(500);
+            Ok(HttpResponse::new(status, if status == 200 { FIXTURE } else { "" }))
+        }
+    }
+
+    /// Stands in for Codex: a renewal rewrites the sign-in file with `renewed`, or fails.
+    struct FakeRenewer {
+        path: PathBuf,
+        renewed: Option<String>,
+        calls: Mutex<u32>,
+    }
+
+    impl Renewer for FakeRenewer {
+        fn renew(&self, home: &Path) -> Result<(), AppServerError> {
+            assert_eq!(Some(home), self.path.parent());
+            *self.calls.lock().unwrap() += 1;
+            match &self.renewed {
+                Some(contents) => {
+                    std::fs::write(&self.path, contents).unwrap();
+                    Ok(())
+                }
+                None => Err(AppServerError::Refused("refresh token expired".to_owned())),
+            }
+        }
+    }
+
+    fn renewer(file: &tempfile_lite::TempFile, renewed: Option<String>) -> Arc<FakeRenewer> {
+        Arc::new(FakeRenewer {
+            path: file.path().to_path_buf(),
+            renewed,
+            calls: Mutex::new(0),
+        })
+    }
+
+    fn id_token(sub: &str, email: &str) -> String {
+        crate::jwt::tests::token(&serde_json::json!({"sub": sub, "email": email}))
+    }
+
+    /// A sign-in whose access token expires at `exp` (Unix seconds).
+    fn sign_in(access: &str, exp: i64, sub: &str) -> String {
+        let access = crate::jwt::tests::token(&serde_json::json!({"exp": exp, "tag": access}));
+        serde_json::json!({"tokens": {
+            "access_token": access,
+            "account_id": "workspace-1",
+            "id_token": id_token(sub, "dev@example.com"),
+        }})
+        .to_string()
+    }
+
+    fn bearer_of(contents: &str) -> String {
+        let json: Value = serde_json::from_str(contents).unwrap();
+        format!("Bearer {}", json["tokens"]["access_token"].as_str().unwrap())
+    }
+
+    #[test]
+    fn each_chatgpt_identity_is_its_own_account() {
+        let read = |contents: String| {
+            let file = auth_file(&contents);
+            read_credentials(file.path()).unwrap()
+        };
+        let first = read(sign_in("a", 0, "user-1"));
+        let other_user = read(sign_in("a", 0, "user-2"));
+        assert!(first.account().as_str().starts_with("codex-") && first.account().as_str().len() == 18);
+        assert_ne!(first.account(), other_user.account());
+        assert_eq!(first.account(), read(sign_in("renewed", 1, "user-1")).account());
+        let other_workspace = read(sign_in("a", 0, "user-1").replace("workspace-1", "workspace-2"));
+        assert_ne!(first.account(), other_workspace.account());
+        assert_eq!(first.email().as_deref(), Some("dev@example.com"));
+        // No ID token: the legacy id, and no email.
+        let legacy = read(r#"{"tokens":{"access_token":"tok"}}"#.to_owned());
+        assert_eq!(legacy.account().as_str(), LEGACY_ID);
+        assert_eq!(legacy.email(), None);
+        let file = auth_file(&sign_in("a", 0, "user-1"));
+        assert_eq!(signed_in_account(file.path()), Some(first.account()));
+        assert_eq!(signed_in_email(file.path()).as_deref(), Some("dev@example.com"));
+    }
+
+    #[test]
+    fn a_sign_in_about_to_expire_is_renewed_before_fetching() {
+        let soon = (now() + Duration::hours(2)).timestamp();
+        let later = (now() + Duration::days(9)).timestamp();
+        let file = auth_file(&sign_in("old", soon, "user-1"));
+        let renewed = sign_in("new", later, "user-1");
+        let renewer = renewer(&file, Some(renewed.clone()));
+        let provider =
+            CodexProvider::new(Sequence::new(&[200]), file.path().to_path_buf()).with_renewer(renewer.clone());
+        let accounts = provider.fetch(now()).unwrap();
+        assert_eq!(*renewer.calls.lock().unwrap(), 1);
+        assert_eq!(*provider.http.bearers.lock().unwrap(), [bearer_of(&renewed)]);
+        assert_eq!(accounts[0].id(), &read_credentials(file.path()).unwrap().account());
+    }
+
+    #[test]
+    fn a_fresh_sign_in_is_not_renewed() {
+        let later = (now() + Duration::days(9)).timestamp();
+        let file = auth_file(&sign_in("tok", later, "user-1"));
+        let renewer = renewer(&file, Some(String::new()));
+        let provider =
+            CodexProvider::new(Sequence::new(&[200]), file.path().to_path_buf()).with_renewer(renewer.clone());
+        provider.fetch(now()).unwrap();
+        assert_eq!(*renewer.calls.lock().unwrap(), 0);
+    }
+
+    #[test]
+    fn a_refused_sign_in_is_renewed_and_tried_once_more() {
+        let later = (now() + Duration::days(9)).timestamp();
+        let file = auth_file(&sign_in("revoked", later, "user-1"));
+        let renewed = sign_in("new", later, "user-1");
+        let renewer = renewer(&file, Some(renewed.clone()));
+        let provider =
+            CodexProvider::new(Sequence::new(&[401, 200]), file.path().to_path_buf()).with_renewer(renewer.clone());
+        assert_eq!(provider.fetch(now()).unwrap().len(), 1);
+        assert_eq!(*renewer.calls.lock().unwrap(), 1);
+        let bearers = provider.http.bearers.lock().unwrap().clone();
+        assert_eq!(bearers.len(), 2);
+        assert!(bearers[1] == bearer_of(&renewed), "the retry uses the renewed token");
+    }
+
+    #[test]
+    fn a_failed_renewal_is_the_account_s_expiry_and_waits_before_trying_again() {
+        let soon = (now() + Duration::hours(1)).timestamp();
+        let file = auth_file(&sign_in("old", soon, "user-1"));
+        let renewer = renewer(&file, None);
+        let provider = CodexProvider::new(Sequence::new(&[401, 401]), file.path().to_path_buf())
+            .with_renewer(renewer.clone())
+            .managed()
+            .with_account("record-1", "Work");
+        let outcomes = provider.fetch_outcomes(now()).unwrap();
+        let AccountOutcome::Failed { account, label, error } = &outcomes[0] else {
+            panic!("expected a failure");
+        };
+        assert_eq!(account, &read_credentials(file.path()).unwrap().account());
+        assert_eq!(label.as_deref(), Some("Work"));
+        assert_eq!(
+            error,
+            &ProviderError::Expired {
+                hint: MANAGED_SIGN_IN_HINT
+            }
+        );
+        // The 401 doesn't trigger a second renewal right after the failed one, nor does the next refresh.
+        assert_eq!(*renewer.calls.lock().unwrap(), 1);
+        provider.fetch_outcomes(now()).unwrap();
+        assert_eq!(*renewer.calls.lock().unwrap(), 1);
+    }
+
+    #[test]
+    fn a_managed_home_without_a_sign_in_says_to_sign_in_from_settings() {
+        let missing = std::env::temp_dir()
+            .join("codexbar-test-missing-home")
+            .join("auth.json");
+        let provider = CodexProvider::new(Sequence::new(&[]), missing).managed();
+        assert_eq!(
+            provider.fetch_outcomes(now()).err(),
+            Some(ProviderError::NotSignedIn {
+                hint: MANAGED_SIGN_IN_HINT
+            })
+        );
+    }
+
+    #[test]
+    fn a_configured_account_is_named_after_its_label_and_plan() {
+        let later = (now() + Duration::days(9)).timestamp();
+        let file = auth_file(&sign_in("tok", later, "user-1"));
+        let provider =
+            CodexProvider::new(Sequence::new(&[200]), file.path().to_path_buf()).with_account("record-1", "Work");
+        assert_eq!(provider.account_id(), Some("record-1"));
+        assert_eq!(provider.account_label(), Some("Work"));
+        let account = provider.fetch(now()).unwrap().remove(0);
+        assert_eq!(account.label(), Some("Work · Pro"));
+        assert_eq!(provider.signed_in_account().as_ref(), Some(account.id()));
+    }
+
+    #[test]
+    fn signing_a_home_in_to_another_identity_starts_a_separate_account() {
+        let later = (now() + Duration::days(9)).timestamp();
+        let file = auth_file(&sign_in("tok", later, "user-1"));
+        let fetch = || {
+            CodexProvider::new(Sequence::new(&[200]), file.path().to_path_buf())
+                .fetch(now())
+                .unwrap()
+                .remove(0)
+        };
+        let first = fetch();
+        assert!(first.messages().is_empty());
+        std::fs::write(file.path(), sign_in("tok", later, "user-2")).unwrap();
+        let second = fetch();
+        assert_ne!(second.id(), first.id());
+        assert!(
+            second
+                .messages()
+                .iter()
+                .any(|text| text.contains("different ChatGPT account"))
+        );
+        assert!(fetch().messages().is_empty());
     }
 
     /// A minimal self-deleting temp file, to avoid a dev-dependency for three tests.

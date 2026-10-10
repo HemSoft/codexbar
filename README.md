@@ -8,7 +8,7 @@ Built with Rust, [GPUI](https://www.gpui.rs/) and [gpui-kit](https://gpui-kit.co
 
 | Provider | Auth Method | What's Tracked |
 |----------|-------------|----------------|
-| **ChatGPT / Codex** | Codex CLI ChatGPT login (`~/.codex/auth.json`) | 5-hour + weekly usage limits |
+| **ChatGPT / Codex** | Codex CLI ChatGPT login (`~/.codex/auth.json`), or browser sign-in per account through the Codex CLI | 5-hour + weekly usage limits |
 | **Claude** | Claude Code login (`~/.claude/.credentials.json`) | Session + weekly limits, extra-usage spend |
 | **Copilot** | GitHub CLI (`gh auth`) | Usage limits per account |
 | **Cursor** | Cursor app sign-in (`%APPDATA%\Cursor\auth.json`) | Plan usage and spend |
@@ -48,7 +48,7 @@ development, `cargo run -p codexbar-app -- --demo` starts the dashboard with sam
 
 ### Provider setup
 
-1. **ChatGPT / Codex**: Run `codex` and sign in with your ChatGPT account
+1. **ChatGPT / Codex**: Run `codex` and sign in with your ChatGPT account. For more accounts, add a Codex account with the OAuth sign-in method in Settings > Accounts; CodexBar signs it in with your browser through the Codex CLI
 2. **Claude**: Run `claude` and sign in
 3. **Copilot**: Uses GitHub CLI tokens — run `gh auth login` for each account
 4. **Cursor**: Sign in to the Cursor app

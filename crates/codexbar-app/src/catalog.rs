@@ -26,10 +26,11 @@ pub const PROVIDERS: [ProviderInfo; 8] = [
     ProviderInfo {
         id: names::CODEX,
         display: "ChatGPT · Codex",
-        sign_in: "Uses the ChatGPT sign-in from the Codex CLI (`codex`).",
+        sign_in: "Automatic uses the Codex CLI's own ChatGPT sign-in (`codex`). OAuth signs an account in with your browser \
+                  through the Codex CLI and keeps it separate, so several ChatGPT accounts can be added.",
         secret: None,
         default_method: AuthMethod::Automatic,
-        multi_account: false,
+        multi_account: true,
     },
     ProviderInfo {
         id: names::CLAUDE,
