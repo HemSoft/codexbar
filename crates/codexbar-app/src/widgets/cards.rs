@@ -241,7 +241,10 @@ impl TileView {
     /// The tile for `account`'s `metric` (its primary one when `None`), shown as `mode`.
     fn of(account: &WidgetAccount, metric: Option<&str>, mode: TileMode, now: DateTime<Utc>) -> Self {
         if account.health == WidgetHealth::Unavailable {
-            return Self::message(Some(&account.id), account.name.clone(), mode, "Unavailable");
+            // The tap still opens the tile's metric, for when the account recovers.
+            let mut view = Self::message(Some(&account.id), account.name.clone(), mode, "Unavailable");
+            view.metric = metric.map(str::to_owned);
+            return view;
         }
         let found = match metric {
             Some(key) => account.metrics.iter().find(|m| m.key == key),
@@ -267,6 +270,13 @@ impl TileView {
             .filter(|at| *at > now)
             .map(|at| format!("Resets in {}", countdown(at - now)));
         let (line, big, percent, note) = match mode {
+            // A bar for limits; money (no percentage) shows its amount large.
+            TileMode::Automatic if found.used_percent.is_none() => (
+                Some(found.label.clone()),
+                Some(found.value.clone()),
+                None,
+                freshness.or(account.status.clone()),
+            ),
             TileMode::Automatic => (line, None, found.used_percent, freshness.or(account.status.clone())),
             TileMode::Percent => (
                 Some(found.label.clone()),
@@ -830,6 +840,22 @@ mod tests {
         assert_eq!(status.big.as_deref(), Some("At risk"));
         assert_eq!(ok.big.as_deref(), Some("OK"), "a normal account reads OK");
         assert!(views.iter().all(|view| view.account.is_some() && view.metric.is_some()));
+    }
+
+    #[test]
+    fn automatic_money_tiles_show_the_amount_large_and_unavailable_tiles_keep_their_metric() {
+        let mut snapshot = custom(&[("a", "credits", TileMode::Automatic), ("b", "weekly", TileMode::Bar)]);
+        snapshot.as_mut().unwrap().accounts[1].health = WidgetHealth::Unavailable;
+        let views = views(&snapshot, Tiles::Two, Size::Large);
+        assert_eq!(views[0].big.as_deref(), Some("$12.30 left"));
+        assert_eq!(views[0].line.as_deref(), Some("Credits"));
+        assert_eq!(views[0].percent, None);
+        assert_eq!(views[1].note.as_deref(), Some("Unavailable"));
+        assert_eq!(
+            views[1].metric.as_deref(),
+            Some("weekly"),
+            "the tap opens the tile's metric"
+        );
     }
 
     #[test]

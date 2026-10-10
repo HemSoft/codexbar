@@ -109,6 +109,9 @@ fn main() {
         std::process::exit(if matches!(written, Some(Ok(()))) { 0 } else { 1 });
     }
     let focus = handoff::FocusRequest::from_args(std::env::args());
+    // The handoff event exists before this instance takes the single-instance lock, so a later launch that finds
+    // the lock taken always reaches a live event (one this instance holds open) rather than one it creates alone.
+    let handoff_event = handoff::listen(&instance());
     if already_running() {
         // A widget tile (#95) or a second launch: the running CodexBar shows its window, on the tile's account.
         if let Some(request) = &focus {
@@ -117,110 +120,112 @@ fn main() {
         handoff::signal(&instance());
         return;
     }
-    gpui_kit::application().with_assets(gpui_kit::assets::Assets).run(|cx| {
-        gpui_kit::init(cx);
-        settings_hub::SettingsHub::init(cx);
-        codex_sign_in::init(cx);
-        claude_sign_in::init(cx);
-        cursor_sign_in::init(cx);
-        github_sign_in::init(cx);
-        github_sign_in::clean_up(cx);
-        let dir = settings_hub::SettingsHub::global(cx).dir().to_owned();
-        if is_demo() {
-            prefs_hub::PrefsHub::init_in_memory(cx);
-        } else {
-            prefs_hub::PrefsHub::init(cx, &dir);
-        }
-        // After the preferences, so the saved appearance applies from the first frame.
-        theme::init(cx);
-        // The demo never pops real notifications; its alerts are kept in memory.
-        let notifier: std::sync::Arc<dyn notifications::Notifier> = if is_demo() {
-            std::sync::Arc::new(notifications::RecordingNotifier::default())
-        } else {
-            std::sync::Arc::new(notifications::WindowsNotifier::new())
-        };
-        notifications::Notifications::init(cx, notifier, !is_demo());
-        zoom::init(cx);
-        // The demo never checks the real update channel.
-        package::Updates::init(cx, !is_demo());
-        if !is_demo() {
-            package::migrate_startup(&dir);
-        }
-        package::StartupSetting::init(cx);
+    gpui_kit::application()
+        .with_assets(gpui_kit::assets::Assets)
+        .run(move |cx| {
+            gpui_kit::init(cx);
+            settings_hub::SettingsHub::init(cx);
+            codex_sign_in::init(cx);
+            claude_sign_in::init(cx);
+            cursor_sign_in::init(cx);
+            github_sign_in::init(cx);
+            github_sign_in::clean_up(cx);
+            let dir = settings_hub::SettingsHub::global(cx).dir().to_owned();
+            if is_demo() {
+                prefs_hub::PrefsHub::init_in_memory(cx);
+            } else {
+                prefs_hub::PrefsHub::init(cx, &dir);
+            }
+            // After the preferences, so the saved appearance applies from the first frame.
+            theme::init(cx);
+            // The demo never pops real notifications; its alerts are kept in memory.
+            let notifier: std::sync::Arc<dyn notifications::Notifier> = if is_demo() {
+                std::sync::Arc::new(notifications::RecordingNotifier::default())
+            } else {
+                std::sync::Arc::new(notifications::WindowsNotifier::new())
+            };
+            notifications::Notifications::init(cx, notifier, !is_demo());
+            zoom::init(cx);
+            // The demo never checks the real update channel.
+            package::Updates::init(cx, !is_demo());
+            if !is_demo() {
+                package::migrate_startup(&dir);
+            }
+            package::StartupSetting::init(cx);
 
-        let bounds = Bounds::centered(None, size(px(1440.), px(960.)), cx);
-        let options = WindowOptions {
-            window_bounds: Some(WindowBounds::Windowed(bounds)),
-            window_min_size: Some(size(px(1040.), px(720.))),
-            ..TitleBar::window_options()
-        };
+            let bounds = Bounds::centered(None, size(px(1440.), px(960.)), cx);
+            let options = WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(bounds)),
+                window_min_size: Some(size(px(1040.), px(720.))),
+                ..TitleBar::window_options()
+            };
 
-        let (handle, dashboard) = gpui_kit::open_window(options, cx, |window, cx| {
-            // Closing hides: the window lives as long as the app, so the tray reopens the last view instantly.
-            window.on_window_should_close(cx, |window, _| {
-                tray::hide(window);
-                false
-            });
-            cx.new(|cx| Dashboard::new(data_source(), window, cx))
-        })
-        .expect("failed to open the dashboard window");
-        // Start with Windows (the package's startup task) goes straight to the notification area.
-        if package::launched_at_startup() {
-            let _ = cx.update_window(handle, |_, window, _| tray::hide(window));
-        } else {
-            cx.activate(true);
-        }
-        if std::env::args().any(|arg| arg == "--settings") {
-            dashboard.update(cx, |dashboard, cx| dashboard.show_view(DashboardView::Settings, cx));
-        }
-        if let Some(request) = focus {
-            dashboard.update(cx, |dashboard, cx| dashboard.focus_account(&request, cx));
-        }
-        // Later launches hand over here: show the window, on the requested account when there is one.
-        if let Some(event) = handoff::listen(&instance()) {
-            let focus_target = dashboard.clone();
-            let request_dir = dir.clone();
-            cx.spawn(async move |cx| {
-                loop {
-                    cx.background_executor()
-                        .timer(std::time::Duration::from_millis(250))
-                        .await;
-                    if !handoff::signaled(event) {
-                        continue;
-                    }
-                    let request = handoff::take_request(&request_dir);
-                    cx.update(|cx| {
-                        if let Some(request) = &request {
-                            focus_target.update(cx, |dashboard, cx| dashboard.focus_account(request, cx));
+            let (handle, dashboard) = gpui_kit::open_window(options, cx, |window, cx| {
+                // Closing hides: the window lives as long as the app, so the tray reopens the last view instantly.
+                window.on_window_should_close(cx, |window, _| {
+                    tray::hide(window);
+                    false
+                });
+                cx.new(|cx| Dashboard::new(data_source(), window, cx))
+            })
+            .expect("failed to open the dashboard window");
+            // Start with Windows (the package's startup task) goes straight to the notification area.
+            if package::launched_at_startup() {
+                let _ = cx.update_window(handle, |_, window, _| tray::hide(window));
+            } else {
+                cx.activate(true);
+            }
+            if std::env::args().any(|arg| arg == "--settings") {
+                dashboard.update(cx, |dashboard, cx| dashboard.show_view(DashboardView::Settings, cx));
+            }
+            if let Some(request) = focus {
+                dashboard.update(cx, |dashboard, cx| dashboard.focus_account(&request, cx));
+            }
+            // Later launches hand over here: show the window, on the requested account when there is one.
+            if let Some(event) = handoff_event {
+                let focus_target = dashboard.clone();
+                let request_dir = dir.clone();
+                cx.spawn(async move |cx| {
+                    loop {
+                        cx.background_executor()
+                            .timer(std::time::Duration::from_millis(250))
+                            .await;
+                        if !handoff::signaled(event) {
+                            continue;
                         }
-                        let _ = cx.update_window(handle, |_, window, _| tray::show(window));
+                        let request = handoff::take_request(&request_dir);
+                        cx.update(|cx| {
+                            if let Some(request) = &request {
+                                focus_target.update(cx, |dashboard, cx| dashboard.focus_account(request, cx));
+                            }
+                            let _ = cx.update_window(handle, |_, window, _| tray::show(window));
+                        });
+                    }
+                })
+                .detach();
+            }
+
+            let tooltip_source = dashboard.clone();
+            let result = tray::init(cx, move |command, cx| match command {
+                TrayCommand::Toggle | TrayCommand::Open => {
+                    let _ = cx.update_window(handle, |_, window, cx| {
+                        let hide = command == TrayCommand::Toggle && dashboard.read(cx).should_hide_on_toggle(window);
+                        if hide { tray::hide(window) } else { tray::show(window) }
                     });
                 }
-            })
-            .detach();
-        }
-
-        let tooltip_source = dashboard.clone();
-        let result = tray::init(cx, move |command, cx| match command {
-            TrayCommand::Toggle | TrayCommand::Open => {
-                let _ = cx.update_window(handle, |_, window, cx| {
-                    let hide = command == TrayCommand::Toggle && dashboard.read(cx).should_hide_on_toggle(window);
-                    if hide { tray::hide(window) } else { tray::show(window) }
-                });
-            }
-            TrayCommand::Refresh => dashboard.update(cx, |dashboard, cx| dashboard.refresh(cx)),
-            TrayCommand::Settings => {
-                dashboard.update(cx, |dashboard, cx| dashboard.show_view(DashboardView::Settings, cx));
+                TrayCommand::Refresh => dashboard.update(cx, |dashboard, cx| dashboard.refresh(cx)),
+                TrayCommand::Settings => {
+                    dashboard.update(cx, |dashboard, cx| dashboard.show_view(DashboardView::Settings, cx));
+                    let _ = cx.update_window(handle, |_, window, _| tray::show(window));
+                }
+                TrayCommand::Quit => cx.quit(),
+            });
+            if let Err(err) = result {
+                eprintln!("codexbar: tray icon unavailable: {err}");
+                // Without a tray icon the window is the only way in, even after a start with Windows.
                 let _ = cx.update_window(handle, |_, window, _| tray::show(window));
             }
-            TrayCommand::Quit => cx.quit(),
+            // Restored accounts were shown before the tray icon existed; give it their text now.
+            tooltip_source.update(cx, |dashboard, cx| dashboard.publish_tooltip(cx));
         });
-        if let Err(err) = result {
-            eprintln!("codexbar: tray icon unavailable: {err}");
-            // Without a tray icon the window is the only way in, even after a start with Windows.
-            let _ = cx.update_window(handle, |_, window, _| tray::show(window));
-        }
-        // Restored accounts were shown before the tray icon existed; give it their text now.
-        tooltip_source.update(cx, |dashboard, cx| dashboard.publish_tooltip(cx));
-    });
 }
