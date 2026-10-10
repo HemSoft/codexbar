@@ -58,17 +58,39 @@ fn sign_in_link(line: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// Where a sign-in runs before it replaces the account's: a folder of its own inside the account's, so a sign-in
+/// always starts signed out (`cursor-agent login` on a signed-in folder only says it is already signed in), and the
+/// account's current sign-in stays as it is until the new one has succeeded.
+fn staging(home: &Path) -> PathBuf {
+    home.join("signing-in")
+}
+
+/// Moves a finished staging sign-in into the account's folder, replacing the one before. Without a sign-in in
+/// staging nothing changes.
+fn adopt_staged(home: &Path) -> Result<(), CursorCliError> {
+    let signed_in = auth_path(&staging(home));
+    crate::cursor::read_access_token(&signed_in).map_err(|_| CursorCliError::Failed)?;
+    let target = auth_path(home);
+    std::fs::create_dir_all(target.parent().unwrap_or(home)).map_err(|_| CursorCliError::Failed)?;
+    // One rename replaces the file whole, so a reader sees the old sign-in or the new one, never half of it.
+    std::fs::rename(&signed_in, &target).map_err(|_| CursorCliError::Failed)
+}
+
 /// A `cursor-agent login` waiting for the browser.
 pub struct PendingLogin {
     process: crate::contained::Contained,
     url: String,
-    auth: PathBuf,
+    home: PathBuf,
 }
 
 impl PendingLogin {
-    /// Starts `cursor-agent login` for `home` and waits for the sign-in page.
-    pub fn start(home: &Path) -> Result<Self, CursorCliError> {
-        let mut command = cursor_agent(home)?;
+    /// Starts `cursor-agent login` for `home`, in a fresh staging folder, and waits for the sign-in page, until
+    /// `cancel` is set.
+    pub fn start(home: &Path, cancel: &AtomicBool) -> Result<Self, CursorCliError> {
+        let staging = staging(home);
+        let _ = std::fs::remove_dir_all(&staging);
+        std::fs::create_dir_all(&staging).map_err(|_| CursorCliError::Failed)?;
+        let mut command = cursor_agent(&staging)?;
         command
             .arg("login")
             .stdin(Stdio::null())
@@ -105,11 +127,11 @@ impl PendingLogin {
             });
         }
         drop(sender);
-        let url = wait_for_link(&lines, START_TIMEOUT);
+        let url = wait_for_link(&lines, START_TIMEOUT, cancel);
         let mut pending = Self {
             process,
             url: String::new(),
-            auth: auth_path(home),
+            home: home.to_owned(),
         };
         match url {
             Ok(url) => {
@@ -127,8 +149,9 @@ impl PendingLogin {
         &self.url
     }
 
-    /// Waits until `cursor-agent` exits after the browser sign-in, and checks it succeeded and left a sign-in.
-    /// Cancellation or the timeout stops it.
+    /// Waits until `cursor-agent` exits after the browser sign-in and checks it succeeded and left a sign-in, then
+    /// moves that sign-in into the account's folder, replacing the one before. Cancellation, a failure or the
+    /// timeout stops the CLI and leaves the account's sign-in as it was.
     pub fn finish(mut self, timeout: Duration, cancel: &AtomicBool) -> Result<(), CursorCliError> {
         let deadline = Instant::now() + timeout;
         loop {
@@ -146,9 +169,7 @@ impl PendingLogin {
                 Ok(None) => std::thread::sleep(POLL),
             }
         }
-        crate::cursor::read_access_token(&self.auth)
-            .map(|_| ())
-            .map_err(|_| CursorCliError::Failed)
+        adopt_staged(&self.home)
     }
 
     fn stop(&mut self) {
@@ -157,15 +178,28 @@ impl PendingLogin {
     }
 }
 
-fn wait_for_link(lines: &Receiver<String>, timeout: Duration) -> Result<String, CursorCliError> {
+impl Drop for PendingLogin {
+    fn drop(&mut self) {
+        // The CLI ends with its job; the staging folder goes with it, whatever happened.
+        self.stop();
+        let _ = std::fs::remove_dir_all(staging(&self.home));
+    }
+}
+
+fn wait_for_link(lines: &Receiver<String>, timeout: Duration, cancel: &AtomicBool) -> Result<String, CursorCliError> {
     let deadline = Instant::now() + timeout;
     loop {
-        match lines.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+        if cancel.load(Ordering::SeqCst) {
+            return Err(CursorCliError::Cancelled);
+        }
+        let step = POLL.min(deadline.saturating_duration_since(Instant::now()));
+        match lines.recv_timeout(step) {
             Ok(line) => {
                 if let Some(url) = sign_in_link(&line) {
                     return Ok(url);
                 }
             }
+            Err(RecvTimeoutError::Timeout) if Instant::now() < deadline => {}
             Err(RecvTimeoutError::Timeout) => return Err(CursorCliError::TimedOut),
             Err(RecvTimeoutError::Disconnected) => return Err(CursorCliError::Failed),
         }
@@ -270,6 +304,37 @@ mod tests {
     }
 
     #[test]
+    fn a_finished_sign_in_replaces_the_account_s_and_nothing_else_does() {
+        let home = std::env::temp_dir().join(format!("codexbar-cursor-adopt-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&home);
+        let write = |path: PathBuf, token: &str| {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, format!(r#"{{"accessToken":"{token}"}}"#)).unwrap();
+        };
+        write(auth_path(&home), "old");
+        // Nothing signed in yet in staging: the account keeps its sign-in.
+        assert_eq!(adopt_staged(&home), Err(CursorCliError::Failed));
+        assert!(std::fs::read_to_string(auth_path(&home)).unwrap().contains("old"));
+        // A finished sign-in replaces it.
+        write(auth_path(&staging(&home)), "new");
+        assert_eq!(adopt_staged(&home), Ok(()));
+        assert!(std::fs::read_to_string(auth_path(&home)).unwrap().contains("new"));
+        assert!(!auth_path(&staging(&home)).exists());
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn a_link_wait_stops_when_cancelled() {
+        let (_sender, lines) = channel::<String>();
+        let started = Instant::now();
+        assert_eq!(
+            wait_for_link(&lines, Duration::from_secs(60), &AtomicBool::new(true)),
+            Err(CursorCliError::Cancelled)
+        );
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
     fn every_cursor_command_acts_on_its_own_folder_only() {
         let home = std::env::temp_dir().join("codexbar-cursor-home");
         let command = command_for(Path::new("cursor-agent.cmd"), &home);
@@ -294,13 +359,14 @@ mod tests {
     fn the_installed_cursor_cli_shows_a_sign_in_page() {
         let home = std::env::temp_dir().join(format!("codexbar-live-cursor-{}", std::process::id()));
         std::fs::create_dir_all(&home).unwrap();
-        let login = PendingLogin::start(&home).expect("cursor-agent prints the page");
+        let login = PendingLogin::start(&home, &AtomicBool::new(false)).expect("cursor-agent prints the page");
         assert!(login.url().starts_with("https://cursor.com/"), "{}", login.url());
         assert_eq!(
             login.finish(Duration::from_secs(5), &AtomicBool::new(true)),
             Err(CursorCliError::Cancelled)
         );
         assert!(!auth_path(&home).exists());
+        assert!(!staging(&home).exists(), "the staging folder goes with the sign-in");
         assert_eq!(email(&home), None);
         let _ = std::fs::remove_dir_all(&home);
     }

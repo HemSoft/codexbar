@@ -99,7 +99,7 @@ struct CursorCli;
 
 impl SignInService for CursorCli {
     fn begin(&self, home: &Path, cancel: &AtomicBool) -> Result<Box<dyn PendingSignIn>, CursorCliError> {
-        let login = PendingLogin::start(home)?;
+        let login = PendingLogin::start(home, cancel)?;
         if cancel.load(Ordering::SeqCst) {
             return Err(CursorCliError::Cancelled);
         }
