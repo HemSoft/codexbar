@@ -1019,13 +1019,76 @@ fn widgets_page() -> SettingPage {
 }
 
 fn about_page() -> SettingPage {
+    use crate::package::{self, Updates};
+    let installed = package::installed();
+    let version = installed.map_or_else(
+        || SharedString::from(env!("CARGO_PKG_VERSION")),
+        |installed| SharedString::from(installed.version.clone()),
+    );
+    let build = SharedString::from(package::BUILD.unwrap_or("Development build"));
+    let source = SharedString::from(match installed {
+        None => "Built from source with run.ps1".to_owned(),
+        Some(package::Installed {
+            app_installer: Some(channel),
+            ..
+        }) => format!("MSIX package, updates from {channel}"),
+        Some(_) => "MSIX package, installed without an update channel".to_owned(),
+    });
     SettingPage::new("About").icon(IconName::Info).group(
         SettingGroup::new()
             .title("CodexBar for Windows")
             .item(SettingItem::new(
                 "Version",
-                SettingField::render(|_, _, _| env!("CARGO_PKG_VERSION")),
+                SettingField::render(move |_, _, _| version.clone()),
             ))
+            .item(SettingItem::new(
+                "Build",
+                SettingField::render(move |_, _, _| build.clone()),
+            ))
+            .item(SettingItem::new(
+                "Installed as",
+                SettingField::render(move |_, _, _| source.clone()),
+            ))
+            .item(SettingItem::render(|_, _, cx| {
+                let state = Updates::state(cx);
+                h_flex()
+                    .w_full()
+                    .gap_3()
+                    .items_center()
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .child(div().font_semibold().child("Updates"))
+                            .child(
+                                div()
+                                    .id("update-status")
+                                    .role(Role::Status)
+                                    .test_support()
+                                    .aria_label(SharedString::from(state.label()))
+                                    .text_sm()
+                                    .text_color(cx.theme().muted_foreground)
+                                    .child(state.label()),
+                            ),
+                    )
+                    .when(state.can_install(), |this| {
+                        this.child(
+                            Button::new("install-update")
+                                .small()
+                                .primary()
+                                .label("Install and restart")
+                                .on_click(|_, _, cx| Updates::install_now(cx)),
+                        )
+                    })
+                    .child(
+                        Button::new("check-updates")
+                            .small()
+                            .outline()
+                            .label("Check now")
+                            .disabled(!state.can_check())
+                            .on_click(|_, _, cx| Updates::check_now(cx)),
+                    )
+            }))
             .item(SettingItem::new(
                 "Settings file",
                 SettingField::render(|_, _, cx| {
@@ -1033,13 +1096,24 @@ fn about_page() -> SettingPage {
                 }),
             ))
             .item(SettingItem::new(
-                "Source and issues",
+                "Support",
                 SettingField::render(|_, _, _| {
-                    Button::new("open-repo")
-                        .small()
-                        .outline()
-                        .label("GitHub…")
-                        .on_click(|_, _, cx| cx.open_url("https://github.com/HemSoft/codexbar"))
+                    h_flex()
+                        .gap_2()
+                        .child(
+                            Button::new("report-problem")
+                                .small()
+                                .outline()
+                                .label("Report a problem…")
+                                .on_click(|_, _, cx| cx.open_url("https://github.com/hemsoft-dev/codexbar/issues/new")),
+                        )
+                        .child(
+                            Button::new("open-repo")
+                                .small()
+                                .outline()
+                                .label("GitHub…")
+                                .on_click(|_, _, cx| cx.open_url("https://github.com/hemsoft-dev/codexbar")),
+                        )
                 }),
             )),
     )

@@ -258,8 +258,8 @@ impl Notifier for RecordingNotifier {
     }
 }
 
-/// Windows toast notifications for the unpackaged app, under a per-user AppUserModelID registered in
-/// `HKCU\Software\Classes\AppUserModelId` so they show CodexBar's name.
+/// Windows toast notifications. The unpackaged app sends them under a per-user AppUserModelID registered in
+/// `HKCU\Software\Classes\AppUserModelId` so they show CodexBar's name; the MSIX package (#93) has its own.
 pub struct WindowsNotifier {
     /// Why the app id couldn't be registered; without it Windows may drop notifications silently.
     registration: Option<String>,
@@ -269,14 +269,28 @@ pub struct WindowsNotifier {
     reason: Arc<Mutex<Option<String>>>,
 }
 
-/// The AppUserModelID notifications are sent under.
+/// The AppUserModelID the unpackaged app sends notifications under.
 pub const APP_ID: &str = "HemSoft.CodexBar";
 
+/// The AppUserModelID notifications go out under: the package's when CodexBar runs from it.
+fn app_id() -> windows::core::HSTRING {
+    crate::package::installed().map_or_else(
+        || windows::core::HSTRING::from(APP_ID),
+        |installed| windows::core::HSTRING::from(installed.app_user_model_id()),
+    )
+}
+
 impl WindowsNotifier {
-    /// Registers the app id for this user and this process. Registration failures are reported by `status`.
+    /// Registers the app id for this user and this process (the package needs none). Registration failures are
+    /// reported by `status`.
     pub fn new() -> Self {
+        let registered = if crate::package::installed().is_some() {
+            Ok(())
+        } else {
+            register_app_id()
+        };
         Self {
-            registration: register_app_id().err().map(|err| {
+            registration: registered.err().map(|err| {
                 format!(
                     "CodexBar couldn't register for Windows notifications: {}",
                     err.message()
@@ -294,8 +308,8 @@ impl Notifier for WindowsNotifier {
         if let Some(problem) = &self.registration {
             return NotifierStatus::Blocked(problem.clone());
         }
-        let setting = ToastNotificationManager::CreateToastNotifierWithId(&windows::core::HSTRING::from(APP_ID))
-            .and_then(|notifier| notifier.Setting());
+        let setting =
+            ToastNotificationManager::CreateToastNotifierWithId(&app_id()).and_then(|notifier| notifier.Setting());
         match setting {
             Ok(NotificationSetting::Enabled) => NotifierStatus::Ready,
             Ok(NotificationSetting::DisabledForApplication) => NotifierStatus::Blocked(
@@ -341,7 +355,7 @@ impl Notifier for WindowsNotifier {
                     Ok(())
                 },
             ))?;
-            ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from(APP_ID))?.Show(&toast)
+            ToastNotificationManager::CreateToastNotifierWithId(&app_id())?.Show(&toast)
         })();
         result.map_err(|err| format!("Notification not shown: {}", err.message()))
     }

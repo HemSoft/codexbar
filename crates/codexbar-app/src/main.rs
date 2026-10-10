@@ -15,6 +15,7 @@ mod history_view;
 mod locale;
 mod managed;
 mod notifications;
+mod package;
 mod prefs_hub;
 mod providers;
 mod settings_hub;
@@ -85,6 +86,15 @@ fn already_running() -> bool {
 }
 
 fn main() {
+    // `--package-status <file>` reports the MSIX package and exits (#93); it runs beside an open CodexBar.
+    let mut args = std::env::args().skip_while(|arg| arg != "--package-status");
+    if args.next().is_some() {
+        let written = args
+            .next()
+            .map(std::path::PathBuf::from)
+            .map(|path| package::write_status(&path));
+        std::process::exit(if matches!(written, Some(Ok(()))) { 0 } else { 1 });
+    }
     if already_running() {
         eprintln!("codexbar: already running; open it from the notification area");
         return;
@@ -113,6 +123,8 @@ fn main() {
         };
         notifications::Notifications::init(cx, notifier, !is_demo());
         zoom::init(cx);
+        // The demo never checks the real update channel.
+        package::Updates::init(cx, !is_demo());
 
         let bounds = Bounds::centered(None, size(px(1440.), px(960.)), cx);
         let options = WindowOptions {
