@@ -326,6 +326,8 @@ impl StartupSetting {
 /// `codexbar --package-status <file>`: writes the package identity and a fresh update check to `file` as JSON and
 /// exits, so the package can be verified without opening a window (`scripts/Test-MsixChannel.ps1`).
 pub fn write_status(path: &std::path::Path) -> std::io::Result<()> {
+    // A marker first, so a caller waiting on the status can tell "never started" from "still checking".
+    let _ = std::fs::write(path.with_extension("started"), "");
     let status = match installed() {
         None => serde_json::json!({ "packaged": false }),
         Some(installed) => {

@@ -56,6 +56,17 @@ function Stop-CodexBar {
         ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 }
 
+# What Windows was doing when a step got stuck: the package, CodexBar's processes and recent deployment events.
+function Write-Diagnostics([string]$File) {
+    Write-Information '--- diagnostics ---' -InformationAction Continue
+    Get-AppxPackage -Name $name | Format-List Name, Version, Status, InstallLocation | Out-Host
+    Get-CimInstance Win32_Process -Filter "Name = 'codexbar.exe'" | Format-Table ProcessId, CommandLine -AutoSize -Wrap | Out-Host
+    Get-WinEvent -LogName 'Microsoft-Windows-AppXDeploymentServer/Operational' -MaxEvents 25 -ErrorAction SilentlyContinue |
+        Format-Table TimeCreated, Id, LevelDisplayName, Message -AutoSize -Wrap | Out-Host
+    Get-WinEvent -LogName 'Microsoft-Windows-AppxPackaging/Operational' -MaxEvents 10 -ErrorAction SilentlyContinue |
+        Format-Table TimeCreated, Id, Message -AutoSize -Wrap | Out-Host
+}
+
 function Get-PackageStatus {
     $installed = Get-AppxPackage -Name $name
     # Outside AppData, which Windows virtualizes for packaged processes.
@@ -71,9 +82,11 @@ function Get-PackageStatus {
     $deadline = (Get-Date).AddMinutes(3)
     while (-not (Test-Path -LiteralPath $file)) {
         if ((Get-Date) -gt $deadline) {
-            Stop-CodexBar
+            Write-Diagnostics $file
             $job | Receive-Job -ErrorAction SilentlyContinue | Out-Host
-            throw 'codexbar --package-status wrote nothing within 3 minutes.'
+            Stop-CodexBar
+            $started = Test-Path -LiteralPath ([IO.Path]::ChangeExtension($file, 'started'))
+            throw "codexbar --package-status wrote nothing within 3 minutes (process started: $started)."
         }
         Start-Sleep -Milliseconds 500
     }
@@ -114,7 +127,14 @@ try {
 }
 finally {
     Stop-CodexBar
-    Get-AppxPackage -Name $name | Remove-AppxPackage
+    # Bounded too: a deployment Windows still runs for the package can hold the removal up.
+    $removal = Start-ThreadJob -ArgumentList $name -ScriptBlock { param($name) Get-AppxPackage -Name $name | Remove-AppxPackage }
+    if (-not (Wait-Job $removal -Timeout 300)) {
+        Write-Diagnostics ''
+        $removal | Stop-Job
+    }
+    $removal | Receive-Job -ErrorAction Continue
+    $removal | Remove-Job -Force
     if (Test-Path -LiteralPath $Channel) { Remove-Item -LiteralPath $Channel -Recurse -Force }
     Get-ChildItem Cert:\LocalMachine\TrustedPeople |
         Where-Object { $_.Subject -eq $publisher -and $_.Thumbprint -notin $trustedBefore } |
