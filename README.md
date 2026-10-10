@@ -60,10 +60,18 @@ How each sign-in works, and what CodexBar stores and sends, is in [docs/OAUTH.md
 
 ## Installing, updating and support
 
-There is no packaged release yet: CodexBar is built from source with `run.ps1`
-(see [Build from source](#build-from-source)). A signed MSIX package with
-updates is planned for the first release
-([#93](https://github.com/hemsoft-dev/codexbar/issues/93)).
+CodexBar runs either as an MSIX package or as a build from source.
+
+**Package.** `.\package.ps1 -Trust -Install` builds a signed MSIX package,
+publishes it to a local update channel (`%LOCALAPPDATA%\CodexBar\channel`) and
+installs it. The package is signed with a self-signed certificate, which
+Windows must trust once: that step asks for administrator approval. After that,
+`.\package.ps1` publishes updates. Windows installs them when CodexBar starts,
+or from **Settings › About**. Rollback, other PCs and uninstall are covered in
+[docs/PACKAGING.md](docs/PACKAGING.md).
+
+**Build from source.** `run.ps1` builds and starts CodexBar without a package
+(see [Build from source](#build-from-source)):
 
 - **Update**: `git pull`, then `.\run.ps1`. It rebuilds, stops the running
   CodexBar and starts the new one. Settings, saved keys and history are kept.
@@ -75,7 +83,7 @@ updates is planned for the first release
 - **Start with Windows**: `run.ps1` keeps an existing `CodexBar` entry in
   `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` pointed at the installed
   app.
-- **Widgets**: Windows widgets need a packaged app, so they come with the MSIX
+- **Widgets**: Windows widgets need the packaged app; they arrive with the package
   release ([#94](https://github.com/hemsoft-dev/codexbar/issues/94),
   [#95](https://github.com/hemsoft-dev/codexbar/issues/95)).
 - **Uninstall**: first quit CodexBar (tray menu, Quit CodexBar). Then delete

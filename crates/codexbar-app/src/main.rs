@@ -15,6 +15,7 @@ mod history_view;
 mod locale;
 mod managed;
 mod notifications;
+mod package;
 mod prefs_hub;
 mod providers;
 mod settings_hub;
@@ -85,6 +86,15 @@ fn already_running() -> bool {
 }
 
 fn main() {
+    // `--package-status <file> [<trigger>]` reports the MSIX package and exits (#93); it runs beside an open
+    // CodexBar. With a trigger file it first waits for that file, the way a running CodexBar meets a later update.
+    let mut args = std::env::args().skip_while(|arg| arg != "--package-status");
+    if args.next().is_some() {
+        let file = args.next().map(std::path::PathBuf::from);
+        let trigger = args.next().map(std::path::PathBuf::from);
+        let written = file.map(|path| package::write_status(&path, trigger.as_deref()));
+        std::process::exit(if matches!(written, Some(Ok(()))) { 0 } else { 1 });
+    }
     if already_running() {
         eprintln!("codexbar: already running; open it from the notification area");
         return;
@@ -113,6 +123,12 @@ fn main() {
         };
         notifications::Notifications::init(cx, notifier, !is_demo());
         zoom::init(cx);
+        // The demo never checks the real update channel.
+        package::Updates::init(cx, !is_demo());
+        if !is_demo() {
+            package::migrate_startup(&dir);
+        }
+        package::StartupSetting::init(cx);
 
         let bounds = Bounds::centered(None, size(px(1440.), px(960.)), cx);
         let options = WindowOptions {
@@ -130,7 +146,12 @@ fn main() {
             cx.new(|cx| Dashboard::new(data_source(), window, cx))
         })
         .expect("failed to open the dashboard window");
-        cx.activate(true);
+        // Start with Windows (the package's startup task) goes straight to the notification area.
+        if package::launched_at_startup() {
+            let _ = cx.update_window(handle, |_, window, _| tray::hide(window));
+        } else {
+            cx.activate(true);
+        }
         if std::env::args().any(|arg| arg == "--settings") {
             dashboard.update(cx, |dashboard, cx| dashboard.show_view(DashboardView::Settings, cx));
         }
@@ -152,6 +173,8 @@ fn main() {
         });
         if let Err(err) = result {
             eprintln!("codexbar: tray icon unavailable: {err}");
+            // Without a tray icon the window is the only way in, even after a start with Windows.
+            let _ = cx.update_window(handle, |_, window, _| tray::show(window));
         }
         // Restored accounts were shown before the tray icon existed; give it their text now.
         tooltip_source.update(cx, |dashboard, cx| dashboard.publish_tooltip(cx));

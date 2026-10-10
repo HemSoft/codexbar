@@ -1678,6 +1678,48 @@ fn every_settings_section_can_be_opened(cx: &mut TestAppContext) {
     );
 }
 
+fn update_status(cx: &mut TestAppContext, handle: AnyWindowHandle) -> Option<String> {
+    cx.update_window(handle, |_, window, cx| {
+        window.render_frame(cx);
+        window
+            .try_find("update-status")
+            .and_then(|found| found.label().map(str::to_owned))
+    })
+    .unwrap()
+}
+
+#[gpui_kit::test]
+fn about_shows_the_build_and_where_updates_come_from(cx: &mut TestAppContext) {
+    use crate::package::{UpdateState, Updates};
+    let settings = TempSettings::new("settings-about", "{}");
+    let handle = open_settings_page(cx, &settings, MemoryCredentialStore::default(), 6);
+    // Tests run unpackaged: no channel to check, so Check now does nothing and there is nothing to install.
+    let source = UpdateState::NotPackaged.label();
+    assert_eq!(update_status(cx, handle).as_deref(), Some(source.as_str()));
+    assert!(!exists(cx, handle, "install-update"));
+    click(cx, handle, "check-updates");
+    assert_eq!(
+        update_status(cx, handle).as_deref(),
+        Some(source.as_str()),
+        "nothing to check"
+    );
+
+    // A package from the channel with a newer version offers to install it.
+    cx.update(|cx| Updates::set_for_test(cx, UpdateState::Available { required: false }));
+    let available = UpdateState::Available { required: false }.label();
+    assert_eq!(update_status(cx, handle).as_deref(), Some(available.as_str()));
+    assert!(exists(cx, handle, "install-update"));
+
+    // A failed check says why, and can be tried again.
+    cx.update(|cx| Updates::set_for_test(cx, UpdateState::Failed("The network path was not found.".into())));
+    assert_eq!(
+        update_status(cx, handle).as_deref(),
+        Some("Couldn't update: The network path was not found.")
+    );
+    assert!(!exists(cx, handle, "install-update"));
+    assert!(exists(cx, handle, "report-problem"));
+}
+
 #[gpui_kit::test]
 fn auto_refresh_offers_the_standard_choices_and_saves_them(cx: &mut TestAppContext) {
     let settings = TempSettings::new("settings-refresh", "{}");
