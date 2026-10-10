@@ -59,6 +59,11 @@ Set-StrictMode -Version Latest
 $publisher = 'CN=HemSoft CodexBar Self-Signed'
 $packageName = 'HemSoft.CodexBar'
 
+# The Windows App Runtime framework the widget provider needs (#94), from Microsoft's NuGet package. The channel ships
+# it and the App Installer file lists it, so Windows installs it with CodexBar where it is missing.
+$runtimeNuGet = 'Microsoft.WindowsAppSDK.Runtime'
+$runtimeNuGetVersion = '2.5.1'
+
 function Find-SdkTool([string]$Name) {
     $roots = @(
         (Join-Path ${env:ProgramFiles(x86)} 'Windows Kits\10\bin'),
@@ -117,6 +122,44 @@ function New-Logo([string]$Path, [int]$Width, [int]$Height) {
     }
 }
 
+# The widget picker's screenshot: a medium CodexBar widget as the Widgets board shows it, with sample accounts.
+function New-WidgetScreenshot([string]$Path) {
+    Add-Type -AssemblyName System.Drawing
+    $width = 300
+    $height = 304
+    $bitmap = [System.Drawing.Bitmap]::new($width, $height)
+    $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+    try {
+        $graphics.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+        $graphics.TextRenderingHint = [System.Drawing.Text.TextRenderingHint]::ClearTypeGridFit
+        $graphics.Clear([System.Drawing.Color]::FromArgb(0x20, 0x20, 0x20))
+        $muted = [System.Drawing.SolidBrush]::new([System.Drawing.Color]::FromArgb(0xA0, 0xA0, 0xA0))
+        $text = [System.Drawing.SolidBrush]::new([System.Drawing.Color]::White)
+        $track = [System.Drawing.SolidBrush]::new([System.Drawing.Color]::FromArgb(0x3A, 0x3A, 0x3A))
+        $small = [System.Drawing.Font]::new('Segoe UI', 10)
+        $bold = [System.Drawing.Font]::new('Segoe UI Semibold', 11)
+        $graphics.DrawString('All accounts', $small, $muted, 16, 14)
+        $tiles = @(
+            @{ Name = "Claude $([char]0x00B7) Work"; Line = 'Weekly: 42% used'; Used = 0.42; Color = [System.Drawing.Color]::FromArgb(0x6C, 0xCB, 0x5F) },
+            @{ Name = "ChatGPT $([char]0x00B7) Codex"; Line = '5-hour window: 81% used'; Used = 0.81; Color = [System.Drawing.Color]::FromArgb(0xFC, 0xE1, 0x00) }
+        )
+        $y = 48
+        foreach ($tile in $tiles) {
+            $graphics.DrawString($tile.Name, $bold, $text, 16, $y)
+            $graphics.DrawString($tile.Line, $small, $text, 16, $y + 24)
+            $graphics.FillRectangle($track, 16, $y + 50, $width - 32, 6)
+            $graphics.FillRectangle([System.Drawing.SolidBrush]::new($tile.Color), 16, $y + 50, ($width - 32) * $tile.Used, 6)
+            $y += 92
+        }
+        $graphics.DrawString('Updated 1m ago', $small, $muted, 16, $height - 34)
+        $bitmap.Save($Path, [System.Drawing.Imaging.ImageFormat]::Png)
+    }
+    finally {
+        $graphics.Dispose()
+        $bitmap.Dispose()
+    }
+}
+
 # The certificate is created once and then kept: a new one would make every PC that trusts the old one refuse updates,
 # so renewing is an explicit step (-RenewCertificate).
 function Get-SigningCertificate {
@@ -165,13 +208,53 @@ function Grant-Trust($Certificate, [string]$CerPath) {
     }
 }
 
+function Get-RuntimePackage {
+    $folder = Join-Path $env:USERPROFILE ".nuget\packages\$($runtimeNuGet.ToLowerInvariant())\$runtimeNuGetVersion"
+    if (-not (Test-Path -LiteralPath $folder)) {
+        $folder = Join-Path $PSScriptRoot "target\msix\nuget\$runtimeNuGet.$runtimeNuGetVersion"
+        if (-not (Test-Path -LiteralPath $folder)) {
+            Write-Information "Downloading $runtimeNuGet $runtimeNuGetVersion from nuget.org..." -InformationAction Continue
+            $zip = "$folder.zip"
+            New-Item -ItemType Directory -Path (Split-Path -Parent $zip) -Force | Out-Null
+            Invoke-WebRequest -Uri "https://www.nuget.org/api/v2/package/$runtimeNuGet/$runtimeNuGetVersion" -OutFile $zip
+            Expand-Archive -LiteralPath $zip -DestinationPath $folder
+            Remove-Item -LiteralPath $zip
+        }
+    }
+    $msix = Get-ChildItem -LiteralPath (Join-Path $folder 'tools\MSIX\win10-x64') -File -ErrorAction SilentlyContinue |
+        Where-Object Name -Match '^Microsoft\.WindowsAppRuntime\.\d+(\.\d+)?\.msix$' |
+        Select-Object -First 1
+    if (-not $msix) { throw "No Windows App Runtime framework package in $folder." }
+    $signature = Get-AuthenticodeSignature -LiteralPath $msix.FullName
+    if ($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch 'O=Microsoft Corporation') {
+        throw "$($msix.Name) isn't validly signed by Microsoft ($($signature.Status))."
+    }
+    # Its identity, from its own manifest.
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $archive = [IO.Compression.ZipFile]::OpenRead($msix.FullName)
+    try {
+        $reader = [IO.StreamReader]::new($archive.GetEntry('AppxManifest.xml').Open())
+        try { [xml]$manifest = $reader.ReadToEnd() } finally { $reader.Dispose() }
+    }
+    finally {
+        $archive.Dispose()
+    }
+    $identity = $manifest.Package.Identity
+    [pscustomobject]@{
+        Path = $msix.FullName
+        Name = $identity.Name
+        Version = $identity.Version
+        Publisher = $identity.Publisher
+    }
+}
+
 function ConvertTo-FileUri([string]$Path) {
     [System.Security.SecurityElement]::Escape(([uri]$Path).AbsoluteUri)
 }
 
 # The App Installer file Windows checks at each start. Its own version is the publishing time, so a rollback (which
 # points at a lower package version) still reads as the newer file; ForceUpdateFromAnyVersion lets it move back.
-function Write-AppInstaller([string]$Version, [string]$PackageFile) {
+function Write-AppInstaller([string]$Version, [string]$PackageFile, $Runtime) {
     $now = Get-Date
     $fileVersion = [version]('1.{0}.{1}.{2}' -f $now.Year, ($now.Month * 100 + $now.Day), ($now.Hour * 100 + $now.Minute))
     $appInstaller = Join-Path $Channel 'CodexBar.appinstaller'
@@ -192,6 +275,9 @@ function Write-AppInstaller([string]$Version, [string]$PackageFile) {
 <?xml version="1.0" encoding="utf-8"?>
 <AppInstaller xmlns="http://schemas.microsoft.com/appx/appinstaller/2018" Version="$fileVersion" Uri="$(ConvertTo-FileUri $appInstaller)">
   <MainPackage Name="$packageName" Publisher="$publisher" Version="$Version" ProcessorArchitecture="x64" Uri="$(ConvertTo-FileUri $PackageFile)" />
+  <Dependencies>
+    <Package Name="$($Runtime.Name)" Publisher="$([System.Security.SecurityElement]::Escape($Runtime.Publisher))" Version="$($Runtime.Version)" ProcessorArchitecture="x64" Uri="$(ConvertTo-FileUri $Runtime.ChannelPath)" />
+  </Dependencies>
   <UpdateSettings>
     <OnLaunch HoursBetweenUpdateChecks="0" />
     <AutomaticBackgroundTask />
@@ -206,6 +292,10 @@ function Write-AppInstaller([string]$Version, [string]$PackageFile) {
 New-Item -ItemType Directory -Path $Channel -Force | Out-Null
 # File URIs need an absolute path.
 $Channel = (Resolve-Path -LiteralPath $Channel).ProviderPath
+$runtime = Get-RuntimePackage
+$runtimeFile = Join-Path $Channel "$($runtime.Name)_$($runtime.Version)_x64.msix"
+if (-not (Test-Path -LiteralPath $runtimeFile)) { Copy-Item -LiteralPath $runtime.Path -Destination $runtimeFile }
+$runtime | Add-Member -NotePropertyName ChannelPath -NotePropertyValue $runtimeFile
 
 if ($Rollback) {
     $version = $Rollback
@@ -281,12 +371,16 @@ else {
     New-Item -ItemType Directory -Path (Join-Path $layout 'Assets') -Force | Out-Null
     Copy-Item -LiteralPath $builtExe -Destination (Join-Path $layout 'codexbar.exe')
     $manifest = (Get-Content -LiteralPath (Join-Path $PSScriptRoot 'packaging\AppxManifest.xml') -Raw).
-        Replace('{{VERSION}}', $version).Replace('{{PUBLISHER}}', $publisher)
+        Replace('{{VERSION}}', $version).Replace('{{PUBLISHER}}', $publisher).
+        Replace('{{RUNTIME_NAME}}', $runtime.Name).Replace('{{RUNTIME_VERSION}}', $runtime.Version).
+        Replace('{{RUNTIME_PUBLISHER}}', [System.Security.SecurityElement]::Escape($runtime.Publisher))
     [IO.File]::WriteAllText((Join-Path $layout 'AppxManifest.xml'), $manifest, [Text.UTF8Encoding]::new($false))
     New-Logo (Join-Path $layout 'Assets\Square44x44Logo.png') 44 44
     New-Logo (Join-Path $layout 'Assets\Square150x150Logo.png') 150 150
     New-Logo (Join-Path $layout 'Assets\Wide310x150Logo.png') 310 150
     New-Logo (Join-Path $layout 'Assets\StoreLogo.png') 50 50
+    New-Logo (Join-Path $layout 'Assets\WidgetIcon.png') 64 64
+    New-WidgetScreenshot (Join-Path $layout 'Assets\WidgetScreenshot.png')
 
     $unsigned = Join-Path $PSScriptRoot 'target\msix\CodexBar.msix'
     Invoke-Tool (Find-SdkTool 'makeappx.exe') @('pack', '/d', $layout, '/p', $unsigned, '/o')
@@ -316,7 +410,7 @@ else {
 $cerPath = Join-Path $Channel 'CodexBar.cer'
 Export-Certificate -Cert $certificate -FilePath $cerPath | Out-Null
 
-$appInstaller = Write-AppInstaller $version $packageFile
+$appInstaller = Write-AppInstaller $version $packageFile $runtime
 Write-Information "Published CodexBar $version to $Channel." -InformationAction Continue
 
 if ($Trust) {
@@ -358,6 +452,12 @@ if ($Install) {
 
     # Started again if it was running, and always after a move from run.ps1: the package turns its startup task on
     # when it runs.
+    # The Widgets board lists widgets from a self-signed package only with Developer Mode on.
+    $unlock = Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock' -ErrorAction SilentlyContinue
+    if (-not $unlock -or $unlock.PSObject.Properties['AllowDevelopmentWithoutDevLicense'].Value -ne 1) {
+        Write-Warning 'To add the CodexBar widget, turn on Developer Mode: Settings > System > For developers.'
+    }
+
     if ($running.Count -gt 0 -or $migrated) {
         Start-Process explorer.exe "shell:AppsFolder\$($installed.PackageFamilyName)!CodexBar"
         Write-Information "Installed CodexBar $version and started it again." -InformationAction Continue

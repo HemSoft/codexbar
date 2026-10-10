@@ -6,6 +6,9 @@ signs it and publishes it to a **channel folder** together with an App Installer
 file (`CodexBar.appinstaller`). Windows installs from that file and checks it for
 updates every time CodexBar starts.
 
+The package also registers CodexBar's Windows widget provider (#94); see
+[Widgets](#widgets).
+
 ## Signing
 
 Packages are signed with a **self-signed certificate**,
@@ -96,6 +99,46 @@ so the installation keeps its channel. To move forward again, publish
 a newer build. Keep old packages in the channel for as long as you might roll
 back to them.
 
+## Widgets
+
+Only packaged apps can provide Windows widgets, and the only widget host is the
+Windows 11 Widgets board. The package declares one widget, **CodexBar usage**, in
+three sizes. The board lists widgets from a self-signed (sideloaded) package
+only with **Developer Mode** on (Settings › System › For developers). Settings ›
+Widgets and `package.ps1 -Install` say when it is off, and Settings says when
+the PC runs Windows 10. Add the widget from the Widgets board (Windows key + W,
+**Add widgets**). The picker shows a sample medium widget, drawn by
+`package.ps1`. **Customize widget** chooses which accounts it shows (all
+accounts in dashboard order, one provider, or one group) and the layout:
+automatic (one tile on small, two on medium, four on large) or one, two or four
+tiles.
+
+- **Data.** The dashboard writes `widgets.json` next to `settings.json` after
+  every refresh and at least every five minutes. The file holds names, group
+  names, formatted values, percentages and times only, never keys, tokens or
+  error messages. Its format is versioned: a newer CodexBar can add fields, and
+  a widget older than the file says so instead of misreading it.
+- **Provider.** When the board needs CodexBar, Windows starts
+  `codexbar.exe -RegisterProcessAsComServer`. That process opens no window and
+  reads no credentials. It runs beside the tray app, redraws visible widgets
+  when `widgets.json` changes and once a minute, and exits after ten minutes
+  with no widget on screen.
+- **States.** Before the first snapshot, the widget asks you to open CodexBar.
+  Accounts whose last refresh failed show **Last known** with their age, and
+  accounts with no usage yet show **Unavailable**. A snapshot older than 15
+  minutes reads **CodexBar isn't running**, with an Open button. Tapping the
+  widget opens CodexBar. A provider or group that no longer exists shows a
+  message pointing to **Customize widget**.
+- **Windows App Runtime.** The provider uses the Windows App SDK's widget
+  manager, so the package depends on the `Microsoft.WindowsAppRuntime.2`
+  framework. `package.ps1` takes it from Microsoft's
+  `Microsoft.WindowsAppSDK.Runtime` NuGet package, checks Microsoft's signature,
+  copies it into the channel and lists it in the App Installer file. Windows
+  installs it with CodexBar where it is missing.
+- **Bindings.** `crates/codexbar-app/src/widgets/bindings.rs` is generated from
+  the Widgets metadata by `scripts/Update-WidgetBindings.ps1`, with pinned
+  versions.
+
 ## Uninstall
 
 1. Quit CodexBar from the tray menu.
@@ -116,7 +159,8 @@ procedures end to end in a throwaway channel:
 
 1. Clean install from the App Installer file.
 2. The installed app reports its version and channel (`codexbar --package-status`,
-   run inside the package).
+   run inside the package), and Windows starts the widget provider for its COM
+   class.
 3. A published build is seen by the app's own update check, then installed.
 4. Rollback, which keeps the channel.
 5. Uninstall.

@@ -1142,6 +1142,25 @@ fn snapshots_are_saved_after_a_refresh_without_secrets(cx: &mut TestAppContext) 
 }
 
 #[gpui_kit::test]
+fn the_widget_snapshot_follows_each_refresh_without_secrets(cx: &mut TestAppContext) {
+    use codexbar_store::widgets::{WidgetHealth, load_widget_snapshot};
+    let settings = TempSettings::new("widgets-feed", "{}");
+    let codex = FakeProvider::new(Provider::Codex, "codex-1", Some(0.3));
+    let _dashboard = open_live(cx, &settings, vec![codex]);
+    cx.run_until_parked();
+
+    // The widget provider reads this file (#94): the account, its display value and that it is current.
+    let snapshot = load_widget_snapshot(&settings.0).expect("the dashboard wrote widgets.json");
+    assert_eq!(snapshot.accounts.len(), 1);
+    let account = &snapshot.accounts[0];
+    assert_eq!(account.id, "codex-1");
+    assert_eq!(account.health, WidgetHealth::Fresh);
+    assert!(account.metrics.iter().any(|metric| metric.used_percent == Some(30.0)));
+    let text = std::fs::read_to_string(settings.0.join("widgets.json")).unwrap();
+    assert!(!text.contains("sk-test-secret"), "only display values are written");
+}
+
+#[gpui_kit::test]
 fn each_configured_account_of_one_provider_loads_and_fails_on_its_own(cx: &mut TestAppContext) {
     let settings = TempSettings::new("lifecycle-siblings", "{}");
     let first = FakeProvider::for_account(Provider::OpenRouter, "or-1", Some(0.4));

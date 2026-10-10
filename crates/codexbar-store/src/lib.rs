@@ -11,6 +11,7 @@ pub mod prefs;
 pub mod settings;
 pub mod snapshots;
 pub mod summary;
+pub mod widgets;
 
 pub use demo::demo_history;
 pub use enrich::{TREND_DAYS, enrich};

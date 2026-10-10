@@ -25,6 +25,8 @@ mod theme;
 mod tray;
 #[cfg(test)]
 mod ui_tests;
+mod widget_feed;
+mod widgets;
 mod zoom;
 
 use std::sync::{Arc, Mutex};
@@ -86,6 +88,14 @@ fn already_running() -> bool {
 }
 
 fn main() {
+    // Windows starts CodexBar this way for the Widgets board (#94). The provider runs beside the tray app.
+    if std::env::args().any(|arg| arg == widgets::SERVER_ARG) {
+        if let Err(err) = widgets::serve() {
+            eprintln!("codexbar: widget provider failed: {}", err.message());
+            std::process::exit(1);
+        }
+        return;
+    }
     // `--package-status <file> [<trigger>]` reports the MSIX package and exits (#93); it runs beside an open
     // CodexBar. With a trigger file it first waits for that file, the way a running CodexBar meets a later update.
     let mut args = std::env::args().skip_while(|arg| arg != "--package-status");
