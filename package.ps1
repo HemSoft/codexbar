@@ -340,9 +340,12 @@ if ($Install) {
 
     # The run.ps1 copy shares the single-instance lock and would keep the package from starting, so it stops. Its
     # Start with Windows entry moves to the package's startup task, which CodexBar turns on when it next starts.
+    # Stopping is asynchronous: wait until it has exited and released the lock, or the package would exit at once.
     $running |
         Where-Object { $_.ExecutablePath -and $_.ExecutablePath -notmatch '\\WindowsApps\\' } |
-        ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+        ForEach-Object { Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue } |
+        ForEach-Object { $_ | Stop-Process -Force -PassThru -ErrorAction SilentlyContinue } |
+        Wait-Process -Timeout 10 -ErrorAction SilentlyContinue
     $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
     $settingsDir = if ($env:CODEXBAR_SETTINGS_DIR) { $env:CODEXBAR_SETTINGS_DIR } else { Join-Path $env:USERPROFILE '.codexbar' }
     $migrated = [bool](Get-ItemProperty -LiteralPath $runKey -Name 'CodexBar' -ErrorAction SilentlyContinue)

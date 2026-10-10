@@ -216,6 +216,11 @@ pub fn install() -> Result<(), String> {
     use windows::core::PCWSTR;
     let result = (|| -> windows::core::Result<Option<String>> {
         let uri = Package::Current()?.GetAppInstallerInfo()?.Uri()?;
+        // Windows only restarts a process that has run for at least a minute.
+        let ran = started().elapsed();
+        if ran < MIN_RUN_FOR_RESTART {
+            std::thread::sleep(MIN_RUN_FOR_RESTART - ran);
+        }
         // Asks Windows to start CodexBar again once the update has replaced it. A null command line would cancel
         // the registration, so it carries an argument CodexBar ignores.
         let restart = windows::core::HSTRING::from(RESTART_ARG);
@@ -380,6 +385,15 @@ pub fn write_status(path: &std::path::Path, trigger: Option<&std::path::Path>) -
     std::fs::write(path, status.to_string())
 }
 
+/// How long a process must have run before `RegisterApplicationRestart` restarts it, with a margin.
+const MIN_RUN_FOR_RESTART: std::time::Duration = std::time::Duration::from_secs(62);
+
+/// When CodexBar started, as near as it knows: set when the update state is first set up at startup.
+fn started() -> std::time::Instant {
+    static STARTED: OnceLock<std::time::Instant> = OnceLock::new();
+    *STARTED.get_or_init(std::time::Instant::now)
+}
+
 /// The argument Windows starts CodexBar with after Install and restart; nothing reads it.
 pub const RESTART_ARG: &str = "--after-update";
 
@@ -397,6 +411,7 @@ impl Global for Updates {}
 
 impl Updates {
     pub fn init(cx: &mut App, background: bool) {
+        started();
         let state = UpdateState::initial(installed());
         let checks = background && state == UpdateState::NotChecked;
         cx.set_global(Self { state });
