@@ -89,7 +89,11 @@ fn codex_adapters(hub: &SettingsHub) -> Vec<Arc<dyn UsageProvider>> {
     let mut records = enabled_accounts(hub, names::CODEX);
     let several = records.len() > 1;
     // CodexBar's own accounts first: they own their identity.
-    records.sort_by_key(|record| !crate::codex_sign_in::is_managed(record));
+    // Signed-in homes first, CodexBar's own first among those: a remembered identity never hides a live sign-in.
+    records.sort_by_key(|record| {
+        let signed_in = crate::codex_sign_in::auth_path(hub.dir(), record).is_file();
+        (!signed_in, !crate::codex_sign_in::is_managed(record))
+    });
     let mut homes = Vec::new();
     let mut identities = Vec::new();
     let mut adapters: Vec<Arc<dyn UsageProvider>> = Vec::new();
@@ -132,7 +136,7 @@ fn claude_adapters(hub: &SettingsHub) -> Vec<Arc<dyn UsageProvider>> {
     records.sort_by_key(|record| {
         let managed = crate::claude_sign_in::is_managed(record);
         let signed_in = crate::claude_sign_in::credentials_path(hub.dir(), record).is_file();
-        (!managed, !signed_in)
+        (!signed_in, !managed)
     });
     let mut folders = Vec::new();
     let mut identities = Vec::new();
@@ -174,7 +178,7 @@ fn cursor_adapters(hub: &SettingsHub) -> Vec<Arc<dyn UsageProvider>> {
     let several = records.len() > 1;
     records.sort_by_key(|record| {
         let managed = crate::cursor_sign_in::is_managed(record);
-        (!managed, !crate::cursor_sign_in::auth_path(hub.dir(), record).is_file())
+        (!crate::cursor_sign_in::auth_path(hub.dir(), record).is_file(), !managed)
     });
     let mut paths = Vec::new();
     let mut identities = Vec::new();

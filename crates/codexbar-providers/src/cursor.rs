@@ -248,7 +248,7 @@ impl<H: HttpClient> UsageProvider for CursorProvider<H> {
                     Some((_, previous)) => {
                         if *previous != id {
                             account = account.with_message(if self.hint == MANAGED_SIGN_IN_HINT {
-                                "Signed in to a different Cursor account. The previous account's usage stays with it."
+                                "Signed in to a different Cursor account. It is a new account here; the previous one's usage isn't carried over."
                             } else {
                                 "The Cursor app is signed in to a different account. The previous account's usage stays with it."
                             });

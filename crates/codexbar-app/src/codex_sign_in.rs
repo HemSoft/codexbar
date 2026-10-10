@@ -301,10 +301,13 @@ pub fn sign_in(record_id: &str, window: &mut Window, cx: &mut App) {
                 .background_spawn(async move { pending.finish(SIGN_IN_TIMEOUT, waiting) })
                 .await;
             let _ = cx.update(|window, cx| match result {
-                Ok(()) => {
-                    remember_identity(&record_id, &dir, cx);
-                    window.close_dialog(cx);
-                }
+                Ok(()) => match remember_identity(&record_id, &dir, cx) {
+                    Ok(()) => window.close_dialog(cx),
+                    Err(message) => {
+                        *stage.borrow_mut() = Stage::Failed(message);
+                        window.refresh();
+                    }
+                },
                 // Closed by the user: nothing to show.
                 Err(AppServerError::Cancelled) => {}
                 Err(err) => {
@@ -318,7 +321,7 @@ pub fn sign_in(record_id: &str, window: &mut Window, cx: &mut App) {
 
 /// Stores the ChatGPT identity the account's home is signed in to, as its dashboard account. Signing it in to another
 /// identity replaces the one before, whose stored usage is then removed with it, so identities never mix.
-fn remember_identity(record_id: &str, dir: &Path, cx: &mut App) {
+fn remember_identity(record_id: &str, dir: &Path, cx: &mut App) -> Result<(), SharedString> {
     let Some(record) = SettingsHub::global(cx)
         .settings()
         .accounts()
@@ -326,20 +329,22 @@ fn remember_identity(record_id: &str, dir: &Path, cx: &mut App) {
         .find(|a| a.id == record_id)
         .cloned()
     else {
-        return;
+        return Err("The account was removed during the sign-in.".into());
     };
     let identity =
         codexbar_providers::codex::signed_in_account(&auth_path(dir, &record)).map(|id| id.as_str().to_owned());
     if identity.is_some() && identity != record.external_id {
-        let _ = SettingsHub::update(cx, |settings| {
+        SettingsHub::update(cx, |settings| {
             settings.upsert(AccountRecord {
                 external_id: identity,
                 ..record
             })
-        });
+        })
+        .map_err(|err| SharedString::from(format!("The sign-in couldn't be saved: {err}")))?;
     }
     // The dashboard fetches the new sign-in now rather than at the next scheduled refresh.
     SettingsHub::request_refresh(cx);
+    Ok(())
 }
 
 /// Signs a CodexBar-managed account out. Its usage history stays with it, for when it is signed in again.

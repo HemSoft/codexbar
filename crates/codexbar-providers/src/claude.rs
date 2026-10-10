@@ -642,7 +642,7 @@ impl<H: HttpClient> UsageProvider for ClaudeProvider<H> {
                 });
                 if switched {
                     account = account.with_message(
-                        "Signed in to a different Claude account. The previous account's usage stays with it.",
+                        "Signed in to a different Claude account. It is a new account here; the previous one's usage isn't carried over.",
                     );
                 }
                 Ok(vec![AccountOutcome::Fresh(account)])

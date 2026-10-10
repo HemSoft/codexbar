@@ -3794,3 +3794,41 @@ fn each_cursor_account_gets_its_own_adapter(cx: &mut TestAppContext) {
         .collect();
     assert_eq!(labels, [Some("Work".to_owned()), Some("Home".to_owned())]);
 }
+
+#[gpui_kit::test]
+fn a_signed_out_cursor_account_doesnt_hide_a_signed_in_one(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "cursor-signed-out-first",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "cu-1", "providerId": "Cursor", "displayLabel": "Old", "enabled": true,
+              "authenticationMethod": "OAuth", "externalAccountId": "cursor-aaaaaaaaaaaa" },
+            { "id": "cu-2", "providerId": "Cursor", "displayLabel": "Current", "enabled": true,
+              "authenticationMethod": "OAuth", "externalAccountId": "cursor-aaaaaaaaaaaa" } ] }"#,
+    );
+    cursor_fixture::sign_in(&cursor_home(&settings, "cu-2"), "same");
+    cx.update(|cx| SettingsHub::init_with(cx, &settings.0, Arc::new(MemoryCredentialStore::default())));
+    let adapters = cx.update(|cx| crate::providers::enabled(SettingsHub::global(cx)));
+    let labels: Vec<Option<String>> = adapters
+        .iter()
+        .filter(|provider| provider.name() == "Cursor")
+        .map(|provider| provider.account_label().map(str::to_owned))
+        .collect();
+    assert_eq!(labels, [Some("Current".to_owned())], "the live sign-in wins");
+}
+
+#[gpui_kit::test]
+fn a_cursor_sign_in_that_cant_be_saved_says_so(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("cursor-save-fails", MANAGED_CURSOR);
+    let fake = FakeCursor::new(cursor_fixture::Outcome::SignsIn("dev"));
+    let handle = open_cursor_accounts(cx, &settings, &fake);
+    let file = settings.0.join("settings.json");
+    let writable = std::fs::metadata(&file).unwrap().permissions();
+    let mut read_only = writable.clone();
+    read_only.set_readonly(true);
+    std::fs::set_permissions(&file, read_only).unwrap();
+    click(cx, handle, "sign-in-cu-1");
+    std::fs::set_permissions(&file, writable).unwrap();
+    let error = label_of(cx, "cursor-sign-in-error").unwrap_or_default();
+    assert!(error.starts_with("The sign-in couldn't be saved"), "{error}");
+    assert_eq!(saved_settings(&settings).accounts()[0].external_id, None);
+}

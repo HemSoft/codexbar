@@ -169,8 +169,8 @@ pub fn sign_in(record_id: &str, window: &mut Window, cx: &mut App) {
         alert
             .title(format!("Replace the sign-in of “{}”?", record.label))
             .description(format!(
-                "Signing in again replaces {who}. If you sign in to another Cursor account, it becomes a new account on \
-                 the dashboard; the current one's usage stays with it."
+                "Signing in again replaces {who}. If you sign in to another Cursor account, it becomes a new account \
+                 on the dashboard, and the usage history CodexBar kept for {who} is deleted."
             ))
             .button_props(
                 DialogButtonProps::default()
@@ -317,10 +317,13 @@ fn start(record: AccountRecord, window: &mut Window, cx: &mut App) {
                 return;
             }
             let _ = cx.update(|window, cx| match result {
-                Ok(email) => {
-                    remember(&record_id, &dir, email, cx);
-                    window.close_dialog(cx);
-                }
+                Ok(email) => match remember(&record_id, &dir, email, cx) {
+                    Ok(()) => window.close_dialog(cx),
+                    Err(message) => {
+                        *stage.borrow_mut() = Stage::Failed(message);
+                        window.refresh();
+                    }
+                },
                 Err(CursorCliError::Cancelled) => {}
                 Err(err) => {
                     *stage.borrow_mut() = Stage::Failed(err.to_string().into());
@@ -333,7 +336,7 @@ fn start(record: AccountRecord, window: &mut Window, cx: &mut App) {
 
 /// Stores the Cursor identity the folder is signed in to, as the account's dashboard account, and its email for the
 /// row. Another identity replaces the one before, whose stored usage is removed with it, so identities never mix.
-fn remember(record_id: &str, dir: &Path, email: Option<String>, cx: &mut App) {
+fn remember(record_id: &str, dir: &Path, email: Option<String>, cx: &mut App) -> Result<(), SharedString> {
     let Some(record) = SettingsHub::global(cx)
         .settings()
         .accounts()
@@ -341,7 +344,7 @@ fn remember(record_id: &str, dir: &Path, email: Option<String>, cx: &mut App) {
         .find(|a| a.id == record_id)
         .cloned()
     else {
-        return;
+        return Err("The account was removed during the sign-in.".into());
     };
     let _ = std::fs::write(
         home(dir, &record).join(ACCOUNT_FILE),
@@ -350,14 +353,16 @@ fn remember(record_id: &str, dir: &Path, email: Option<String>, cx: &mut App) {
     let identity =
         codexbar_providers::cursor::signed_in_account(&auth_path(dir, &record)).map(|id| id.as_str().to_owned());
     if identity.is_some() && identity != record.external_id {
-        let _ = SettingsHub::update(cx, |settings| {
+        SettingsHub::update(cx, |settings| {
             settings.upsert(AccountRecord {
                 external_id: identity,
                 ..record
             })
-        });
+        })
+        .map_err(|err| SharedString::from(format!("The sign-in couldn't be saved: {err}")))?;
     }
     SettingsHub::request_refresh(cx);
+    Ok(())
 }
 
 /// Signs a managed account out. Its history stays, for when it is signed in again.
