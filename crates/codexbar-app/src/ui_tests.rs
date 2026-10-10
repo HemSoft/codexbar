@@ -2692,11 +2692,49 @@ fn adding_a_codex_account_with_oauth_signs_it_in_right_away(cx: &mut TestAppCont
     press(cx, handle, "enter");
     click(cx, handle, "account-save");
     let saved = saved_settings(&settings);
-    let record = &saved.accounts()[0];
-    assert_eq!(
-        (record.label.as_str(), record.method),
-        ("Work", codexbar_store::settings::AuthMethod::OAuth)
-    );
+    let record = saved
+        .accounts()
+        .iter()
+        .find(|record| record.method == codexbar_store::settings::AuthMethod::OAuth)
+        .unwrap();
+    assert_eq!(record.label, "Work");
     assert_eq!(*fake.0.begun.lock().unwrap(), [codex_home(&settings, &record.id)]);
     assert!(record.external_id.is_some(), "the finished sign-in is remembered");
+    // The Codex CLI's own sign-in, shown until now as the implicit account, stays as an account of its own.
+    let methods: Vec<_> = saved.accounts().iter().map(|record| record.method).collect();
+    assert_eq!(
+        methods,
+        [
+            codexbar_store::settings::AuthMethod::Automatic,
+            codexbar_store::settings::AuthMethod::OAuth
+        ]
+    );
+}
+
+#[gpui_kit::test]
+fn switching_a_codex_account_to_automatic_signs_out_its_own_home(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("codex-to-automatic", MANAGED_CODEX);
+    let home = codex_home(&settings, "cx-1");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(
+        home.join("auth.json"),
+        codex_fixture::sign_in("user-1", "dev@example.com"),
+    )
+    .unwrap();
+    let fake = FakeCodexSignIn::default();
+    let handle = open_codex_accounts(cx, &settings, &fake);
+    click(cx, handle, "edit-cx-1");
+    // From OAuth back to Automatic.
+    press(cx, handle, "tab");
+    for _ in 0..4 {
+        press(cx, handle, "up");
+    }
+    press(cx, handle, "enter");
+    click(cx, handle, "account-save");
+    assert_eq!(
+        saved_settings(&settings).accounts()[0].method,
+        codexbar_store::settings::AuthMethod::Automatic
+    );
+    assert_eq!(*fake.0.signed_out.lock().unwrap(), std::slice::from_ref(&home));
+    assert!(!home.exists(), "no sign-in is left behind in the old home");
 }

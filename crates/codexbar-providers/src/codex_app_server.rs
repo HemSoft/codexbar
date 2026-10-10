@@ -80,14 +80,22 @@ impl AppServer {
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;
+            const CREATE_SUSPENDED: u32 = 0x0000_0004;
             const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-            command.creation_flags(CREATE_NO_WINDOW);
+            // Suspended until it is in its job, so nothing it starts can run outside the job.
+            command.creation_flags(CREATE_NO_WINDOW | CREATE_SUSPENDED);
         }
         let mut child = command.spawn().map_err(|err| match err.kind() {
             std::io::ErrorKind::NotFound => AppServerError::NotInstalled,
             _ => AppServerError::Failed,
         })?;
         let parts = ProcessParts::for_child(&child);
+        #[cfg(windows)]
+        if !job::resume(child.id()) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(AppServerError::Failed);
+        }
         let stdin = child.stdin.take().ok_or(AppServerError::Failed)?;
         let stdout = child.stdout.take().ok_or(AppServerError::Failed)?;
         let (sender, messages) = channel();
@@ -166,10 +174,8 @@ impl AppServer {
                     None => Ok(message.get("result").cloned().unwrap_or(Value::Null)),
                 };
             }
-            if message.get("method").is_some() && message.get("id").is_none() {
-                self.pending.push(message);
-            }
-            // A request from Codex (an approval prompt) or another response isn't for this session; ignore it.
+            // A request from Codex (an approval prompt) or another response isn't for this session.
+            self.keep(message);
         }
     }
 
@@ -189,17 +195,41 @@ impl AppServer {
             return Ok(self.pending.remove(ix));
         }
         loop {
+            // What has already arrived counts before cancellation: a sign-in that completed just as the dialog
+            // closed still completes.
+            while let Ok(message) = self.messages.try_recv() {
+                if is_it(&message) {
+                    return Ok(message);
+                }
+                self.keep(message);
+            }
             if cancel.load(Ordering::SeqCst) {
                 return Err(AppServerError::Cancelled);
             }
             let step = (Instant::now() + POLL).min(deadline);
             match self.next_message(step) {
                 Ok(message) if is_it(&message) => return Ok(message),
-                Ok(_) => {}
+                Ok(message) => self.keep(message),
                 Err(AppServerError::TimedOut) if Instant::now() < deadline => {}
                 Err(err) => return Err(err),
             }
         }
+    }
+
+    /// Keeps a notification for a later wait; anything else isn't for this session.
+    fn keep(&mut self, message: Value) {
+        if message.get("method").is_some() && message.get("id").is_none() {
+            self.pending.push(message);
+        }
+    }
+
+    /// Takes a kept notification `method` whose params satisfy `matches`.
+    fn take_pending(&mut self, method: &str, matches: impl Fn(&Value) -> bool) -> Option<Value> {
+        let ix = self.pending.iter().position(|message| {
+            message.get("method").and_then(Value::as_str) == Some(method)
+                && matches(message.get("params").unwrap_or(&Value::Null))
+        })?;
+        Some(self.pending.remove(ix))
     }
 
     fn next_message(&mut self, deadline: Instant) -> Result<Value, AppServerError> {
@@ -229,13 +259,21 @@ impl SignIn {
     /// sign-in is cancelled in Codex too, so its redirect listener closes.
     pub fn finish(mut self, timeout: Duration, cancel: &AtomicBool) -> Result<(), AppServerError> {
         let login_id = self.login_id.clone();
+        let this_one = |params: &Value| params.get("loginId").and_then(Value::as_str) == Some(login_id.as_str());
         let deadline = Instant::now() + timeout;
-        let completed = self.server.wait_for(
-            "account/login/completed",
-            |params| params.get("loginId").and_then(Value::as_str) == Some(login_id.as_str()),
-            deadline,
-            cancel,
-        );
+        let completed = self
+            .server
+            .wait_for("account/login/completed", this_one, deadline, cancel)
+            .or_else(|err| match err {
+                AppServerError::Cancelled | AppServerError::TimedOut => {
+                    let _ = self
+                        .server
+                        .request("account/login/cancel", json!({"loginId": login_id}), POLL * 10);
+                    // The sign-in may have completed before Codex saw the cancel; then it stands.
+                    self.server.take_pending("account/login/completed", this_one).ok_or(err)
+                }
+                err => Err(err),
+            });
         match completed {
             Ok(message) => {
                 let params = message.get("params").cloned().unwrap_or(Value::Null);
@@ -247,12 +285,6 @@ impl SignIn {
                         _ => AppServerError::Refused("The sign-in didn't complete.".to_owned()),
                     })
                 }
-            }
-            Err(err @ (AppServerError::Cancelled | AppServerError::TimedOut)) => {
-                let _ = self
-                    .server
-                    .request("account/login/cancel", json!({"loginId": login_id}), POLL * 10);
-                Err(err)
             }
             Err(err) => Err(err),
         }
@@ -350,10 +382,14 @@ mod job {
     use std::process::Child;
 
     use windows::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
+    };
     use windows::Win32::System::JobObjects::{
         AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
         JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation, SetInformationJobObject,
     };
+    use windows::Win32::System::Threading::{OpenThread, ResumeThread, THREAD_SUSPEND_RESUME};
     use windows::core::PCWSTR;
 
     /// A job whose processes all end when it is closed.
@@ -384,6 +420,35 @@ mod job {
             unsafe { AssignProcessToJobObject(job.0, HANDLE(child.as_raw_handle())) }.ok()?;
             Some(job)
         }
+    }
+
+    /// Resumes the threads of a process started suspended (it has one). False if none could be resumed.
+    pub fn resume(pid: u32) -> bool {
+        // SAFETY: a snapshot of all threads; the handle is closed below.
+        let Ok(snapshot) = (unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) }) else {
+            return false;
+        };
+        let mut entry = THREADENTRY32 {
+            dwSize: std::mem::size_of::<THREADENTRY32>() as u32,
+            ..Default::default()
+        };
+        let mut resumed = false;
+        // SAFETY: `entry` is a THREADENTRY32 with its size set, as both calls require.
+        let mut more = unsafe { Thread32First(snapshot, &mut entry) }.is_ok();
+        while more {
+            if entry.th32OwnerProcessID == pid {
+                // SAFETY: the thread handle is used for this one call and closed.
+                if let Ok(thread) = unsafe { OpenThread(THREAD_SUSPEND_RESUME, false, entry.th32ThreadID) } {
+                    resumed |= unsafe { ResumeThread(thread) } != u32::MAX;
+                    let _ = unsafe { CloseHandle(thread) };
+                }
+            }
+            // SAFETY: as above.
+            more = unsafe { Thread32Next(snapshot, &mut entry) }.is_ok();
+        }
+        // SAFETY: the snapshot handle came from CreateToolhelp32Snapshot and is closed once.
+        let _ = unsafe { CloseHandle(snapshot) };
+        resumed
     }
 
     impl Drop for Job {
@@ -558,6 +623,34 @@ mod tests {
             .finish(Duration::from_millis(100), &AtomicBool::new(false));
         assert_eq!(result, Err(AppServerError::TimedOut));
         assert_eq!(method(seen.lock().unwrap().last().unwrap()), "account/login/cancel");
+    }
+
+    #[test]
+    fn a_sign_in_that_completed_as_it_was_cancelled_still_completes() {
+        // The completion is already waiting when the dialog closes.
+        let done = json!({"method": "account/login/completed",
+            "params": {"loginId": "login-1", "success": true, "error": null}});
+        let (queued, _) = sign_in_server(Some(done.clone()));
+        let result = queued
+            .begin_sign_in()
+            .unwrap()
+            .finish(Duration::from_secs(5), &AtomicBool::new(true));
+        assert_eq!(result, Ok(()));
+
+        // It arrives while Codex answers the cancel.
+        let (answered, _) = server(move |message| match method(message) {
+            "account/login/start" => vec![reply(
+                message,
+                json!({"type": "chatgpt", "loginId": "login-1", "authUrl": "https://auth.example/start"}),
+            )],
+            "account/login/cancel" => vec![done.clone(), reply(message, json!({"status": "notFound"}))],
+            _ => vec![],
+        });
+        let result = answered
+            .begin_sign_in()
+            .unwrap()
+            .finish(Duration::from_secs(5), &AtomicBool::new(true));
+        assert_eq!(result, Ok(()));
     }
 
     #[test]

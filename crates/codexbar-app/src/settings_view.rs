@@ -506,6 +506,7 @@ fn save_account(form: &AccountForm, existing: Option<AccountRecord>, window: &mu
     let username = form.username.read(cx).value().trim().to_owned();
     let workspace = form.workspace.read(cx).value().trim().to_owned();
 
+    let previous = existing.clone();
     let mut record = existing.unwrap_or_else(|| AccountRecord::new(info.id, &label, method));
     record.label = label;
     record.method = method;
@@ -532,8 +533,32 @@ fn save_account(form: &AccountForm, existing: Option<AccountRecord>, window: &mu
             .iter()
             .any(|existing| existing.id == record.id && crate::codex_sign_in::is_managed(existing));
     let record_id = record.id.clone();
-    match SettingsHub::update(cx, |settings| settings.upsert(record)) {
+    // The first Codex account CodexBar signs in joins the Codex CLI's own sign-in rather than replacing it: that one
+    // was showing as the implicit account and stays, as an account of its own the user can switch off or remove.
+    let keep_cli_account = previous.is_none()
+        && crate::codex_sign_in::is_managed(&record)
+        && SettingsHub::global(cx).settings().is_enabled(names::CODEX)
+        && SettingsHub::global(cx)
+            .settings()
+            .accounts_for(names::CODEX)
+            .next()
+            .is_none();
+    // An account leaving CodexBar's own sign-in (OAuth to Automatic) is signed out and its folder deleted.
+    let left_managed = previous
+        .as_ref()
+        .filter(|old| crate::codex_sign_in::is_managed(old) && !crate::codex_sign_in::is_managed(&record))
+        .cloned();
+    let saved = SettingsHub::update(cx, |settings| {
+        if keep_cli_account {
+            settings.upsert(SettingsHub::implicit_account(names::CODEX))?;
+        }
+        settings.upsert(record)
+    });
+    match saved {
         Ok(()) => {
+            if let Some(old) = left_managed {
+                crate::codex_sign_in::forget(old, cx);
+            }
             if sign_in_now {
                 // After this dialog has closed.
                 window.defer(cx, move |window, cx| {

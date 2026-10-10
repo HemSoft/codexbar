@@ -40,11 +40,28 @@ pub fn is_managed(record: &AccountRecord) -> bool {
 /// Codex CLI's (`CODEX_HOME`, or `~/.codex`).
 pub fn home(dir: &Path, record: &AccountRecord) -> PathBuf {
     if is_managed(record) {
-        dir.join("codex").join(&record.id)
+        dir.join("codex").join(folder_name(&record.id))
     } else {
         let auth = codexbar_providers::codex::default_auth_path();
         auth.parent().map_or_else(|| PathBuf::from(".codex"), Path::to_path_buf)
     }
+}
+
+/// The folder an account's home is in: its id when that is a plain name (CodexBar's ids are 32 hex digits), else a
+/// hash of it, so an edited settings file can't place a home, or its deletion, outside `codex\`.
+fn folder_name(id: &str) -> String {
+    let plain = !id.is_empty()
+        && id.len() <= 64
+        && id
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_');
+    if plain {
+        return id.to_owned();
+    }
+    use sha2::{Digest as _, Sha256};
+    let digest = Sha256::digest(id.as_bytes());
+    let hex: String = digest.iter().take(16).map(|byte| format!("{byte:02x}")).collect();
+    format!("id-{hex}")
 }
 
 /// The sign-in file of an account's Codex home.
@@ -64,10 +81,12 @@ fn prepare(home: &Path) -> std::io::Result<()> {
 
 /// Deletes a removed account's CodexBar home. Only a managed home is ever deleted, never the Codex CLI's own.
 pub fn delete_home(dir: &Path, record: &AccountRecord) -> std::io::Result<()> {
-    if !is_managed(record) {
+    let home = home(dir, record);
+    // Only ever a folder directly inside `codex\`.
+    if !is_managed(record) || home.parent() != Some(dir.join("codex").as_path()) {
         return Ok(());
     }
-    match std::fs::remove_dir_all(home(dir, record)) {
+    match std::fs::remove_dir_all(home) {
         Err(err) if err.kind() != std::io::ErrorKind::NotFound => Err(err),
         _ => Ok(()),
     }
@@ -373,5 +392,50 @@ pub fn describe(dir: &Path, record: &AccountRecord) -> String {
         (Some(email), _) => email,
         (None, true) => "Signed in".to_owned(),
         (None, false) => "Not signed in".to_owned(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn managed(id: &str) -> AccountRecord {
+        AccountRecord {
+            id: id.to_owned(),
+            ..AccountRecord::new(names::CODEX, "Work", AuthMethod::OAuth)
+        }
+    }
+
+    #[test]
+    fn a_home_is_always_a_folder_directly_inside_codex() {
+        let dir = std::env::temp_dir().join(format!("codexbar-homes-{}", std::process::id()));
+        let codex = dir.join("codex");
+        assert_eq!(home(&dir, &managed("0123abcd")), codex.join("0123abcd"));
+        // An edited settings file can't point a home elsewhere: relative, absolute or odd ids are hashed.
+        for id in ["../../Documents", r"C:\Users\Someone", "..", "a/b", "", &"x".repeat(65)] {
+            let home = home(&dir, &managed(id));
+            assert_eq!(home.parent(), Some(codex.as_path()), "{id}");
+            let name = home.file_name().unwrap().to_string_lossy().into_owned();
+            assert!(name.starts_with("id-") && name.len() == 35, "{id} -> {name}");
+        }
+        assert_ne!(home(&dir, &managed("../a")), home(&dir, &managed("../b")));
+    }
+
+    #[test]
+    fn deleting_a_home_never_touches_anything_else() {
+        let dir = std::env::temp_dir().join(format!("codexbar-delete-{}", std::process::id()));
+        let outside = dir.join("Documents");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("keep.txt"), "keep").unwrap();
+        delete_home(&dir.join("settings"), &managed("../Documents")).unwrap();
+        assert!(outside.join("keep.txt").exists());
+        // An account on the Codex CLI's own sign-in never deletes that home.
+        let automatic = AccountRecord::new(names::CODEX, "CLI", AuthMethod::Automatic);
+        assert_eq!(delete_home(&dir, &automatic).ok(), Some(()));
+        let managed_home = home(&dir, &managed("cx-1"));
+        std::fs::create_dir_all(&managed_home).unwrap();
+        delete_home(&dir, &managed("cx-1")).unwrap();
+        assert!(!managed_home.exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
