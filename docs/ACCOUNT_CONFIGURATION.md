@@ -3,7 +3,10 @@
 CodexBar's accounts live in `settings.json` (in `%USERPROFILE%\.codexbar`) as
 `accountConfigurationVersion: 1` and an `accounts` array. Accounts are added,
 edited, switched off and removed in **Settings > Accounts**; every change is
-saved at once, and destructive actions ask first.
+saved at once. Removing an account and Reset accounts ask first, and so does
+signing a signed-in Cursor account in again. Signing a Codex, Claude or Copilot
+account in again with another identity replaces it without asking (see
+[Identity and history](#identity-and-history)).
 
 ## Account records
 

@@ -78,9 +78,10 @@ updates is planned for the first release
 - **Widgets**: Windows widgets need a packaged app, so they come with the MSIX
   release ([#94](https://github.com/hemsoft-dev/codexbar/issues/94),
   [#95](https://github.com/hemsoft-dev/codexbar/issues/95)).
-- **Uninstall**: delete `%LOCALAPPDATA%\CodexBar\bin`, the `.codexbar` folder in
-  your profile, the `CodexBar:account:*` entries in Credential Manager, and the
-  `CodexBar` startup entry if you had one
+- **Uninstall**: first quit CodexBar (tray menu, Quit CodexBar). Then delete
+  `%LOCALAPPDATA%\CodexBar\bin`, the `.codexbar` folder in your profile (and the
+  folder in `CODEXBAR_SETTINGS_DIR`, if you set it), the `CodexBar:account:*`
+  entries in Credential Manager, and the `CodexBar` startup entry if you had one
   (`Remove-ItemProperty HKCU:\Software\Microsoft\Windows\CurrentVersion\Run -Name CodexBar`).
 - **Support**: report problems at
   [github.com/hemsoft-dev/codexbar/issues](https://github.com/hemsoft-dev/codexbar/issues).

@@ -10,7 +10,8 @@ CodexBar sends requests only to providers that are on and have a sign-in or key
 to use. On a first start, before any account is set up, every provider except
 Moonshot is on: one already signed in on this PC (the Codex CLI, Claude Code, the
 Cursor app, the GitHub CLI) is fetched right away, and one without a sign-in or
-key makes no request. Switch a provider off in Settings > Accounts to stop it.
+key makes no request. To stop one, add an account for it in Settings > Accounts
+(the provider's own sign-in, Automatic) and switch that account off.
 
 | Provider | Endpoint | Authenticated with |
 | --- | --- | --- |
@@ -22,6 +23,10 @@ key makes no request. Switch a provider off in Settings > Accounts to stop it.
 | Moonshot (Kimi) | `https://api.moonshot.ai/v1/users/me/balance` | Your API key |
 | OpenCode Go / Zen | `https://opencode.ai/workspace/…` | Your dashboard auth cookie |
 
+For the GitHub CLI's Copilot accounts, CodexBar also runs `gh auth status` on
+each refresh to list them; the GitHub CLI checks each account with GitHub while
+it does.
+
 Signing an account in from Settings runs the provider's own CLI (Codex CLI,
 GitHub CLI, Claude Code or the Cursor CLI), which talks to that provider's
 sign-in service. CodexBar opens the provider's sign-in page in your default
@@ -30,10 +35,12 @@ browser. See [OAUTH.md](OAUTH.md) for how each sign-in works.
 ## Secrets
 
 - **API keys and cookies** you paste in Settings are stored in Windows
-  Credential Manager under `CodexBar:account:<id>`, never in a file. An
+  Credential Manager under `CodexBar:account:<id>`, not in a file. An
   environment variable (`OPENROUTER_API_KEY`, `MOONSHOT_API_KEY`, …) takes
   precedence over a stored key. Keys an older CodexBar left in its settings
-  file are moved to Credential Manager at startup.
+  file are moved to Credential Manager at startup. If that move fails, the key
+  stays in the file and in use, Settings says so, and the move is tried again
+  at the next start.
 - **Copilot accounts CodexBar signs in** keep their GitHub CLI token in
   Credential Manager, split across parts when it is long.
 - **Codex, Claude and Cursor accounts CodexBar signs in** keep their sign-in
@@ -41,7 +48,11 @@ browser. See [OAUTH.md](OAUTH.md) for how each sign-in works.
   settings folder (`codex\`, `claude\`, `cursor\`). CodexBar reads those files
   and never writes them.
 - **Sign-ins of the providers' own apps** (`~/.codex`, `~/.claude`, the Cursor
-  app's, your `gh` accounts) are only read.
+  app's, your `gh` accounts) are read, never written by CodexBar. One exception
+  is renewal: when a Codex or Claude sign-in (the CLI's own or one CodexBar
+  made) is about to expire or is refused, CodexBar asks that CLI to renew it
+  (`codex app-server`, `claude auth status`). The CLI then writes the renewed
+  tokens, as it would when you use it.
 - Secrets never appear in the UI, error messages, notifications, logs or
   saved snapshots. Errors keep only a provider's short error text or status.
 
