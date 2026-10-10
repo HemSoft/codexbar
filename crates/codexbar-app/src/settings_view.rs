@@ -741,7 +741,7 @@ fn confirm_reset(window: &mut Window, cx: &mut App) {
     window.open_alert_dialog(cx, |alert, _, _| {
         alert
             .title("Reset all accounts?")
-            .description("Every account and its saved keys are removed. OpenRouter and Moonshot accounts, and ChatGPT accounts CodexBar signed in, also lose their usage history; providers that fall back to their default sign-in, including Copilot, keep theirs. This can't be undone.")
+            .description("Every account and its saved keys are removed. OpenRouter and Moonshot accounts, and ChatGPT, Copilot and Claude accounts CodexBar signed in, also lose their usage history; providers that fall back to their default sign-in, including Copilot, keep theirs. This can't be undone.")
             .button_props(DialogButtonProps::default().ok_text("Reset accounts").ok_variant(ButtonVariant::Danger).show_cancel(true))
             .on_ok(|_, _, cx| {
                 // Every account's key, and each key-based provider's implicit one (#74).

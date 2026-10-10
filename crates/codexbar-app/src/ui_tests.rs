@@ -3418,6 +3418,9 @@ fn each_claude_account_gets_its_own_adapter_and_shares_none(cx: &mut TestAppCont
             { "id": "cl-3", "providerId": "Claude", "displayLabel": "Home", "enabled": true,
               "authenticationMethod": "BrowserSession" } ] }"#,
     );
+    // Both folders are signed in to the same Claude account.
+    claude_fixture::sign_in(&claude_folder(&settings, "cl-1"), "same");
+    claude_fixture::sign_in(&claude_folder(&settings, "cl-2"), "same");
     cx.update(|cx| SettingsHub::init_with(cx, &settings.0, Arc::new(MemoryCredentialStore::default())));
     let adapters = cx.update(|cx| crate::providers::enabled(SettingsHub::global(cx)));
     let claude: Vec<Option<String>> = adapters
@@ -3430,4 +3433,48 @@ fn each_claude_account_gets_its_own_adapter_and_shares_none(cx: &mut TestAppCont
         claude,
         [Some("claude-aaaaaaaaaaaa".to_owned()), Some("cl-3".to_owned())]
     );
+}
+
+#[gpui_kit::test]
+fn a_signed_out_claude_account_doesnt_hide_a_signed_in_one(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "claude-signed-out-claim",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "cl-1", "providerId": "Claude", "displayLabel": "Old", "enabled": true,
+              "authenticationMethod": "BrowserSession", "externalAccountId": "claude-aaaaaaaaaaaa" },
+            { "id": "cl-2", "providerId": "Claude", "displayLabel": "Current", "enabled": true,
+              "authenticationMethod": "BrowserSession", "externalAccountId": "claude-aaaaaaaaaaaa" } ] }"#,
+    );
+    // Only the second folder is signed in.
+    claude_fixture::sign_in(&claude_folder(&settings, "cl-2"), "same");
+    cx.update(|cx| SettingsHub::init_with(cx, &settings.0, Arc::new(MemoryCredentialStore::default())));
+    let adapters = cx.update(|cx| crate::providers::enabled(SettingsHub::global(cx)));
+    let labels: Vec<Option<String>> = adapters
+        .iter()
+        .filter(|provider| provider.name() == "Claude")
+        .map(|provider| provider.account_label().map(str::to_owned))
+        .collect();
+    assert!(labels.contains(&Some("Current".to_owned())), "{labels:?}");
+}
+
+#[gpui_kit::test]
+fn claude_codes_own_folder_keeps_the_account_neutral_id(cx: &mut TestAppContext) {
+    // Other Claude apps can rename the account in its .claude.json without changing the CLI's credentials, so it is
+    // never named by that file.
+    let settings = TempSettings::new(
+        "claude-default-id",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "cl-own", "providerId": "Claude", "displayLabel": "Mine", "enabled": true,
+              "authenticationMethod": "OAuth" },
+            { "id": "cl-1", "providerId": "Claude", "displayLabel": "Work", "enabled": true,
+              "authenticationMethod": "BrowserSession" } ] }"#,
+    );
+    cx.update(|cx| SettingsHub::init_with(cx, &settings.0, Arc::new(MemoryCredentialStore::default())));
+    let adapters = cx.update(|cx| crate::providers::enabled(SettingsHub::global(cx)));
+    let own = adapters
+        .iter()
+        .find(|provider| provider.name() == "Claude" && provider.account_label() == Some("Mine"))
+        .expect("Claude Code's own folder has an adapter");
+    // Configured among several, it reports under its record, never an identity read from the shared profile.
+    assert_eq!(own.account_id(), Some("cl-own"));
 }

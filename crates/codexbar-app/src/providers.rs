@@ -122,8 +122,13 @@ fn codex_adapters(hub: &SettingsHub) -> Vec<Arc<dyn UsageProvider>> {
 }
 
 /// One adapter per Claude Code config folder (#80): Claude Code's own, and one for each account CodexBar signed in.
-/// Folders signed in to the same Claude account show it once, through the CodexBar account that owns it. Every
-/// adapter renews through Claude Code.
+/// Every adapter renews through Claude Code.
+///
+/// Only CodexBar's own folders are named by the Claude account in their `.claude.json`: CodexBar alone writes them,
+/// through the Claude Code it starts, so that file and the credentials always belong together. In Claude Code's own
+/// folder other Claude apps can rewrite `.claude.json` for another account while the CLI's credentials stay on the
+/// first (anthropics/claude-code#85294), so that folder keeps the account-neutral `claude` id it always had, and its
+/// history stays where it was. Two CodexBar folders signed in to one account show it once.
 fn claude_adapters(hub: &SettingsHub) -> Vec<Arc<dyn UsageProvider>> {
     let mut records = enabled_accounts(hub, names::CLAUDE);
     let several = records.len() > 1;
@@ -135,18 +140,25 @@ fn claude_adapters(hub: &SettingsHub) -> Vec<Arc<dyn UsageProvider>> {
         let credentials = crate::claude_sign_in::credentials_path(hub.dir(), &record);
         let profile = crate::claude_sign_in::profile_path(hub.dir(), &record);
         let managed = crate::claude_sign_in::is_managed(&record);
-        let identity = if managed { record.external_id.clone() } else { None }
-            .or_else(|| claude::signed_in_identity(&profile).map(|(id, _)| id.as_str().to_owned()));
-        if folders.contains(&credentials) || identity.as_ref().is_some_and(|id| identities.contains(id)) {
+        let signed_in = credentials.is_file();
+        let identity = if managed {
+            record
+                .external_id
+                .clone()
+                .or_else(|| claude::signed_in_identity(&profile).map(|(id, _)| id.as_str().to_owned()))
+        } else {
+            None
+        };
+        // A signed-out folder doesn't hold its remembered identity against one that is signed in to it.
+        let claims = identity.clone().filter(|_| signed_in);
+        if folders.contains(&credentials) || claims.as_ref().is_some_and(|id| identities.contains(id)) {
             continue;
         }
         folders.push(credentials.clone());
-        identities.extend(identity.clone());
-        let mut provider = ClaudeProvider::new(UreqClient::new(), credentials)
-            .with_profile(profile)
-            .with_renewer(Arc::new(ClaudeCliRenewer));
+        identities.extend(claims);
+        let mut provider = ClaudeProvider::new(UreqClient::new(), credentials).with_renewer(Arc::new(ClaudeCliRenewer));
         if managed {
-            provider = provider.managed();
+            provider = provider.with_profile(profile).managed();
         }
         if managed || several {
             provider = provider.with_account(identity.unwrap_or_else(|| record.id.clone()), record.label.clone());

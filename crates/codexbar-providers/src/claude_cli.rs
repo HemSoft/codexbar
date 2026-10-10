@@ -86,8 +86,9 @@ impl LoginWindow {
         })
     }
 
-    /// Waits until the window closes, then checks that it left a sign-in. Cancellation or the timeout closes the
-    /// window.
+    /// Waits until the window closes, then checks that Claude Code reported success and left a sign-in (a sign-in
+    /// that was abandoned leaves the previous credentials, which must not pass for a new one). Cancellation or the
+    /// timeout closes the window.
     pub fn finish(mut self, timeout: Duration, cancel: &AtomicBool) -> Result<(), ClaudeCliError> {
         let deadline = Instant::now() + timeout;
         loop {
@@ -96,7 +97,8 @@ impl LoginWindow {
                 return Err(ClaudeCliError::Cancelled);
             }
             match self.process.child.try_wait() {
-                Ok(Some(_)) => break,
+                Ok(Some(status)) if status.success() => break,
+                Ok(Some(_)) => return Err(ClaudeCliError::Failed),
                 Ok(None) if Instant::now() >= deadline => {
                     self.close();
                     return Err(ClaudeCliError::TimedOut);
