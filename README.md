@@ -69,7 +69,9 @@ updates is planned for the first release
   CodexBar and starts the new one. Settings, saved keys and history are kept.
 - **Roll back**: check out an earlier commit (`git checkout <commit>`) and run
   `.\run.ps1` again. Settings stay compatible: a file from a newer CodexBar is
-  opened read-only rather than overwritten.
+  opened read-only rather than overwritten. To update again afterwards, switch
+  back to the branch you build from (`git switch feat/rust-gpui-dashboard` today)
+  before `git pull`, since a checked-out commit has no branch to pull into.
 - **Start with Windows**: `run.ps1` keeps an existing `CodexBar` entry in
   `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` pointed at the installed
   app.
@@ -77,7 +79,9 @@ updates is planned for the first release
   release ([#94](https://github.com/hemsoft-dev/codexbar/issues/94),
   [#95](https://github.com/hemsoft-dev/codexbar/issues/95)).
 - **Uninstall**: delete `%LOCALAPPDATA%\CodexBar\bin`, the `.codexbar` folder in
-  your profile, and the `CodexBar:account:*` entries in Credential Manager.
+  your profile, the `CodexBar:account:*` entries in Credential Manager, and the
+  `CodexBar` startup entry if you had one
+  (`Remove-ItemProperty HKCU:\Software\Microsoft\Windows\CurrentVersion\Run -Name CodexBar`).
 - **Support**: report problems at
   [github.com/hemsoft-dev/codexbar/issues](https://github.com/hemsoft-dev/codexbar/issues).
   Never paste keys, tokens or cookies into an issue.

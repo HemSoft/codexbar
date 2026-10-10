@@ -6,7 +6,11 @@ sign-in or key you gave it, and to nothing else.
 
 ## Network destinations
 
-CodexBar sends requests only to the providers you turn on:
+CodexBar sends requests only to providers that are on and have a sign-in or key
+to use. On a first start, before any account is set up, every provider except
+Moonshot is on: one already signed in on this PC (the Codex CLI, Claude Code, the
+Cursor app, the GitHub CLI) is fetched right away, and one without a sign-in or
+key makes no request. Switch a provider off in Settings > Accounts to stop it.
 
 | Provider | Endpoint | Authenticated with |
 | --- | --- | --- |

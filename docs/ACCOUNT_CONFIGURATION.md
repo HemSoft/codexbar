@@ -19,8 +19,11 @@ saved at once, and destructive actions ask first.
 | `legacyCardKey` | Kept from older CodexBar versions for ordering |
 | `copilotEnterprise`, `copilotOrganization`, `copilotPoolTotal` | Copilot org billing for an Enterprise seat; written only when set |
 
-None of these are secrets. Keys, cookies and tokens are kept in Windows
-Credential Manager under `CodexBar:account:<id>` (see [PRIVACY.md](PRIVACY.md)).
+None of these are secrets. Pasted keys and cookies, and the GitHub tokens of
+Copilot accounts CodexBar signs in, are kept in Windows Credential Manager under
+`CodexBar:account:<id>`. Codex, Claude and Cursor accounts CodexBar signs in keep
+their tokens in the files those CLIs write, in the account's own folder under
+the settings folder (`codex\`, `claude\`, `cursor\`). See [PRIVACY.md](PRIVACY.md).
 
 ## Sign-in methods
 
