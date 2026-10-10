@@ -31,33 +31,7 @@ fn enabled_accounts(hub: &SettingsHub, provider: &str) -> Vec<AccountRecord> {
 
 pub fn enabled(hub: &SettingsHub) -> Vec<Arc<dyn UsageProvider>> {
     let mut providers: Vec<Arc<dyn UsageProvider>> = Vec::new();
-    // One adapter per Codex home (#78): the Codex CLI's own, and one for each account CodexBar signed in.
-    let codex = enabled_accounts(hub, names::CODEX);
-    let several = codex.len() > 1;
-    let mut homes = Vec::new();
-    for record in codex {
-        let path = crate::codex_sign_in::auth_path(hub.dir(), &record);
-        // Two accounts on the Codex CLI's own sign-in would show one ChatGPT account twice.
-        if homes.contains(&path) {
-            continue;
-        }
-        homes.push(path.clone());
-        let managed = crate::codex_sign_in::is_managed(&record);
-        let mut provider = CodexProvider::new(UreqClient::new(), path.clone()).with_renewer(Arc::new(CodexCliRenewer));
-        if managed {
-            provider = provider.managed();
-        }
-        if managed || several {
-            // The identity it was signed in to; before the first sign-in, the record itself.
-            let id = if managed {
-                record.external_id.clone()
-            } else {
-                codex::signed_in_account(&path).map(|id| id.as_str().to_owned())
-            };
-            provider = provider.with_account(id.unwrap_or_else(|| record.id.clone()), record.label.clone());
-        }
-        providers.push(Arc::new(provider));
-    }
+    providers.extend(codex_adapters(hub));
 
     let copilot = enabled_accounts(hub, names::COPILOT);
     if !copilot.is_empty() {
@@ -125,6 +99,40 @@ pub fn enabled(hub: &SettingsHub) -> Vec<Arc<dyn UsageProvider>> {
         providers.push(Arc::new(provider));
     }
     providers
+}
+
+/// One adapter per Codex home (#78): the Codex CLI's own, and one for each account CodexBar signed in. Homes signed in
+/// to the same ChatGPT identity (the Codex CLI's and a CodexBar account, say) show it once, through the CodexBar
+/// account that owns it, so one identity never appears twice or loses its owner.
+fn codex_adapters(hub: &SettingsHub) -> Vec<Arc<dyn UsageProvider>> {
+    let mut records = enabled_accounts(hub, names::CODEX);
+    let several = records.len() > 1;
+    // CodexBar's own accounts first: they own their identity.
+    records.sort_by_key(|record| !crate::codex_sign_in::is_managed(record));
+    let mut homes = Vec::new();
+    let mut identities = Vec::new();
+    let mut adapters: Vec<Arc<dyn UsageProvider>> = Vec::new();
+    for record in records {
+        let path = crate::codex_sign_in::auth_path(hub.dir(), &record);
+        let managed = crate::codex_sign_in::is_managed(&record);
+        // The identity it was signed in to (a CodexBar account remembers it); before the first sign-in, none.
+        let identity = if managed { record.external_id.clone() } else { None }
+            .or_else(|| codex::signed_in_account(&path).map(|id| id.as_str().to_owned()));
+        if homes.contains(&path) || identity.as_ref().is_some_and(|id| identities.contains(id)) {
+            continue;
+        }
+        homes.push(path.clone());
+        identities.extend(identity.clone());
+        let mut provider = CodexProvider::new(UreqClient::new(), path).with_renewer(Arc::new(CodexCliRenewer));
+        if managed {
+            provider = provider.managed();
+        }
+        if managed || several {
+            provider = provider.with_account(identity.unwrap_or_else(|| record.id.clone()), record.label.clone());
+        }
+        adapters.push(Arc::new(provider));
+    }
+    adapters
 }
 
 /// The dashboard account each configured record owns (#85), by record id: OpenRouter and Moonshot records report under

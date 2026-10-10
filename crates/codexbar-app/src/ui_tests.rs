@@ -2418,7 +2418,7 @@ mod codex_fixture {
     }
 
     impl SignInService for FakeCodexSignIn {
-        fn begin(&self, home: &Path) -> Result<Box<dyn PendingSignIn>, AppServerError> {
+        fn begin(&self, home: &Path, _: &AtomicBool) -> Result<Box<dyn PendingSignIn>, AppServerError> {
             self.0.begun.lock().unwrap().push(home.to_owned());
             Ok(Box::new(Pending {
                 state: self.0.clone(),
@@ -2737,4 +2737,83 @@ fn switching_a_codex_account_to_automatic_signs_out_its_own_home(cx: &mut TestAp
     );
     assert_eq!(*fake.0.signed_out.lock().unwrap(), std::slice::from_ref(&home));
     assert!(!home.exists(), "no sign-in is left behind in the old home");
+}
+
+#[gpui_kit::test]
+fn homes_signed_in_to_one_identity_show_it_once(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "codex-same-identity",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "cx-1", "providerId": "Codex", "displayLabel": "Work", "enabled": true,
+              "authenticationMethod": "OAuth", "externalAccountId": "codex-aaaaaaaaaaaa" },
+            { "id": "cx-2", "providerId": "Codex", "displayLabel": "Again", "enabled": true,
+              "authenticationMethod": "OAuth", "externalAccountId": "codex-aaaaaaaaaaaa" } ] }"#,
+    );
+    cx.update(|cx| SettingsHub::init_with(cx, &settings.0, Arc::new(MemoryCredentialStore::default())));
+    let adapters = cx.update(|cx| crate::providers::enabled(SettingsHub::global(cx)));
+    let codex: Vec<Option<String>> = adapters
+        .iter()
+        .filter(|provider| provider.name() == "ChatGPT · Codex")
+        .map(|provider| provider.account_id().map(str::to_owned))
+        .collect();
+    assert_eq!(codex, [Some("codex-aaaaaaaaaaaa".to_owned())]);
+}
+
+/// Answers every request with 503, so a test's fetch fails without touching the network.
+struct Unavailable;
+
+impl codexbar_providers::HttpClient for Unavailable {
+    fn get(
+        &self,
+        _: &str,
+        _: &[(&str, &str)],
+    ) -> Result<codexbar_providers::HttpResponse, codexbar_providers::ProviderError> {
+        Ok(codexbar_providers::HttpResponse::new(503, ""))
+    }
+}
+
+#[gpui_kit::test]
+fn saved_codex_usage_restores_per_account(cx: &mut TestAppContext) {
+    use codexbar_providers::codex::CodexProvider;
+    let settings = TempSettings::new(
+        "codex-restore",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "cx-3", "providerId": "Codex", "displayLabel": "Off", "enabled": false,
+              "authenticationMethod": "OAuth", "externalAccountId": "codex-cccccccccccc" } ] }"#,
+    );
+    let signed_in = settings.0.join("codex").join("cx-2");
+    std::fs::create_dir_all(&signed_in).unwrap();
+    std::fs::write(
+        signed_in.join("auth.json"),
+        codex_fixture::sign_in("user-2", "two@example.com"),
+    )
+    .unwrap();
+    let identity = codexbar_providers::codex::signed_in_account(&signed_in.join("auth.json")).unwrap();
+    let now = chrono::Utc::now();
+    let snapshot = |id: &str| AccountSnapshot::new(AccountId::new(id), Provider::Codex, Vec::new(), now);
+    codexbar_store::snapshots::save_snapshots(
+        &settings.0,
+        &[
+            snapshot("codex-aaaaaaaaaaaa"),
+            snapshot(identity.as_str()),
+            snapshot("codex-cccccccccccc"),
+        ],
+    )
+    .unwrap();
+    // A signed out (its home is empty) but still enabled, B signed in, C switched off.
+    let signed_out = CodexProvider::new(Unavailable, settings.0.join("codex").join("cx-1").join("auth.json"))
+        .managed()
+        .with_account("codex-aaaaaaaaaaaa", "Work");
+    let current = CodexProvider::new(Unavailable, signed_in.join("auth.json"))
+        .managed()
+        .with_account(identity.as_str(), "Personal");
+    let dashboard = open_live_fixed(cx, &settings, vec![Arc::new(signed_out), Arc::new(current)]);
+    let mut shown = ids(cx, &dashboard);
+    shown.sort();
+    let mut expected = vec!["codex-aaaaaaaaaaaa".to_owned(), identity.as_str().to_owned()];
+    expected.sort();
+    assert_eq!(
+        shown, expected,
+        "a signed-out account keeps its usage; a switched-off one stays hidden"
+    );
 }

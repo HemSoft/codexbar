@@ -748,7 +748,13 @@ impl Dashboard {
             .accounts()
             .iter()
             .filter(|account| !account.enabled)
-            .map(|account| account.id.clone())
+            // A switched-off Codex account CodexBar signed in reports under the identity it holds (#78).
+            .flat_map(|account| {
+                let identity = crate::codex_sign_in::is_managed(account)
+                    .then(|| account.external_id.clone())
+                    .flatten();
+                std::iter::once(account.id.clone()).chain(identity)
+            })
             .collect();
         let restored: Vec<AccountSnapshot> = codexbar_store::snapshots::load_snapshots(hub.dir())
             .into_iter()

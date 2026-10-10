@@ -391,8 +391,10 @@ impl<H: HttpClient> UsageProvider for CodexProvider<H> {
         self.account.as_ref().map(|(_, label)| label.as_str())
     }
 
+    /// The home's sign-in; a configured account that is signed out still holds the identity it was signed in to, so
+    /// its saved usage is shown rather than set aside.
     fn signed_in_account(&self) -> Option<AccountId> {
-        signed_in_account(&self.auth_path)
+        signed_in_account(&self.auth_path).or_else(|| self.account.as_ref().map(|(id, _)| AccountId::new(id.clone())))
     }
 }
 

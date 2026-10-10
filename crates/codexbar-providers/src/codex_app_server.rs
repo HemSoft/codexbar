@@ -20,6 +20,9 @@ const START_TIMEOUT: Duration = Duration::from_secs(30);
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// How often a wait checks for cancellation.
 const POLL: Duration = Duration::from_millis(200);
+/// How long a completion may still arrive after Codex answered a cancel: Codex answers the cancel before the
+/// sign-in task it stops publishes its own completion.
+const AFTER_CANCEL: Duration = Duration::from_secs(2);
 /// Longest error text kept from Codex.
 const MAX_ERROR: usize = 200;
 
@@ -223,15 +226,6 @@ impl AppServer {
         }
     }
 
-    /// Takes a kept notification `method` whose params satisfy `matches`.
-    fn take_pending(&mut self, method: &str, matches: impl Fn(&Value) -> bool) -> Option<Value> {
-        let ix = self.pending.iter().position(|message| {
-            message.get("method").and_then(Value::as_str) == Some(method)
-                && matches(message.get("params").unwrap_or(&Value::Null))
-        })?;
-        Some(self.pending.remove(ix))
-    }
-
     fn next_message(&mut self, deadline: Instant) -> Result<Value, AppServerError> {
         let wait = deadline.saturating_duration_since(Instant::now());
         match self.messages.recv_timeout(wait) {
@@ -270,7 +264,14 @@ impl SignIn {
                         .server
                         .request("account/login/cancel", json!({"loginId": login_id}), POLL * 10);
                     // The sign-in may have completed before Codex saw the cancel; then it stands.
-                    self.server.take_pending("account/login/completed", this_one).ok_or(err)
+                    self.server
+                        .wait_for(
+                            "account/login/completed",
+                            this_one,
+                            Instant::now() + AFTER_CANCEL,
+                            &AtomicBool::new(false),
+                        )
+                        .map_err(|_| err)
                 }
                 err => Err(err),
             });
@@ -647,6 +648,39 @@ mod tests {
             _ => vec![],
         });
         let result = answered
+            .begin_sign_in()
+            .unwrap()
+            .finish(Duration::from_secs(5), &AtomicBool::new(true));
+        assert_eq!(result, Ok(()));
+    }
+
+    #[test]
+    fn a_completion_published_after_the_cancel_answer_still_completes() {
+        // Codex answers the cancel first; the sign-in task it stopped publishes its completion a moment later.
+        let (sender, receiver) = channel();
+        let late = sender.clone();
+        let fake = Fake {
+            replies: sender,
+            answer: Box::new(move |message| match method(message) {
+                "account/login/start" => vec![reply(
+                    message,
+                    json!({"type": "chatgpt", "loginId": "login-1", "authUrl": "https://auth.example/start"}),
+                )],
+                "account/login/cancel" => {
+                    let late = late.clone();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(Duration::from_millis(300));
+                        let _ = late.send(json!({"method": "account/login/completed",
+                            "params": {"loginId": "login-1", "success": true, "error": null}}));
+                    });
+                    vec![reply(message, json!({"status": "notFound"}))]
+                }
+                _ => vec![],
+            }),
+            seen: Arc::default(),
+        };
+        let server = AppServer::over(Box::new(fake), receiver);
+        let result = server
             .begin_sign_in()
             .unwrap()
             .finish(Duration::from_secs(5), &AtomicBool::new(true));

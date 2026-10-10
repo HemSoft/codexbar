@@ -52,9 +52,10 @@ pub fn home(dir: &Path, record: &AccountRecord) -> PathBuf {
 fn folder_name(id: &str) -> String {
     let plain = !id.is_empty()
         && id.len() <= 64
+        // Lowercase only: Windows folders ignore case, so "Work" and "work" must not share one.
         && id
             .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_');
+            .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-' || ch == '_');
     if plain {
         return id.to_owned();
     }
@@ -95,7 +96,8 @@ pub fn delete_home(dir: &Path, record: &AccountRecord) -> std::io::Result<()> {
 /// Signs Codex homes in and out. A seam, so UI tests never start Codex or a browser.
 pub trait SignInService: Send + Sync {
     /// Starts a browser sign-in for `home` and opens the sign-in page.
-    fn begin(&self, home: &Path) -> Result<Box<dyn PendingSignIn>, AppServerError>;
+    /// Unless `cancel` was set while Codex was starting, in which case no browser opens.
+    fn begin(&self, home: &Path, cancel: &AtomicBool) -> Result<Box<dyn PendingSignIn>, AppServerError>;
     fn sign_out(&self, home: &Path) -> Result<(), AppServerError>;
 }
 
@@ -121,8 +123,14 @@ impl PendingSignIn for SignIn {
 struct CodexCli;
 
 impl SignInService for CodexCli {
-    fn begin(&self, home: &Path) -> Result<Box<dyn PendingSignIn>, AppServerError> {
+    fn begin(&self, home: &Path, cancel: &AtomicBool) -> Result<Box<dyn PendingSignIn>, AppServerError> {
         let sign_in = AppServer::start(home)?.begin_sign_in()?;
+        // Closed while Codex was starting: no browser opens, and Codex drops the sign-in (one that somehow completed
+        // stands, and the dialog is gone either way).
+        if cancel.load(Ordering::SeqCst) {
+            sign_in.finish(Duration::ZERO, cancel)?;
+            return Err(AppServerError::Cancelled);
+        }
         // A browser that doesn't open isn't fatal: the dialog shows the page to open by hand.
         let _ = SystemBrowser.open(sign_in.url());
         Ok(Box::new(sign_in))
@@ -274,7 +282,9 @@ pub fn sign_in(record_id: &str, window: &mut Window, cx: &mut App) {
             let begin_home = home.clone();
             let begun = {
                 let service = service.clone();
-                cx.background_spawn(async move { service.begin(&begin_home) }).await
+                let cancel = cancel.clone();
+                cx.background_spawn(async move { service.begin(&begin_home, &cancel) })
+                    .await
             };
             let pending = match begun {
                 Ok(pending) => pending,
@@ -412,13 +422,23 @@ mod tests {
         let codex = dir.join("codex");
         assert_eq!(home(&dir, &managed("0123abcd")), codex.join("0123abcd"));
         // An edited settings file can't point a home elsewhere: relative, absolute or odd ids are hashed.
-        for id in ["../../Documents", r"C:\Users\Someone", "..", "a/b", "", &"x".repeat(65)] {
+        for id in [
+            "../../Documents",
+            r"C:\Users\Someone",
+            "..",
+            "a/b",
+            "",
+            &"x".repeat(65),
+            "Work",
+        ] {
             let home = home(&dir, &managed(id));
             assert_eq!(home.parent(), Some(codex.as_path()), "{id}");
             let name = home.file_name().unwrap().to_string_lossy().into_owned();
             assert!(name.starts_with("id-") && name.len() == 35, "{id} -> {name}");
         }
         assert_ne!(home(&dir, &managed("../a")), home(&dir, &managed("../b")));
+        // Ids differing only in case get different folders.
+        assert_ne!(home(&dir, &managed("Work")), home(&dir, &managed("work")));
     }
 
     #[test]
