@@ -174,18 +174,6 @@ pub fn credits_per_seat(year: i32, month: u32) -> u64 {
     }
 }
 
-/// The sum of `usageItems[].grossQuantity` in a billing usage response.
-fn gross_quantity(payload: &str) -> Option<f64> {
-    let json: Value = serde_json::from_str(payload).ok()?;
-    let items = json.get("usageItems")?.as_array()?;
-    Some(
-        items
-            .iter()
-            .filter_map(|item| item.get("grossQuantity").and_then(Value::as_f64))
-            .sum(),
-    )
-}
-
 /// The calendar month `now` is in, in UTC, as the billing API counts it.
 fn billing_month(now: DateTime<Utc>) -> (DateTime<Utc>, DateTime<Utc>) {
     let start = Utc
@@ -216,6 +204,8 @@ pub struct CopilotProvider<H: HttpClient, C: CommandRunner> {
     /// Whether accounts are found through the GitHub CLI. Off when every Copilot account is one CodexBar signed in.
     use_cli: bool,
     logins: Vec<Login>,
+    /// Accounts CodexBar signed in whose saved token couldn't be read.
+    unreadable: Vec<String>,
     /// Org billing per username (lowercase).
     billing: Vec<(String, OrgBilling)>,
 }
@@ -228,6 +218,7 @@ impl<H: HttpClient, C: CommandRunner> CopilotProvider<H, C> {
             only: None,
             use_cli: true,
             logins: Vec::new(),
+            unreadable: Vec::new(),
             billing: Vec::new(),
         }
     }
@@ -249,6 +240,12 @@ impl<H: HttpClient, C: CommandRunner> CopilotProvider<H, C> {
             username: username.into(),
             token: token.into(),
         });
+        self
+    }
+
+    /// An account CodexBar signed in whose saved token couldn't be read: it is reported as failing, not fetched.
+    pub fn with_unreadable_login(mut self, username: impl Into<String>) -> Self {
+        self.unreadable.push(username.into());
         self
     }
 
@@ -347,18 +344,48 @@ impl<H: HttpClient, C: CommandRunner> CopilotProvider<H, C> {
         }
     }
 
-    /// The organization's AI credits this month, from the enterprise usage summary.
-    fn org_consumed(&self, billing: &OrgBilling, token: &str, now: DateTime<Utc>) -> Result<f64, ProviderError> {
+    /// AI credits this month from the enterprise AI-credit report, filtered by `filter` (`organization=…` or
+    /// `user=…`), on `day` or for the whole month.
+    fn ai_credits(
+        &self,
+        billing: &OrgBilling,
+        filter: &str,
+        day: Option<u32>,
+        token: &str,
+        now: DateTime<Utc>,
+    ) -> Result<Option<f64>, ProviderError> {
+        let day = day.map(|day| format!("&day={day}")).unwrap_or_default();
         let path = format!(
-            "/enterprises/{}/settings/billing/usage/summary?year={}&month={}&product=Copilot&organization={}",
+            "/enterprises/{}/settings/billing/ai_credit/usage?year={}&month={}{day}&{filter}",
             encode(&billing.enterprise),
             now.year(),
             now.month(),
-            encode(&billing.organization)
         );
-        gross_quantity(&self.rest(&path, token)?).ok_or(ProviderError::Unexpected {
-            detail: "unreadable billing summary",
-        })
+        let body = self.rest(&path, token)?;
+        let json: Value = serde_json::from_str(&body).map_err(|_| ProviderError::Unexpected {
+            detail: "unreadable AI-credit report",
+        })?;
+        let items = json
+            .get("usageItems")
+            .and_then(Value::as_array)
+            .ok_or(ProviderError::Unexpected {
+                detail: "unreadable AI-credit report",
+            })?;
+        if items.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(
+            items
+                .iter()
+                .filter_map(|item| item.get("grossQuantity").and_then(Value::as_f64))
+                .sum(),
+        ))
+    }
+
+    /// The organization's AI credits this month.
+    fn org_consumed(&self, billing: &OrgBilling, token: &str, now: DateTime<Utc>) -> Result<f64, ProviderError> {
+        let filter = format!("organization={}", encode(&billing.organization));
+        Ok(self.ai_credits(billing, &filter, None, token, now)?.unwrap_or(0.0))
     }
 
     /// The organization's monthly pool: the configured total, else seats times the allowance per seat.
@@ -380,35 +407,69 @@ impl<H: HttpClient, C: CommandRunner> CopilotProvider<H, C> {
         Some(seats * credits_per_seat(now.year(), now.month()))
     }
 
-    /// The user's AI credits this month. The API answers per day only (a month-wide user query comes back empty, and
-    /// user and organization filters can't be combined), so each day so far is summed. None if no day could be read.
-    fn user_consumed(&self, billing: &OrgBilling, username: &str, token: &str, now: DateTime<Utc>) -> Option<f64> {
-        let days: Vec<f64> = (1..=now.day())
-            .filter_map(|day| {
-                let path = format!(
-                    "/enterprises/{}/settings/billing/premium_request/usage?year={}&month={}&day={day}&user={}",
-                    encode(&billing.enterprise),
-                    now.year(),
-                    now.month(),
-                    encode(username)
-                );
-                gross_quantity(&self.rest(&path, token).ok()?)
-            })
-            .collect();
-        (!days.is_empty()).then(|| days.iter().sum())
+    /// The user's AI credits this month: the month's report, or, when that comes back empty (as month-wide user
+    /// queries did for premium requests), the sum of each day so far. A day that can't be read makes the total
+    /// unknown rather than too low.
+    fn user_consumed(
+        &self,
+        billing: &OrgBilling,
+        username: &str,
+        token: &str,
+        now: DateTime<Utc>,
+    ) -> Result<f64, ProviderError> {
+        let filter = format!("user={}", encode(username));
+        if let Some(month) = self.ai_credits(billing, &filter, None, token, now)? {
+            return Ok(month);
+        }
+        let mut total = 0.0;
+        for day in 1..=now.day() {
+            total += self.ai_credits(billing, &filter, Some(day), token, now)?.unwrap_or(0.0);
+        }
+        Ok(total)
+    }
+
+    /// The organization's account, from one user's token.
+    fn org_outcome(
+        &self,
+        billing: &OrgBilling,
+        consumed: &Result<f64, ProviderError>,
+        token: &str,
+        now: DateTime<Utc>,
+    ) -> AccountOutcome {
+        let id = org_account_id(&billing.organization);
+        match consumed {
+            Ok(consumed) => {
+                let org = match self.pool(billing, token, now) {
+                    Some(pool) => AccountSnapshot::new(
+                        id,
+                        Provider::Copilot,
+                        vec![credits_metric("AI credits", *consumed, pool, now)],
+                        now,
+                    ),
+                    None => AccountSnapshot::new(id, Provider::Copilot, Vec::new(), now).with_message(format!(
+                        "{consumed:.0} AI credits used this month. Set the pool total in Settings to see how much is left."
+                    )),
+                };
+                AccountOutcome::Fresh(org.with_label(&billing.organization))
+            }
+            Err(error) => AccountOutcome::Failed {
+                account: id,
+                label: Some(billing.organization.clone()),
+                error: error.clone(),
+            },
+        }
     }
 
     /// Adds org billing to a fetched account on an Enterprise seat in the configured organization: the user's AI
-    /// credits as the first metric, the share of the organization's as a note, and the organization as its own
-    /// account (once per organization).
+    /// credits as the first metric and the share of the organization's as a note. The organization's own account is
+    /// kept in `orgs`, one per organization; a later user whose token can read it replaces an earlier failure.
     fn add_billing(
         &self,
         account: AccountSnapshot,
         seat: &Seat,
         token: &str,
         now: DateTime<Utc>,
-        orgs: &mut Vec<String>,
-        outcomes: &mut Vec<AccountOutcome>,
+        orgs: &mut Vec<(String, AccountOutcome)>,
     ) -> AccountSnapshot {
         let username = account.label().unwrap_or_default().to_owned();
         let Some((_, billing)) = self
@@ -432,38 +493,25 @@ impl<H: HttpClient, C: CommandRunner> CopilotProvider<H, C> {
                 billing.organization
             ));
         }
-        let org_id = org_account_id(&billing.organization);
-        let first = !orgs.iter().any(|org| org.eq_ignore_ascii_case(&billing.organization));
         let org_consumed = self.org_consumed(billing, token, now);
-        if first {
-            orgs.push(billing.organization.clone());
-            outcomes.push(match &org_consumed {
-                Ok(consumed) => {
-                    let org = AccountSnapshot::new(org_id, Provider::Copilot, Vec::new(), now)
-                        .with_label(&billing.organization);
-                    AccountOutcome::Fresh(match self.pool(billing, token, now) {
-                        Some(pool) => AccountSnapshot::new(
-                            org.id().clone(),
-                            Provider::Copilot,
-                            vec![credits_metric("AI credits", *consumed, pool, now)],
-                            now,
-                        )
-                        .with_label(&billing.organization),
-                        None => org.with_message(format!(
-                            "{:.0} AI credits used this month. Set the pool total in Settings to see how much is left.",
-                            consumed
-                        )),
-                    })
+        match orgs
+            .iter_mut()
+            .find(|(org, _)| org.eq_ignore_ascii_case(&billing.organization))
+        {
+            Some((_, outcome)) => {
+                if matches!(outcome, AccountOutcome::Failed { .. }) && org_consumed.is_ok() {
+                    *outcome = self.org_outcome(billing, &org_consumed, token, now);
                 }
-                Err(error) => AccountOutcome::Failed {
-                    account: org_id,
-                    label: Some(billing.organization.clone()),
-                    error: error.clone(),
-                },
-            });
+            }
+            None => orgs.push((
+                billing.organization.clone(),
+                self.org_outcome(billing, &org_consumed, token, now),
+            )),
         }
-        let Some(consumed) = self.user_consumed(billing, &username, token, now) else {
-            return account.with_message("Enterprise billing couldn't be read for this account.");
+        let Ok(consumed) = self.user_consumed(billing, &username, token, now) else {
+            return account.with_message(
+                "Enterprise billing couldn't be read for this account. Its token needs access to enterprise billing.",
+            );
         };
         let allowance = seat
             .premium_entitlement
@@ -484,6 +532,41 @@ impl<H: HttpClient, C: CommandRunner> CopilotProvider<H, C> {
         }
         billed
     }
+
+    /// The GitHub CLI's accounts. `--json hosts` lists every account, signed in or not, and exits 0 even when one of
+    /// them has a problem (the plain status exits 1 then); older GitHub CLIs without it get the plain status.
+    fn cli_accounts(&self) -> Result<Vec<String>, ProviderError> {
+        match self.gh(&["auth", "status", "--hostname", HOST, "--json", "hosts"]) {
+            Ok(output) => {
+                if let Some(accounts) = parse_gh_accounts_json(&output) {
+                    return Ok(accounts);
+                }
+            }
+            Err(err @ ProviderError::NotSignedIn { hint: GH_MISSING }) => return Err(err),
+            Err(_) => {}
+        }
+        self.gh(&["auth", "status", "--hostname", HOST])
+            .map(|status| parse_gh_accounts(&status))
+    }
+}
+
+/// Usernames on github.com from `gh auth status --json hosts`, or None if the output isn't that JSON.
+pub fn parse_gh_accounts_json(output: &str) -> Option<Vec<String>> {
+    let json: Value = serde_json::Deserializer::from_str(output.trim_start())
+        .into_iter::<Value>()
+        .next()?
+        .ok()?;
+    let entries = json.get("hosts")?.get(HOST)?.as_array()?;
+    let mut accounts: Vec<String> = Vec::new();
+    for login in entries
+        .iter()
+        .filter_map(|entry| entry.get("login").and_then(Value::as_str))
+    {
+        if !login.is_empty() && !accounts.iter().any(|known| known.eq_ignore_ascii_case(login)) {
+            accounts.push(login.to_owned());
+        }
+    }
+    Some(accounts)
 }
 
 /// Percent-encodes a path or query value.
@@ -519,10 +602,10 @@ impl<H: HttpClient, C: CommandRunner> UsageProvider for CopilotProvider<H, C> {
     fn fetch_outcomes(&self, now: DateTime<Utc>) -> Result<Vec<AccountOutcome>, ProviderError> {
         let mut accounts = Vec::new();
         if self.use_cli {
-            match self.gh(&["auth", "status", "--hostname", HOST]) {
-                Ok(status) => accounts = parse_gh_accounts(&status),
+            match self.cli_accounts() {
+                Ok(found) => accounts = found,
                 // Without the GitHub CLI, CodexBar's own accounts still fetch.
-                Err(err) if self.logins.is_empty() => return Err(err),
+                Err(err) if self.logins.is_empty() && self.unreadable.is_empty() => return Err(err),
                 Err(_) => {}
             }
             if let Some(only) = &self.only {
@@ -534,18 +617,27 @@ impl<H: HttpClient, C: CommandRunner> UsageProvider for CopilotProvider<H, C> {
                 accounts.push(login.username.clone());
             }
         }
-        if accounts.is_empty() {
+        let mut outcomes = Vec::new();
+        // An account whose saved token couldn't be read is reported, not taken for signed out.
+        for username in &self.unreadable {
+            accounts.retain(|known| !known.eq_ignore_ascii_case(username));
+            outcomes.push(AccountOutcome::Failed {
+                account: account_id(username),
+                label: Some(username.clone()),
+                error: ProviderError::Unexpected {
+                    detail: "its saved token couldn't be read from Windows Credential Manager",
+                },
+            });
+        }
+        if accounts.is_empty() && outcomes.is_empty() {
             return Err(ProviderError::NotSignedIn { hint: GH_MISSING });
         }
-        let mut outcomes = Vec::new();
         let mut orgs = Vec::new();
         for username in &accounts {
             match self.fetch_account(username, now) {
                 Ok((snapshot, seat, token)) => {
-                    let mut extra = Vec::new();
-                    let snapshot = self.add_billing(snapshot, &seat, &token, now, &mut orgs, &mut extra);
+                    let snapshot = self.add_billing(snapshot, &seat, &token, now, &mut orgs);
                     outcomes.push(AccountOutcome::Fresh(snapshot));
-                    outcomes.extend(extra);
                 }
                 Err(error) => outcomes.push(AccountOutcome::Failed {
                     account: account_id(username),
@@ -554,6 +646,7 @@ impl<H: HttpClient, C: CommandRunner> UsageProvider for CopilotProvider<H, C> {
                 }),
             }
         }
+        outcomes.extend(orgs.into_iter().map(|(_, outcome)| outcome));
         Ok(outcomes)
     }
 }
@@ -769,11 +862,16 @@ mod tests {
                 .find(|(name, _)| *name == "Authorization")
                 .map(|(_, v)| v.to_string())
                 .unwrap_or_default();
-            self.seen.lock().unwrap().push((url.to_owned(), auth));
+            self.seen.lock().unwrap().push((url.to_owned(), auth.clone()));
+            // A route is a URL fragment, or "fragment|Authorization header" to answer one token only.
+            let matches = |route: &str| match route.split_once('|') {
+                Some((fragment, token)) => url.contains(fragment) && auth == token,
+                None => url.contains(route),
+            };
             Ok(self
                 .routes
                 .iter()
-                .find(|(fragment, _)| url.contains(fragment))
+                .find(|(route, _)| matches(route))
                 .map_or_else(|| HttpResponse::new(404, ""), |(_, response)| response.clone()))
         }
     }
@@ -883,6 +981,12 @@ mod tests {
         );
     }
 
+    fn credits(total: f64) -> HttpResponse {
+        ok(&format!(
+            r#"{{"usageItems":[{{"grossQuantity":{total},"unitType":"ai-credits"}}]}}"#
+        ))
+    }
+
     fn day_usage(credits: f64) -> HttpResponse {
         ok(&format!(
             r#"{{"usageItems":[{{"grossQuantity":{credits}}},{{"grossQuantity":0.5}}]}}"#
@@ -891,18 +995,17 @@ mod tests {
 
     #[test]
     fn an_enterprise_seat_shows_its_ai_credits_and_its_organization() {
-        // Seven days into October: seven daily user queries.
         let http = Routes::new(vec![
             ("copilot_internal/user", ok(ENTERPRISE_USER)),
             (
-                "billing/usage/summary",
-                ok(r#"{"timePeriod":{"year":2026,"month":10},"usageItems":[{"grossQuantity":7000}]}"#),
+                "ai_credit/usage?year=2026&month=10&organization=acme-eng",
+                credits(7000.0),
             ),
             (
                 "/orgs/acme-eng/copilot/billing",
                 ok(r#"{"seat_breakdown":{"total":4}}"#),
             ),
-            ("premium_request/usage", day_usage(99.5)),
+            ("ai_credit/usage?year=2026&month=10&user=dev", credits(700.0)),
         ]);
         let provider = CopilotProvider::new(http, NoGh)
             .without_cli()
@@ -912,7 +1015,7 @@ mod tests {
         let fresh = fresh(&outcomes);
         let ids: Vec<&str> = fresh.iter().map(|a| a.id().as_str()).collect();
         assert_eq!(ids, ["copilot-dev", "copilot-org-acme-eng"]);
-        // The user: 7 days x 100 credits of a 1,000 allowance, then the premium quota, and the share of the org.
+        // The user: 700 credits of a 1,000 allowance, then the premium quota, and the share of the org.
         let user = fresh[0];
         let Some(Metric::Quota { label, used, limit, .. }) = user.primary() else {
             panic!("credits")
@@ -932,7 +1035,7 @@ mod tests {
         };
         assert_eq!((*used, *limit), (7000, 15_600));
         assert_eq!(fresh[1].label(), Some("acme-eng"));
-        assert_eq!(provider.http.urls("premium_request/usage"), 7);
+        assert_eq!(provider.http.urls("day="), 0, "the month's report is enough");
         let seen = provider.http.seen.lock().unwrap().clone();
         assert!(
             seen.iter()
@@ -946,8 +1049,8 @@ mod tests {
     fn a_configured_pool_total_replaces_the_seat_count() {
         let http = Routes::new(vec![
             ("copilot_internal/user", ok(ENTERPRISE_USER)),
-            ("billing/usage/summary", ok(r#"{"usageItems":[{"grossQuantity":500}]}"#)),
-            ("premium_request/usage", day_usage(9.5)),
+            ("organization=acme-eng", credits(500.0)),
+            ("user=dev", credits(10.0)),
         ]);
         let provider = CopilotProvider::new(http, NoGh)
             .without_cli()
@@ -968,12 +1071,9 @@ mod tests {
     fn org_billing_without_a_pool_shows_the_credits_used() {
         let http = Routes::new(vec![
             ("copilot_internal/user", ok(ENTERPRISE_USER)),
-            (
-                "billing/usage/summary",
-                ok(r#"{"usageItems":[{"grossQuantity":1234}]}"#),
-            ),
+            ("organization=acme-eng", credits(1234.0)),
             ("/copilot/billing", HttpResponse::new(403, "")),
-            ("premium_request/usage", day_usage(9.5)),
+            ("user=dev", credits(10.0)),
         ]);
         let provider = CopilotProvider::new(http, NoGh)
             .without_cli()
@@ -995,8 +1095,7 @@ mod tests {
     fn org_billing_failures_are_reported_and_keep_the_seat() {
         let http = Routes::new(vec![
             ("copilot_internal/user", ok(ENTERPRISE_USER)),
-            ("billing/usage/summary", HttpResponse::new(403, "")),
-            ("premium_request/usage", HttpResponse::new(403, "")),
+            ("ai_credit/usage", HttpResponse::new(403, "")),
         ]);
         let provider = CopilotProvider::new(http, NoGh)
             .without_cli()
@@ -1013,6 +1112,108 @@ mod tests {
         };
         assert_eq!(account.as_str(), "copilot-org-acme-eng");
         assert_eq!(error, &ProviderError::Http { status: 403 });
+    }
+
+    #[test]
+    fn an_empty_month_report_for_a_user_is_summed_day_by_day() {
+        // Seven days into October; the month-wide user report comes back empty.
+        let http = Routes::new(vec![
+            ("copilot_internal/user", ok(ENTERPRISE_USER)),
+            ("organization=acme-eng", credits(7000.0)),
+            ("day=", day_usage(99.5)),
+            ("user=dev", ok(r#"{"usageItems":[]}"#)),
+        ]);
+        let provider = CopilotProvider::new(http, NoGh)
+            .without_cli()
+            .with_login("dev", "gho_own")
+            .with_billing("dev", billing(Some(10_000)));
+        let outcomes = provider.fetch_outcomes(now()).unwrap();
+        let AccountOutcome::Fresh(user) = &outcomes[0] else {
+            panic!("user")
+        };
+        let Some(Metric::Quota { used, .. }) = user.primary() else {
+            panic!("credits")
+        };
+        assert_eq!(*used, 700);
+        assert_eq!(provider.http.urls("day="), 7);
+    }
+
+    #[test]
+    fn a_day_that_cant_be_read_leaves_the_month_unknown_not_low() {
+        let http = Routes::new(vec![
+            ("copilot_internal/user", ok(ENTERPRISE_USER)),
+            ("organization=acme-eng", credits(7000.0)),
+            ("day=3&", HttpResponse::new(500, "")),
+            ("day=", day_usage(99.5)),
+            ("user=dev", ok(r#"{"usageItems":[]}"#)),
+        ]);
+        let provider = CopilotProvider::new(http, NoGh)
+            .without_cli()
+            .with_login("dev", "gho_own")
+            .with_billing("dev", billing(Some(10_000)));
+        let outcomes = provider.fetch_outcomes(now()).unwrap();
+        let AccountOutcome::Fresh(user) = &outcomes[0] else {
+            panic!("user")
+        };
+        assert_eq!(user.primary().map(Metric::label), Some("Premium requests"));
+        assert!(user.messages().iter().any(|m| m.contains("couldn't be read")));
+    }
+
+    #[test]
+    fn another_member_can_read_the_organization_when_the_first_cannot() {
+        let http = Routes::new(vec![
+            ("copilot_internal/user", ok(ENTERPRISE_USER)),
+            ("organization=acme-eng|Bearer gho_dev", HttpResponse::new(403, "")),
+            ("organization=acme-eng|Bearer gho_admin", credits(4000.0)),
+            ("ai_credit/usage", credits(10.0)),
+        ]);
+        let provider = CopilotProvider::new(http, NoGh)
+            .without_cli()
+            .with_login("dev", "gho_dev")
+            .with_login("admin", "gho_admin")
+            .with_billing("dev", billing(Some(10_000)))
+            .with_billing("admin", billing(Some(10_000)));
+        let outcomes = provider.fetch_outcomes(now()).unwrap();
+        assert_eq!(outcomes.len(), 3, "two users and one organization");
+        let AccountOutcome::Fresh(org) = &outcomes[2] else {
+            panic!("the second member's token read the organization")
+        };
+        assert_eq!(org.id().as_str(), "copilot-org-acme-eng");
+        let Some(Metric::Quota { used, .. }) = org.primary() else {
+            panic!("credits")
+        };
+        assert_eq!(*used, 4000);
+    }
+
+    #[test]
+    fn cli_accounts_come_from_the_json_status_even_when_one_has_a_problem() {
+        let json = r#"{"hosts":{"github.com":[
+            {"active":true,"host":"github.com","login":"HemSoft","state":"success"},
+            {"active":false,"host":"github.com","login":"expired-user","state":"error"},
+            {"active":false,"host":"github.com","login":"hemsoft","state":"success"}]}}"#;
+        let expected = Some(vec!["HemSoft".to_owned(), "expired-user".to_owned()]);
+        assert_eq!(parse_gh_accounts_json(json), expected);
+        assert_eq!(parse_gh_accounts_json(&format!("{json}\n")), expected);
+        assert_eq!(parse_gh_accounts_json(STATUS), None, "plain status output isn't JSON");
+        assert_eq!(parse_gh_accounts_json(r#"{"hosts":{}}"#), None);
+    }
+
+    #[test]
+    fn an_unreadable_saved_token_is_reported_not_taken_for_signed_out() {
+        let http = FakeHttp {
+            by_token: HashMap::new(),
+            seen: Mutex::default(),
+        };
+        let provider = CopilotProvider::new(http, NoGh)
+            .without_cli()
+            .with_unreadable_login("HemSoft");
+        let outcomes = provider.fetch_outcomes(now()).unwrap();
+        let AccountOutcome::Failed { account, error, .. } = &outcomes[0] else {
+            panic!("failure")
+        };
+        assert_eq!(account.as_str(), "copilot-hemsoft");
+        assert!(matches!(error, ProviderError::Unexpected { detail } if detail.contains("Credential Manager")));
+        assert!(provider.http.seen.lock().unwrap().is_empty());
     }
 
     #[test]

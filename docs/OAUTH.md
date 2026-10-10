@@ -53,6 +53,10 @@ and keeps writing its own credential file; CodexBar only reads it.
   reads the token with `gh auth token`, keeps it in Credential Manager under
   the account (`CodexBar:account:<id>`) and deletes the folder. The user's own
   `gh` accounts, keyring entries and git configuration are never touched.
+  An account with org billing set also asks for `manage_billing:enterprise`,
+  which the enterprise AI-credit report needs. `gh` runs in a kill-on-close
+  Windows job, and folders an interrupted sign-in left behind are deleted at
+  startup.
   GitHub CLI tokens don't expire; Sign out deletes CodexBar's copy (revoke it
   at github.com/settings/applications to end it on GitHub's side). Accounts with
   the Automatic or Command line method use the GitHub CLI's own accounts, the

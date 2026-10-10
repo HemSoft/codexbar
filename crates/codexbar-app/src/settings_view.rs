@@ -222,7 +222,7 @@ fn account_item(record: AccountRecord) -> SettingItem {
         let signed_in = if codex {
             crate::codex_sign_in::auth_path(hub.dir(), &current).exists()
         } else {
-            github && crate::github_sign_in::token(hub, &current).is_some()
+            github && matches!(crate::github_sign_in::token(hub, &current), Ok(Some(_)))
         };
         let sign_in_id = current.id.clone();
         let sign_out_id = current.id.clone();
@@ -667,10 +667,13 @@ fn save_account(form: &AccountForm, existing: Option<AccountRecord>, window: &mu
             if let Some(old) = left_managed {
                 crate::codex_sign_in::forget(old, cx);
             }
-            if left_github {
-                let _ = codexbar_store::credentials::delete_long(
-                    SettingsHub::global(cx).credentials().as_ref(),
-                    &record_id,
+            if left_github
+                && let Err(err) =
+                    codexbar_store::credentials::delete_long(SettingsHub::global(cx).credentials().as_ref(), &record_id)
+            {
+                SettingsHub::set_error(
+                    cx,
+                    Some(format!("The account was saved, but its GitHub token couldn't be deleted: {err}").into()),
                 );
             }
             if sign_in_now {

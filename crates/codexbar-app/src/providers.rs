@@ -205,8 +205,14 @@ fn copilot(hub: &SettingsHub) -> Option<Arc<dyn UsageProvider>> {
         }
     }
     for record in &managed {
-        if let (Some(user), Some(token)) = (&record.external_id, crate::github_sign_in::token(hub, record)) {
-            provider = provider.with_login(user.clone(), token);
+        let Some(user) = &record.external_id else {
+            continue;
+        };
+        match crate::github_sign_in::token(hub, record) {
+            Ok(Some(token)) => provider = provider.with_login(user.clone(), token),
+            // Signed out: nothing to fetch.
+            Ok(None) => {}
+            Err(_) => provider = provider.with_unreadable_login(user.clone()),
         }
     }
     for record in managed.iter().chain(&cli) {

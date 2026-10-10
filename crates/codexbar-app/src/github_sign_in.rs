@@ -32,19 +32,52 @@ pub fn is_managed(record: &AccountRecord) -> bool {
     record.provider.eq_ignore_ascii_case(names::COPILOT) && record.method == AuthMethod::OAuth
 }
 
-/// The token CodexBar keeps for a managed account, if it is signed in.
-pub fn token(hub: &SettingsHub, record: &AccountRecord) -> Option<String> {
-    codexbar_store::credentials::read_long(hub.credentials().as_ref(), &record.id)
-        .ok()
-        .flatten()
-        .filter(|token| !token.trim().is_empty())
+/// The token CodexBar keeps for a managed account: `Ok(None)` when it isn't signed in, an error when Credential
+/// Manager couldn't be read (which is not the same as signed out).
+pub fn token(
+    hub: &SettingsHub,
+    record: &AccountRecord,
+) -> Result<Option<String>, codexbar_store::credentials::CredentialError> {
+    Ok(
+        codexbar_store::credentials::read_long(hub.credentials().as_ref(), &record.id)?
+            .filter(|token| !token.trim().is_empty()),
+    )
+}
+
+/// The scope enterprise billing needs beyond the GitHub CLI's own, asked for when the account has org billing set.
+const BILLING_SCOPE: &str = "manage_billing:enterprise";
+
+/// The extra scopes a sign-in for `record` asks for.
+fn scopes(record: &AccountRecord) -> Vec<&'static str> {
+    let set = |value: &Option<String>| value.as_deref().is_some_and(|v| !v.trim().is_empty());
+    if set(&record.copilot_enterprise) && set(&record.copilot_organization) {
+        vec![BILLING_SCOPE]
+    } else {
+        Vec::new()
+    }
+}
+
+/// Deletes private GitHub CLI folders an earlier run left behind (stopped mid sign-in), so no token stays on disk.
+pub fn clean_up(cx: &mut App) {
+    if let Err(err) = codexbar_providers::gh_login::clean_up(SettingsHub::global(cx).dir()) {
+        SettingsHub::set_error(
+            cx,
+            Some(format!("A folder from an unfinished GitHub sign-in couldn't be deleted: {err}").into()),
+        );
+    }
 }
 
 /// Signs GitHub accounts in. A seam, so UI tests never start the GitHub CLI or a browser.
 pub trait SignInService: Send + Sync {
-    /// Starts a sign-in with a private config folder inside `parent`, and opens GitHub's device page unless `cancel`
-    /// was set meanwhile.
-    fn begin(&self, parent: &Path, cancel: &AtomicBool) -> Result<Box<dyn PendingSignIn>, GhLoginError>;
+    /// Starts a sign-in with a private config folder inside `parent`, asking for `scopes` beyond the GitHub CLI's
+    /// own, and opens GitHub's device page unless `cancel` was set meanwhile. (`gh --web` doesn't open it itself when
+    /// not run in a terminal; it only prints it.)
+    fn begin(
+        &self,
+        parent: &Path,
+        scopes: &[&str],
+        cancel: &AtomicBool,
+    ) -> Result<Box<dyn PendingSignIn>, GhLoginError>;
 }
 
 /// A sign-in waiting for the user to enter the code on GitHub.
@@ -66,8 +99,13 @@ impl PendingSignIn for PendingLogin {
 struct GitHubCli;
 
 impl SignInService for GitHubCli {
-    fn begin(&self, parent: &Path, cancel: &AtomicBool) -> Result<Box<dyn PendingSignIn>, GhLoginError> {
-        let login = PendingLogin::start(parent)?;
+    fn begin(
+        &self,
+        parent: &Path,
+        scopes: &[&str],
+        cancel: &AtomicBool,
+    ) -> Result<Box<dyn PendingSignIn>, GhLoginError> {
+        let login = PendingLogin::start(parent, scopes)?;
         if cancel.load(Ordering::SeqCst) {
             return Err(GhLoginError::Cancelled);
         }
@@ -115,6 +153,7 @@ pub fn sign_in(record_id: &str, window: &mut Window, cx: &mut App) {
         return;
     }
     let parent = hub.dir().to_owned();
+    let scopes = scopes(&record);
     let stage = Rc::new(RefCell::new(Stage::Starting));
     let cancel = Arc::new(AtomicBool::new(false));
     let guard = Rc::new(CancelOnDrop(cancel.clone()));
@@ -222,7 +261,7 @@ pub fn sign_in(record_id: &str, window: &mut Window, cx: &mut App) {
         .spawn(cx, async move |cx| {
             let begun = {
                 let cancel = cancel.clone();
-                cx.background_spawn(async move { service.begin(&parent, &cancel) })
+                cx.background_spawn(async move { service.begin(&parent, &scopes, &cancel) })
                     .await
             };
             let pending = match begun {
@@ -275,16 +314,29 @@ fn remember(record_id: &str, account: &GhAccount, cx: &mut App) -> Result<(), Sh
     }) {
         return Err(format!("{} is already added as “{}”.", account.username, other.label).into());
     }
-    codexbar_store::credentials::write_long(hub.credentials().as_ref(), &record.id, &account.token)
+    let store = hub.credentials();
+    let previous = codexbar_store::credentials::read_long(store.as_ref(), &record.id)
+        .map_err(|err| SharedString::from(format!("The saved token couldn't be read: {err}")))?;
+    codexbar_store::credentials::write_long(store.as_ref(), &record.id, &account.token)
         .map_err(|err| SharedString::from(format!("The token couldn't be saved: {err}")))?;
+    let id = record.id.clone();
     let result = SettingsHub::update(cx, |settings| {
         settings.upsert(AccountRecord {
             external_id: Some(account.username.clone()),
             ..record
         })
     });
+    if let Err(err) = result {
+        // The account still names the previous user, so it keeps the previous user's token: a token without its
+        // username would credit one user's usage to another.
+        let _ = match previous {
+            Some(previous) => codexbar_store::credentials::write_long(store.as_ref(), &id, &previous),
+            None => codexbar_store::credentials::delete_long(store.as_ref(), &id),
+        };
+        return Err(format!("The sign-in couldn't be saved: {err}").into());
+    }
     SettingsHub::request_refresh(cx);
-    result.map_err(|err| err.to_string().into())
+    Ok(())
 }
 
 /// Signs a managed account out: CodexBar's token is deleted. The account and its history stay, for signing in again.
@@ -306,8 +358,9 @@ pub fn sign_out(record_id: &str, cx: &mut App) {
 /// Who the account row says the account is signed in as.
 pub fn describe(hub: &SettingsHub, record: &AccountRecord) -> String {
     match (&record.external_id, token(hub, record)) {
-        (Some(user), Some(_)) => user.clone(),
-        (Some(user), None) => format!("{user} · Not signed in"),
-        (None, _) => "Not signed in".to_owned(),
+        (_, Err(_)) => "Its token couldn't be read from Windows Credential Manager".to_owned(),
+        (Some(user), Ok(Some(_))) => user.clone(),
+        (Some(user), Ok(None)) => format!("{user} · Not signed in"),
+        (None, Ok(_)) => "Not signed in".to_owned(),
     }
 }

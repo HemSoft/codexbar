@@ -9,7 +9,7 @@
 
 use std::io::{BufRead as _, BufReader};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
 use std::time::{Duration, Instant};
@@ -113,7 +113,7 @@ fn parse_line(line: &str) -> Line {
 
 /// A sign-in `gh` is waiting on: the code is shown, and the browser page waits for it.
 pub struct PendingLogin {
-    child: Child,
+    process: crate::contained::Contained,
     lines: Receiver<Line>,
     config: TempConfig,
     device: DeviceCode,
@@ -121,20 +121,26 @@ pub struct PendingLogin {
 }
 
 impl PendingLogin {
-    /// Starts `gh auth login --web` in a new private config folder inside `parent`, and waits for the code.
-    pub fn start(parent: &Path) -> Result<Self, GhLoginError> {
+    /// Starts `gh auth login --web` in a new private config folder inside `parent`, asking for `scopes` beyond the
+    /// GitHub CLI's own (`repo`, `read:org`, `gist`), and waits for the code. `gh` runs in a kill-on-close job, so a
+    /// sign-in left pending when CodexBar exits or crashes stops with it rather than finishing unseen.
+    pub fn start(parent: &Path, scopes: &[&str]) -> Result<Self, GhLoginError> {
         let program = gh_program().ok_or(GhLoginError::NotInstalled)?;
         let config = TempConfig::new(parent).map_err(|_| GhLoginError::Failed)?;
         let mut command = gh(&program, &config.0);
+        command.args(["auth", "login", "--web", "--hostname", HOST, "--insecure-storage"]);
+        if !scopes.is_empty() {
+            command.args(["--scopes", &scopes.join(",")]);
+        }
         command
-            .args(["auth", "login", "--web", "--hostname", HOST, "--insecure-storage"])
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        let mut child = command.spawn().map_err(|err| match err.kind() {
+        let mut process = crate::contained::spawn(&mut command).map_err(|err| match err.kind() {
             std::io::ErrorKind::NotFound => GhLoginError::NotInstalled,
             _ => GhLoginError::Failed,
         })?;
+        let child = &mut process.child;
         let (sender, lines) = channel();
         for stream in [
             child
@@ -161,7 +167,7 @@ impl PendingLogin {
         }
         drop(sender);
         let mut pending = Self {
-            child,
+            process,
             lines,
             config,
             device: DeviceCode {
@@ -215,7 +221,12 @@ impl PendingLogin {
                 }
             }
         }
-        let signed_in = self.child.wait().map(|status| status.success()).unwrap_or(false);
+        let signed_in = self
+            .process
+            .child
+            .wait()
+            .map(|status| status.success())
+            .unwrap_or(false);
         let username = username.filter(|_| signed_in).ok_or(GhLoginError::Failed)?;
         let token = self.token()?;
         Ok(GhAccount { username, token })
@@ -228,8 +239,8 @@ impl PendingLogin {
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
-        let child = command.spawn().map_err(|_| GhLoginError::Failed)?;
-        let output = wait_output(child, TOKEN_TIMEOUT)?;
+        let process = crate::contained::spawn(&mut command).map_err(|_| GhLoginError::Failed)?;
+        let output = wait_output(process, TOKEN_TIMEOUT)?;
         let token = String::from_utf8(output).map_err(|_| GhLoginError::Failed)?;
         let token = token.trim();
         if token.is_empty() {
@@ -251,23 +262,24 @@ impl PendingLogin {
     }
 
     fn stop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+        let _ = self.process.child.kill();
+        let _ = self.process.child.wait();
     }
 }
 
 impl Drop for PendingLogin {
     fn drop(&mut self) {
         // A sign-in left behind (the app quitting) doesn't keep `gh` polling GitHub.
-        if let Ok(None) = self.child.try_wait() {
+        if let Ok(None) = self.process.child.try_wait() {
             self.stop();
         }
     }
 }
 
 /// Waits for `child` to exit and returns its stdout, within `timeout`.
-fn wait_output(mut child: Child, timeout: Duration) -> Result<Vec<u8>, GhLoginError> {
+fn wait_output(mut process: crate::contained::Contained, timeout: Duration) -> Result<Vec<u8>, GhLoginError> {
     use std::io::Read as _;
+    let child = &mut process.child;
     let mut stdout = child.stdout.take().ok_or(GhLoginError::Failed)?;
     let reader = std::thread::spawn(move || {
         let mut bytes = Vec::new();
@@ -300,13 +312,27 @@ fn gh(program: &Path, config: &Path) -> Command {
     for name in OVERRIDES {
         command.env_remove(name);
     }
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-        command.creation_flags(CREATE_NO_WINDOW);
-    }
     command
+}
+
+/// Deletes private config folders a previous run left behind (CodexBar was stopped mid sign-in, or a delete failed),
+/// so no token stays on disk. Returns how many were removed.
+pub fn clean_up(parent: &Path) -> std::io::Result<usize> {
+    let mut removed = 0;
+    let entries = match std::fs::read_dir(parent) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(err) => return Err(err),
+    };
+    for entry in entries.flatten() {
+        let stale = entry.file_name().to_string_lossy().starts_with(PREFIX)
+            && entry.file_type().is_ok_and(|kind| kind.is_dir());
+        if stale {
+            std::fs::remove_dir_all(entry.path())?;
+            removed += 1;
+        }
+    }
+    Ok(removed)
 }
 
 fn gh_program() -> Option<PathBuf> {
@@ -316,6 +342,9 @@ fn gh_program() -> Option<PathBuf> {
         .find(|candidate| candidate.is_file())
 }
 
+/// The name every private config folder starts with.
+const PREFIX: &str = "gh-sign-in-";
+
 /// A private GitHub CLI config folder, deleted with its token when the sign-in ends.
 struct TempConfig(PathBuf);
 
@@ -324,7 +353,7 @@ impl TempConfig {
         let mut bytes = [0u8; 8];
         getrandom::fill(&mut bytes).map_err(|_| std::io::Error::other("no randomness"))?;
         let name: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
-        let dir = parent.join(format!("gh-sign-in-{name}"));
+        let dir = parent.join(format!("{PREFIX}{name}"));
         std::fs::create_dir_all(&dir)?;
         let config = Self(dir);
         // `gh` copies the code to the clipboard by default, which would replace whatever the user copied; the
@@ -376,7 +405,7 @@ mod tests {
     fn the_installed_github_cli_shows_a_device_code() {
         let parent = std::env::temp_dir().join(format!("codexbar-live-gh-{}", std::process::id()));
         std::fs::create_dir_all(&parent).unwrap();
-        let login = PendingLogin::start(&parent).expect("gh prints a code");
+        let login = PendingLogin::start(&parent, &[]).expect("gh prints a code");
         let device = login.device().clone();
         assert!(device.code.len() >= 8 && device.code.contains('-'), "{}", device.code);
         assert_eq!(device.url, "https://github.com/login/device");
@@ -390,6 +419,21 @@ mod tests {
             0,
             "the private config folder is deleted"
         );
+        let _ = std::fs::remove_dir_all(&parent);
+    }
+
+    #[test]
+    fn folders_left_by_an_earlier_run_are_deleted_and_nothing_else() {
+        let parent = std::env::temp_dir().join(format!("codexbar-gh-clean-{}", std::process::id()));
+        let stale = parent.join("gh-sign-in-0123456789abcdef");
+        std::fs::create_dir_all(&stale).unwrap();
+        std::fs::write(stale.join("hosts.yml"), "token").unwrap();
+        std::fs::create_dir_all(parent.join("codex")).unwrap();
+        std::fs::write(parent.join("gh-sign-in-note.txt"), "a file, not a folder").unwrap();
+        assert_eq!(clean_up(&parent).unwrap(), 1);
+        assert!(!stale.exists());
+        assert!(parent.join("codex").exists() && parent.join("gh-sign-in-note.txt").exists());
+        assert_eq!(clean_up(&parent.join("missing")).unwrap(), 0);
         let _ = std::fs::remove_dir_all(&parent);
     }
 

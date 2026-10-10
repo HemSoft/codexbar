@@ -6,6 +6,7 @@ pub mod claude;
 pub mod codex;
 pub mod codex_app_server;
 mod command;
+mod contained;
 pub mod copilot;
 pub mod cursor;
 mod error;

@@ -2846,6 +2846,7 @@ mod github_fixture {
     pub struct State {
         pub outcome: Mutex<Outcome>,
         pub parents: Mutex<Vec<PathBuf>>,
+        pub scopes: Mutex<Vec<String>>,
         pub cancel: Mutex<Option<Arc<AtomicBool>>>,
     }
 
@@ -2861,8 +2862,14 @@ mod github_fixture {
     }
 
     impl SignInService for FakeGitHub {
-        fn begin(&self, parent: &Path, _: &AtomicBool) -> Result<Box<dyn PendingSignIn>, GhLoginError> {
+        fn begin(
+            &self,
+            parent: &Path,
+            scopes: &[&str],
+            _: &AtomicBool,
+        ) -> Result<Box<dyn PendingSignIn>, GhLoginError> {
             self.0.parents.lock().unwrap().push(parent.to_owned());
+            *self.0.scopes.lock().unwrap() = scopes.iter().map(|scope| (*scope).to_owned()).collect();
             Ok(Box::new(Pending(self.0.clone())))
         }
     }
@@ -3041,4 +3048,78 @@ fn org_billing_settings_are_saved_per_copilot_account(cx: &mut TestAppContext) {
     assert_eq!(record.copilot_organization.as_deref(), Some("acme-eng"));
     assert_eq!(record.copilot_pool_total, Some(12_000));
     assert_eq!(record.external_id.as_deref(), Some("dev"));
+}
+
+#[gpui_kit::test]
+fn a_copilot_account_with_org_billing_asks_github_for_billing_access(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "github-billing-scope",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "gh-1", "providerId": "Copilot", "displayLabel": "Work", "enabled": true,
+              "authenticationMethod": "OAuth", "copilotEnterprise": "acme", "copilotOrganization": "acme-eng" },
+            { "id": "gh-2", "providerId": "Copilot", "displayLabel": "Home", "enabled": true,
+              "authenticationMethod": "OAuth" } ] }"#,
+    );
+    let fake = FakeGitHub::new(github_fixture::Outcome::SignsIn("octocat"));
+    let handle = open_copilot_accounts(cx, &settings, &fake);
+    click(cx, handle, "sign-in-gh-1");
+    assert_eq!(*fake.0.scopes.lock().unwrap(), ["manage_billing:enterprise"]);
+    *fake.0.outcome.lock().unwrap() = github_fixture::Outcome::SignsIn("homeuser");
+    click(cx, handle, "sign-in-gh-2");
+    assert!(
+        fake.0.scopes.lock().unwrap().is_empty(),
+        "no extra scope without org billing"
+    );
+}
+
+#[gpui_kit::test]
+fn a_sign_in_that_cant_be_saved_keeps_the_previous_token(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "github-rollback",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "gh-1", "providerId": "Copilot", "displayLabel": "Work", "enabled": true,
+              "authenticationMethod": "OAuth", "externalAccountId": "olduser" } ] }"#,
+    );
+    let fake = FakeGitHub::new(github_fixture::Outcome::SignsIn("newuser"));
+    let handle = open_copilot_accounts(cx, &settings, &fake);
+    cx.update(|cx| {
+        codexbar_store::credentials::write_long(SettingsHub::global(cx).credentials().as_ref(), "gh-1", "gho_old")
+    })
+    .unwrap();
+    // The settings file can't be written while the sign-in runs.
+    let file = settings.0.join("settings.json");
+    let writable = std::fs::metadata(&file).unwrap().permissions();
+    let mut read_only = writable.clone();
+    read_only.set_readonly(true);
+    std::fs::set_permissions(&file, read_only).unwrap();
+    click(cx, handle, "sign-in-gh-1");
+    std::fs::set_permissions(&file, writable).unwrap();
+    let error = label_of(cx, "github-sign-in-error").unwrap_or_default();
+    assert!(error.starts_with("The sign-in couldn't be saved"), "{error}");
+    let stored =
+        cx.update(|cx| codexbar_store::credentials::read_long(SettingsHub::global(cx).credentials().as_ref(), "gh-1"));
+    assert!(
+        stored.ok().flatten().as_deref() == Some("gho_old"),
+        "the account keeps its previous user's token"
+    );
+    assert_eq!(
+        saved_settings(&settings).accounts()[0].external_id.as_deref(),
+        Some("olduser")
+    );
+}
+
+#[gpui_kit::test]
+fn an_unreadable_copilot_token_is_shown_as_such(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "github-unreadable",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "gh-1", "providerId": "Copilot", "displayLabel": "Work", "enabled": true,
+              "authenticationMethod": "OAuth", "externalAccountId": "octocat" } ] }"#,
+    );
+    cx.update(|cx| crate::github_sign_in::init_with(cx, Arc::new(FakeGitHub::default())));
+    let _handle = open_settings_page(cx, &settings, MemoryCredentialStore::failing(), 1);
+    assert_eq!(
+        label_of(cx, "account-detail-gh-1").as_deref(),
+        Some("OAuth · Its token couldn't be read from Windows Credential Manager")
+    );
 }

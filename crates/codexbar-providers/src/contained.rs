@@ -1,0 +1,120 @@
+//! Child processes that can't outlive CodexBar: started suspended, put in a kill-on-close Windows job, then resumed,
+//! so the process and anything it starts end when the job closes — when the handle is dropped, or when CodexBar
+//! exits or crashes and Windows closes its handles. Used for the provider CLIs CodexBar drives (Codex, GitHub CLI).
+
+use std::process::{Child, Command};
+
+/// A started child in its job.
+pub(crate) struct Contained {
+    pub child: Child,
+    #[cfg(windows)]
+    _job: Option<job::Job>,
+}
+
+/// Spawns `command` with no console window, inside a kill-on-close job.
+pub(crate) fn spawn(command: &mut Command) -> std::io::Result<Contained> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        const CREATE_SUSPENDED: u32 = 0x0000_0004;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        // Suspended until it is in its job, so nothing it starts can run outside the job.
+        command.creation_flags(CREATE_NO_WINDOW | CREATE_SUSPENDED);
+    }
+    let mut child = command.spawn()?;
+    #[cfg(windows)]
+    {
+        let job = job::Job::kill_on_close(&child);
+        if !job::resume(child.id()) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(std::io::Error::other("the process couldn't be started"));
+        }
+        Ok(Contained { child, _job: job })
+    }
+    #[cfg(not(windows))]
+    Ok(Contained { child })
+}
+
+#[cfg(windows)]
+mod job {
+    use std::os::windows::io::AsRawHandle as _;
+    use std::process::Child;
+
+    use windows::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
+    };
+    use windows::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation, SetInformationJobObject,
+    };
+    use windows::Win32::System::Threading::{OpenThread, ResumeThread, THREAD_SUSPEND_RESUME};
+    use windows::core::PCWSTR;
+
+    /// A job whose processes all end when it is closed.
+    pub struct Job(HANDLE);
+
+    // SAFETY: a job handle may be used and closed from any thread.
+    unsafe impl Send for Job {}
+    unsafe impl Sync for Job {}
+
+    impl Job {
+        pub fn kill_on_close(child: &Child) -> Option<Self> {
+            // SAFETY: no name and default security; the handle is owned by the returned Job and closed on drop.
+            let handle = unsafe { CreateJobObjectW(None, PCWSTR::null()) }.ok()?;
+            let job = Self(handle);
+            let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            // SAFETY: `info` is the structure this information class expects, with its exact size.
+            unsafe {
+                SetInformationJobObject(
+                    job.0,
+                    JobObjectExtendedLimitInformation,
+                    std::ptr::from_ref(&info).cast(),
+                    std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+                )
+            }
+            .ok()?;
+            // SAFETY: the child's handle is valid while `child` lives, which outlasts this call.
+            unsafe { AssignProcessToJobObject(job.0, HANDLE(child.as_raw_handle())) }.ok()?;
+            Some(job)
+        }
+    }
+
+    /// Resumes the threads of a process started suspended (it has one). False if none could be resumed.
+    pub fn resume(pid: u32) -> bool {
+        // SAFETY: a snapshot of all threads; the handle is closed below.
+        let Ok(snapshot) = (unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) }) else {
+            return false;
+        };
+        let mut entry = THREADENTRY32 {
+            dwSize: std::mem::size_of::<THREADENTRY32>() as u32,
+            ..Default::default()
+        };
+        let mut resumed = false;
+        // SAFETY: `entry` is a THREADENTRY32 with its size set, as both calls require.
+        let mut more = unsafe { Thread32First(snapshot, &mut entry) }.is_ok();
+        while more {
+            if entry.th32OwnerProcessID == pid {
+                // SAFETY: the thread handle is used for this one call and closed.
+                if let Ok(thread) = unsafe { OpenThread(THREAD_SUSPEND_RESUME, false, entry.th32ThreadID) } {
+                    resumed |= unsafe { ResumeThread(thread) } != u32::MAX;
+                    let _ = unsafe { CloseHandle(thread) };
+                }
+            }
+            // SAFETY: as above.
+            more = unsafe { Thread32Next(snapshot, &mut entry) }.is_ok();
+        }
+        // SAFETY: the snapshot handle came from CreateToolhelp32Snapshot and is closed once.
+        let _ = unsafe { CloseHandle(snapshot) };
+        resumed
+    }
+
+    impl Drop for Job {
+        fn drop(&mut self) {
+            // SAFETY: the handle came from CreateJobObjectW and is closed once.
+            let _ = unsafe { CloseHandle(self.0) };
+        }
+    }
+}
