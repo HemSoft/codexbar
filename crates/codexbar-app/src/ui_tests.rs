@@ -992,6 +992,9 @@ fn open_live_dyn(
         if cx.try_global::<crate::codex_sign_in::Service>().is_none() {
             crate::codex_sign_in::init_with(cx, Arc::new(codex_fixture::FakeCodexSignIn::default()));
         }
+        if cx.try_global::<crate::cursor_sign_in::Service>().is_none() {
+            crate::cursor_sign_in::init_with(cx, Arc::new(cursor_fixture::FakeCursor::default()));
+        }
         if cx.try_global::<crate::claude_sign_in::Service>().is_none() {
             crate::claude_sign_in::init_with(cx, Arc::new(claude_fixture::FakeClaude::default()));
         }
@@ -3490,4 +3493,304 @@ fn claude_codes_own_folder_keeps_the_account_neutral_id(cx: &mut TestAppContext)
         .expect("Claude Code's own folder has an adapter");
     // Configured among several, it reports under its record, never an identity read from the shared profile.
     assert_eq!(own.account_id(), Some("cl-own"));
+}
+
+// Cursor accounts CodexBar signs in (#81): the Cursor CLI's sign-in in the account's own folder, the confirmation
+// before replacing a sign-in, cancellation, failure and removal, with a fake standing in for the Cursor CLI.
+
+mod cursor_fixture {
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    use codexbar_providers::cursor_cli::CursorCliError;
+
+    use crate::cursor_sign_in::{PendingSignIn, SignInService};
+
+    #[derive(Clone, Default)]
+    pub enum Outcome {
+        SignsIn(&'static str),
+        Fails,
+        #[default]
+        Waits,
+    }
+
+    #[derive(Default)]
+    pub struct State {
+        pub outcome: Mutex<Outcome>,
+        pub begun: Mutex<Vec<PathBuf>>,
+        pub signed_out: Mutex<Vec<PathBuf>>,
+        pub cancel: Mutex<Option<Arc<AtomicBool>>>,
+        pub user: Mutex<Option<String>>,
+    }
+
+    #[derive(Default, Clone)]
+    pub struct FakeCursor(pub Arc<State>);
+
+    impl FakeCursor {
+        pub fn new(outcome: Outcome) -> Self {
+            let fake = Self::default();
+            *fake.0.outcome.lock().unwrap() = outcome;
+            fake
+        }
+    }
+
+    impl SignInService for FakeCursor {
+        fn begin(&self, home: &Path, _: &AtomicBool) -> Result<Box<dyn PendingSignIn>, CursorCliError> {
+            self.0.begun.lock().unwrap().push(home.to_owned());
+            Ok(Box::new(Pending {
+                state: self.0.clone(),
+                home: home.to_owned(),
+            }))
+        }
+
+        fn sign_out(&self, home: &Path) -> Result<(), CursorCliError> {
+            self.0.signed_out.lock().unwrap().push(home.to_owned());
+            let _ = std::fs::remove_file(codexbar_providers::cursor_cli::auth_path(home));
+            Ok(())
+        }
+
+        fn email(&self, _: &Path) -> Option<String> {
+            self.0
+                .user
+                .lock()
+                .unwrap()
+                .clone()
+                .map(|user| format!("{user}@example.com"))
+        }
+    }
+
+    struct Pending {
+        state: Arc<State>,
+        home: PathBuf,
+    }
+
+    impl PendingSignIn for Pending {
+        fn url(&self) -> String {
+            "https://cursor.com/loginDeepControl?challenge=x".to_owned()
+        }
+
+        fn finish(self: Box<Self>, _: Duration, cancel: Arc<AtomicBool>) -> Result<(), CursorCliError> {
+            *self.state.cancel.lock().unwrap() = Some(cancel.clone());
+            match self.state.outcome.lock().unwrap().clone() {
+                Outcome::SignsIn(user) => {
+                    sign_in(&self.home, user);
+                    *self.state.user.lock().unwrap() = Some(user.to_owned());
+                    Ok(())
+                }
+                Outcome::Fails => Err(CursorCliError::Failed),
+                Outcome::Waits => {
+                    assert!(!cancel.load(Ordering::SeqCst));
+                    Err(CursorCliError::Cancelled)
+                }
+            }
+        }
+    }
+
+    /// What the Cursor CLI leaves in a folder after signing `user` in: a token whose subject is that user.
+    pub fn sign_in(home: &Path, user: &str) {
+        let path = codexbar_providers::cursor_cli::auth_path(home);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let claims = serde_json::json!({"sub": format!("auth0|{user}"), "type": "session"}).to_string();
+        let token = format!("e30.{}.sig", base64url(claims.as_bytes()));
+        std::fs::write(
+            path,
+            serde_json::json!({"accessToken": token, "refreshToken": "r"}).to_string(),
+        )
+        .unwrap();
+    }
+
+    fn base64url(bytes: &[u8]) -> String {
+        const DIGITS: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+        let mut out = String::new();
+        for chunk in bytes.chunks(3) {
+            let n = chunk
+                .iter()
+                .enumerate()
+                .fold(0u32, |acc, (ix, byte)| acc | u32::from(*byte) << (16 - 8 * ix));
+            for ix in 0..=chunk.len() {
+                out.push(DIGITS[(n >> (18 - 6 * ix) & 63) as usize] as char);
+            }
+        }
+        out
+    }
+}
+
+use cursor_fixture::FakeCursor;
+
+const MANAGED_CURSOR: &str = r#"{ "accountConfigurationVersion": 1, "accounts": [
+    { "id": "cu-1", "providerId": "Cursor", "displayLabel": "Work", "enabled": true,
+      "authenticationMethod": "OAuth" } ] }"#;
+
+fn open_cursor_accounts(cx: &mut TestAppContext, settings: &TempSettings, fake: &FakeCursor) -> AnyWindowHandle {
+    let fake = fake.clone();
+    cx.update(|cx| crate::cursor_sign_in::init_with(cx, Arc::new(fake)));
+    open_settings_page(cx, settings, MemoryCredentialStore::default(), 1)
+}
+
+fn cursor_home(settings: &TempSettings, id: &str) -> PathBuf {
+    settings.0.join("cursor").join(id)
+}
+
+#[gpui_kit::test]
+fn a_cursor_account_signs_in_through_the_cursor_cli_and_shows_who_it_is(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("cursor-sign-in", MANAGED_CURSOR);
+    let fake = FakeCursor::new(cursor_fixture::Outcome::SignsIn("dev"));
+    let handle = open_cursor_accounts(cx, &settings, &fake);
+    assert_eq!(
+        label_of(cx, "account-detail-cu-1").as_deref(),
+        Some("OAuth · Not signed in")
+    );
+    click(cx, handle, "sign-in-cu-1");
+    let home = cursor_home(&settings, "cu-1");
+    assert_eq!(*fake.0.begun.lock().unwrap(), std::slice::from_ref(&home));
+    assert!(
+        !exists(cx, handle, "cursor-sign-in-status"),
+        "the dialog closes once signed in"
+    );
+    let identity =
+        codexbar_providers::cursor::signed_in_account(&codexbar_providers::cursor_cli::auth_path(&home)).unwrap();
+    assert_eq!(
+        saved_settings(&settings).accounts()[0].external_id.as_deref(),
+        Some(identity.as_str())
+    );
+    assert_eq!(
+        label_of(cx, "account-detail-cu-1").as_deref(),
+        Some("OAuth · dev@example.com")
+    );
+    let owned = cx.update(|cx| crate::providers::owned_account_ids(SettingsHub::global(cx)));
+    assert_eq!(owned.get("cu-1"), Some(&identity.as_str().to_owned()));
+
+    click(cx, handle, "sign-out-cu-1");
+    assert_eq!(*fake.0.signed_out.lock().unwrap(), std::slice::from_ref(&home));
+    assert_eq!(
+        label_of(cx, "account-detail-cu-1").as_deref(),
+        Some("OAuth · Not signed in")
+    );
+}
+
+#[gpui_kit::test]
+fn replacing_a_cursor_sign_in_asks_first_and_updates_who_it_is(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("cursor-replace", MANAGED_CURSOR);
+    let fake = FakeCursor::new(cursor_fixture::Outcome::SignsIn("first"));
+    let handle = open_cursor_accounts(cx, &settings, &fake);
+    click(cx, handle, "sign-in-cu-1");
+    let first = saved_settings(&settings).accounts()[0].external_id.clone().unwrap();
+    assert_eq!(
+        label_of(cx, "account-detail-cu-1").as_deref(),
+        Some("OAuth · first@example.com")
+    );
+
+    // Signing in again asks first; Escape keeps the sign-in as it is.
+    *fake.0.outcome.lock().unwrap() = cursor_fixture::Outcome::SignsIn("second");
+    click(cx, handle, "sign-in-cu-1");
+    assert_eq!(
+        fake.0.begun.lock().unwrap().len(),
+        1,
+        "nothing starts before the confirmation"
+    );
+    press(cx, handle, "escape");
+    assert_eq!(fake.0.begun.lock().unwrap().len(), 1);
+    assert_eq!(
+        saved_settings(&settings).accounts()[0].external_id.as_deref(),
+        Some(first.as_str())
+    );
+
+    // Confirmed, the new account replaces it, and the row says who it is now.
+    click(cx, handle, "sign-in-cu-1");
+    press(cx, handle, "enter");
+    assert_eq!(fake.0.begun.lock().unwrap().len(), 2);
+    let second = saved_settings(&settings).accounts()[0].external_id.clone().unwrap();
+    assert_ne!(first, second);
+    assert_eq!(
+        label_of(cx, "account-detail-cu-1").as_deref(),
+        Some("OAuth · second@example.com")
+    );
+}
+
+#[gpui_kit::test]
+fn closing_the_cursor_dialog_cancels_and_a_failure_says_so(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("cursor-cancel", MANAGED_CURSOR);
+    let fake = FakeCursor::new(cursor_fixture::Outcome::Waits);
+    let handle = open_cursor_accounts(cx, &settings, &fake);
+    click(cx, handle, "sign-in-cu-1");
+    assert!(exists(cx, handle, "cursor-sign-in-open") && exists(cx, handle, "cursor-sign-in-copy"));
+    let cancel = fake.0.cancel.lock().unwrap().clone().unwrap();
+    press(cx, handle, "escape");
+    assert!(cancel.load(std::sync::atomic::Ordering::SeqCst));
+    assert_eq!(saved_settings(&settings).accounts()[0].external_id, None);
+
+    *fake.0.outcome.lock().unwrap() = cursor_fixture::Outcome::Fails;
+    click(cx, handle, "sign-in-cu-1");
+    assert_eq!(
+        label_of(cx, "cursor-sign-in-error").as_deref(),
+        Some("The Cursor CLI didn't complete the sign-in.")
+    );
+}
+
+#[gpui_kit::test]
+fn removing_a_cursor_account_signs_it_out_and_deletes_its_folder(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("cursor-remove", MANAGED_CURSOR);
+    let home = cursor_home(&settings, "cu-1");
+    cursor_fixture::sign_in(&home, "dev");
+    let fake = FakeCursor::default();
+    let handle = open_cursor_accounts(cx, &settings, &fake);
+    click(cx, handle, "remove-cu-1");
+    press(cx, handle, "enter");
+    assert!(saved_settings(&settings).accounts().is_empty());
+    assert_eq!(*fake.0.signed_out.lock().unwrap(), std::slice::from_ref(&home));
+    assert!(!home.exists());
+}
+
+#[gpui_kit::test]
+fn adding_a_cursor_account_with_oauth_keeps_the_cursor_apps_sign_in(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("cursor-add", "{}");
+    let fake = FakeCursor::new(cursor_fixture::Outcome::SignsIn("dev"));
+    let handle = open_cursor_accounts(cx, &settings, &fake);
+    click(cx, handle, "add-Cursor");
+    type_text(cx, handle, "Work");
+    // From Automatic, four Downs (the first opens the list) reach OAuth.
+    press(cx, handle, "tab");
+    for _ in 0..4 {
+        press(cx, handle, "down");
+    }
+    press(cx, handle, "enter");
+    click(cx, handle, "account-save");
+    let saved = saved_settings(&settings);
+    let methods: Vec<_> = saved.accounts().iter().map(|record| record.method).collect();
+    assert_eq!(
+        methods,
+        [
+            codexbar_store::settings::AuthMethod::Automatic,
+            codexbar_store::settings::AuthMethod::OAuth
+        ]
+    );
+    let record = &saved.accounts()[1];
+    assert_eq!(*fake.0.begun.lock().unwrap(), [cursor_home(&settings, &record.id)]);
+}
+
+#[gpui_kit::test]
+fn each_cursor_account_gets_its_own_adapter(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "cursor-adapters",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "cu-1", "providerId": "Cursor", "displayLabel": "Work", "enabled": true,
+              "authenticationMethod": "OAuth" },
+            { "id": "cu-2", "providerId": "Cursor", "displayLabel": "Again", "enabled": true,
+              "authenticationMethod": "OAuth" },
+            { "id": "cu-3", "providerId": "Cursor", "displayLabel": "Home", "enabled": true,
+              "authenticationMethod": "OAuth" } ] }"#,
+    );
+    // Work and Again are signed in to the same Cursor account; Home isn't signed in.
+    cursor_fixture::sign_in(&cursor_home(&settings, "cu-1"), "same");
+    cursor_fixture::sign_in(&cursor_home(&settings, "cu-2"), "same");
+    cx.update(|cx| SettingsHub::init_with(cx, &settings.0, Arc::new(MemoryCredentialStore::default())));
+    let adapters = cx.update(|cx| crate::providers::enabled(SettingsHub::global(cx)));
+    let labels: Vec<Option<String>> = adapters
+        .iter()
+        .filter(|provider| provider.name() == "Cursor")
+        .map(|provider| provider.account_label().map(str::to_owned))
+        .collect();
+    assert_eq!(labels, [Some("Work".to_owned()), Some("Home".to_owned())]);
 }

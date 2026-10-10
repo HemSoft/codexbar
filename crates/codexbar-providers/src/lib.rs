@@ -10,6 +10,7 @@ mod command;
 mod contained;
 pub mod copilot;
 pub mod cursor;
+pub mod cursor_cli;
 mod error;
 pub mod gh_login;
 mod http;

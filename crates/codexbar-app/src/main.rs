@@ -6,6 +6,7 @@ mod brand;
 mod catalog;
 mod claude_sign_in;
 mod codex_sign_in;
+mod cursor_sign_in;
 mod dashboard;
 mod focus_cards;
 mod github_sign_in;
@@ -93,6 +94,7 @@ fn main() {
         settings_hub::SettingsHub::init(cx);
         codex_sign_in::init(cx);
         claude_sign_in::init(cx);
+        cursor_sign_in::init(cx);
         github_sign_in::init(cx);
         github_sign_in::clean_up(cx);
         let dir = settings_hub::SettingsHub::global(cx).dir().to_owned();

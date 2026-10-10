@@ -38,12 +38,7 @@ pub fn enabled(hub: &SettingsHub) -> Vec<Arc<dyn UsageProvider>> {
     }
 
     providers.extend(claude_adapters(hub));
-    if !enabled_accounts(hub, names::CURSOR).is_empty() {
-        providers.push(Arc::new(CursorProvider::new(
-            UreqClient::new(),
-            cursor::default_auth_path(),
-        )));
-    }
+    providers.extend(cursor_adapters(hub));
 
     let openrouter = enabled_accounts(hub, names::OPENROUTER);
     let multiple = openrouter.len() > 1;
@@ -172,6 +167,40 @@ fn claude_adapters(hub: &SettingsHub) -> Vec<Arc<dyn UsageProvider>> {
     adapters
 }
 
+/// One adapter per Cursor sign-in (#81): the Cursor app's, and one for each account CodexBar signed in. Folders signed
+/// in to the same Cursor account show it once, signed-in ones first.
+fn cursor_adapters(hub: &SettingsHub) -> Vec<Arc<dyn UsageProvider>> {
+    let mut records = enabled_accounts(hub, names::CURSOR);
+    let several = records.len() > 1;
+    records.sort_by_key(|record| {
+        let managed = crate::cursor_sign_in::is_managed(record);
+        (!managed, !crate::cursor_sign_in::auth_path(hub.dir(), record).is_file())
+    });
+    let mut paths = Vec::new();
+    let mut identities = Vec::new();
+    let mut adapters: Vec<Arc<dyn UsageProvider>> = Vec::new();
+    for record in records {
+        let path = crate::cursor_sign_in::auth_path(hub.dir(), &record);
+        let managed = crate::cursor_sign_in::is_managed(&record);
+        let identity = if managed { record.external_id.clone() } else { None }
+            .or_else(|| cursor::signed_in_account(&path).map(|id| id.as_str().to_owned()));
+        if paths.contains(&path) || identity.as_ref().is_some_and(|id| identities.contains(id)) {
+            continue;
+        }
+        paths.push(path.clone());
+        identities.extend(identity.clone());
+        let mut provider = CursorProvider::new(UreqClient::new(), path);
+        if managed {
+            provider = provider.managed();
+        }
+        if managed || several {
+            provider = provider.with_account(identity.unwrap_or_else(|| record.id.clone()), record.label.clone());
+        }
+        adapters.push(Arc::new(provider));
+    }
+    adapters
+}
+
 /// The dashboard account each configured record owns (#85), by record id: OpenRouter and Moonshot records report under
 /// their own id, a Copilot record for one username under that user's id, and a Codex account CodexBar signed in
 /// under the ChatGPT identity it holds (#78). Removing such a record removes that dashboard account. Codex on the
@@ -208,6 +237,7 @@ pub fn owned_account_ids(hub: &SettingsHub) -> HashMap<String, String> {
                 names::OPENROUTER | names::MOONSHOT => record.id.clone(),
                 names::CODEX if crate::codex_sign_in::is_managed(record) => record.external_id.clone()?,
                 names::CLAUDE if crate::claude_sign_in::is_managed(record) => record.external_id.clone()?,
+                names::CURSOR if crate::cursor_sign_in::is_managed(record) => record.external_id.clone()?,
                 names::COPILOT => {
                     let user = record.external_id.as_deref()?.trim();
                     (!user.is_empty()).then(|| codexbar_providers::copilot::account_id(user).as_str().to_owned())?

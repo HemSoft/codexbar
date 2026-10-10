@@ -491,6 +491,12 @@ fn open_account_dialog(provider: &'static str, existing: Option<AccountRecord>, 
                              through the Codex CLI. Automatic: uses the sign-in from `codex`.",
                         ))
                     })
+                    .when(info.id == names::CURSOR, |this| {
+                        this.child(div().text_xs().text_color(cx.theme().muted_foreground).child(
+                            "OAuth: after adding, CodexBar opens your browser to sign this account in to Cursor through \
+                             the Cursor CLI, apart from the Cursor app's sign-in. Automatic: uses the Cursor app's.",
+                        ))
+                    })
                     .when(info.id == names::CLAUDE, |this| {
                         this.child(div().text_xs().text_color(cx.theme().muted_foreground).child(
                             "Browser session: after adding, CodexBar opens a Claude Code window to sign this account \
@@ -641,6 +647,7 @@ fn save_account(form: &AccountForm, existing: Option<AccountRecord>, window: &mu
     let own_sign_in = match kind {
         Some(Managed::Codex) => Some(names::CODEX),
         Some(Managed::Claude) => Some(names::CLAUDE),
+        Some(Managed::Cursor) => Some(names::CURSOR),
         _ => None,
     };
     let keep_cli_account = own_sign_in.filter(|provider| {
@@ -743,7 +750,7 @@ fn confirm_reset(window: &mut Window, cx: &mut App) {
     window.open_alert_dialog(cx, |alert, _, _| {
         alert
             .title("Reset all accounts?")
-            .description("Every account and its saved keys are removed. OpenRouter and Moonshot accounts, and ChatGPT, Copilot and Claude accounts CodexBar signed in, also lose their usage history; providers that fall back to their default sign-in, including Copilot, keep theirs. This can't be undone.")
+            .description("Every account and its saved keys are removed. OpenRouter and Moonshot accounts, and ChatGPT, Copilot, Claude and Cursor accounts CodexBar signed in, also lose their usage history; providers that fall back to their default sign-in, including Copilot, keep theirs. This can't be undone.")
             .button_props(DialogButtonProps::default().ok_text("Reset accounts").ok_variant(ButtonVariant::Danger).show_cancel(true))
             .on_ok(|_, _, cx| {
                 // Every account's key, and each key-based provider's implicit one (#74).

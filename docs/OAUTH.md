@@ -78,6 +78,17 @@ and keeps writing its own credential file; CodexBar only reads it.
   own `~/.claude` is the import and fallback path, renewed the same way. Every
   process runs in a kill-on-close job.
 
+- **Cursor (#81).** An account with the OAuth sign-in method gets its own
+  folder in the settings folder (`cursor\<account id>`), which Cursor's CLI
+  (`cursor-agent`) uses as its `APPDATA` and `CURSOR_CONFIG_DIR`. Its sign-in
+  then lives in that folder's `Cursor\auth.json`, apart from the Cursor app's.
+  With `NO_OPEN_BROWSER` set, `cursor-agent login` prints the sign-in page;
+  CodexBar opens it and waits for the CLI to finish. The account's identity
+  (its token's subject) and email (`cursor-agent status`) are remembered.
+  Signing a signed-in account in again asks first, because it replaces that
+  sign-in. Sign out runs `cursor-agent logout`. The Cursor app's own sign-in
+  (Automatic) is the fallback.
+
 ## Approved client registrations
 
 A provider can use this path only once a human has confirmed its client
