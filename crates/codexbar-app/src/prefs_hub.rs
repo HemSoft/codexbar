@@ -150,6 +150,19 @@ impl PrefsHub {
         result
     }
 
+    /// The widget builder's tiles and refresh choice (#95).
+    pub fn widget_builder(cx: &App) -> codexbar_store::widgets::WidgetBuilder {
+        cx.try_global::<Self>()
+            .map(|hub| hub.prefs.widget_builder().clone())
+            .unwrap_or_default()
+    }
+
+    /// Changes the widget builder's choices and saves when they changed.
+    pub fn update_widget_builder(cx: &mut App, change: impl FnOnce(&mut codexbar_store::widgets::WidgetBuilder)) {
+        Self::edit(cx, |prefs| prefs.update_widget_builder(change));
+        cx.refresh_windows();
+    }
+
     /// True when `dashboard.json` is from a newer CodexBar: settings are read, but nothing can be saved.
     pub fn is_read_only(cx: &App) -> bool {
         cx.try_global::<Self>()

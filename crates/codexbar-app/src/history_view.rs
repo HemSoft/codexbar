@@ -221,6 +221,14 @@ impl HistoryView {
         cx.notify();
     }
 
+    /// Shows `account` and, when it still reports it, `metric` (a widget tile, #95).
+    pub fn focus(&mut self, account: &AccountId, metric: Option<&str>, cx: &mut Context<Self>) {
+        self.select_account(account.clone(), cx);
+        self.metric = metric.map(str::to_owned);
+        // The chart starts at its latest point, as when a metric is picked here.
+        self.cursor = None;
+    }
+
     /// The account and metric key shown, for the headless UI tests.
     #[cfg(test)]
     pub fn shown(&self) -> Option<(String, String)> {

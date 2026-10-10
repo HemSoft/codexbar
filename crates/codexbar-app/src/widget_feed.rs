@@ -43,7 +43,7 @@ pub fn build(accounts: &[AccountSnapshot], states: &States, layout: &Layout, now
                     .then(|| account.assess(now).severity().label().map(str::to_owned))
                     .flatten(),
                 metrics: if has_usage {
-                    account.metrics().iter().map(metric).collect()
+                    account.metrics().iter().map(|m| metric(m, now)).collect()
                 } else {
                     Vec::new()
                 },
@@ -53,7 +53,7 @@ pub fn build(accounts: &[AccountSnapshot], states: &States, layout: &Layout, now
     WidgetSnapshot::new(now, groups, accounts)
 }
 
-fn metric(metric: &Metric) -> WidgetMetric {
+fn metric(metric: &Metric, now: DateTime<Utc>) -> WidgetMetric {
     let value = match metric {
         Metric::Window { .. } => format!("{} used", metric.used_display()),
         Metric::Quota { limit, .. } => format!(
@@ -69,6 +69,7 @@ fn metric(metric: &Metric) -> WidgetMetric {
         value,
         used_percent: metric.used_fraction().map(|used| (used * 100.0).clamp(0.0, 100.0)),
         resets_at: metric.resets_at(),
+        status: codexbar_core::assess(metric, now).severity().label().map(str::to_owned),
     }
 }
 

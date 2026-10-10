@@ -2,8 +2,8 @@
 //! configuration and size. Pure, so every state is tested without the widget host.
 
 use chrono::{DateTime, Utc};
-use codexbar_core::format::age_label;
-use codexbar_store::widgets::{LoadError, WidgetAccount, WidgetHealth, WidgetSnapshot};
+use codexbar_core::format::{age_label, countdown};
+use codexbar_store::widgets::{LoadError, MAX_TILES, TileMode, WidgetAccount, WidgetHealth, WidgetSnapshot};
 use serde_json::{Value, json};
 
 /// A snapshot older than this means CodexBar isn't running: it rewrites the file at least every five minutes.
@@ -19,12 +19,15 @@ pub enum Focus {
     Provider(String),
     /// One group's accounts, by group id.
     Group(String),
+    /// The tiles chosen in CodexBar's Settings › Widgets (#95).
+    Custom,
 }
 
 impl Focus {
     pub fn key(&self) -> String {
         match self {
             Self::All => "all".into(),
+            Self::Custom => "custom".into(),
             Self::Provider(key) => format!("provider:{key}"),
             Self::Group(id) => format!("group:{id}"),
         }
@@ -33,6 +36,7 @@ impl Focus {
     pub fn from_key(key: &str) -> Option<Self> {
         match key.split_once(':') {
             None if key == "all" => Some(Self::All),
+            None if key == "custom" => Some(Self::Custom),
             Some(("provider", key)) if !key.is_empty() => Some(Self::Provider(key.to_owned())),
             Some(("group", id)) if !id.is_empty() => Some(Self::Group(id.to_owned())),
             _ => None,
@@ -70,16 +74,19 @@ impl Tiles {
     pub fn label(self) -> &'static str {
         match self {
             Self::Automatic => "Automatic (by widget size)",
-            Self::One => "One account",
-            Self::Two => "Two accounts",
-            Self::Four => "Four accounts",
+            Self::One => "One tile",
+            Self::Two => "Two tiles",
+            Self::Four => "Four tiles",
         }
     }
 
-    pub fn count(self, size: Size) -> usize {
+    /// How many tiles show. Automatic fills the size: one on small, two on medium, four on large, or all six of
+    /// the builder's tiles on large.
+    pub fn count(self, size: Size, custom: bool) -> usize {
         match (self, size) {
             (Self::Automatic, Size::Small) | (Self::One, _) => 1,
             (Self::Automatic, Size::Medium) | (Self::Two, _) => 2,
+            (Self::Automatic, Size::Large) if custom => MAX_TILES,
             (Self::Automatic, Size::Large) | (Self::Four, _) => 4,
         }
     }
@@ -170,6 +177,7 @@ fn message(title: &str, body: &str) -> Value {
 fn focus_name(focus: &Focus, snapshot: &WidgetSnapshot) -> Option<String> {
     match focus {
         Focus::All => Some("All accounts".into()),
+        Focus::Custom => Some("CodexBar".into()),
         Focus::Provider(key) => snapshot
             .accounts
             .iter()
@@ -188,11 +196,151 @@ fn focused<'a>(focus: &Focus, snapshot: &'a WidgetSnapshot) -> Vec<&'a WidgetAcc
         .accounts
         .iter()
         .filter(|account| match focus {
-            Focus::All => true,
+            Focus::All | Focus::Custom => true,
             Focus::Provider(key) => &account.provider == key,
             Focus::Group(id) => account.group.as_ref() == Some(id),
         })
         .collect()
+}
+
+/// What one tile shows, worked out once for the widget card and the in-app preview (#95).
+#[derive(Clone, Debug, PartialEq)]
+pub struct TileView {
+    /// The account and metric a tap opens; none when the account is gone.
+    pub account: Option<String>,
+    pub metric: Option<String>,
+    pub title: String,
+    pub mode: TileMode,
+    /// "Weekly: 42% used".
+    pub line: Option<String>,
+    /// The large figure of the compact, balance and status modes.
+    pub big: Option<String>,
+    /// 0 to 100, for a bar.
+    pub percent: Option<f64>,
+    /// "Watch", "At risk", "Limit soon"; none for normal accounts.
+    pub status: Option<String>,
+    /// Freshness or what's wrong: "Last known, 5m ago", "Unavailable", "Resets in 2d".
+    pub note: Option<String>,
+}
+
+impl TileView {
+    fn message(account: Option<&str>, title: impl Into<String>, mode: TileMode, note: &str) -> Self {
+        Self {
+            account: account.map(str::to_owned),
+            metric: None,
+            title: title.into(),
+            mode,
+            line: None,
+            big: None,
+            percent: None,
+            status: None,
+            note: Some(note.to_owned()),
+        }
+    }
+
+    /// The tile for `account`'s `metric` (its primary one when `None`), shown as `mode`.
+    fn of(account: &WidgetAccount, metric: Option<&str>, mode: TileMode, now: DateTime<Utc>) -> Self {
+        if account.health == WidgetHealth::Unavailable {
+            // The tap still opens the tile's metric, for when the account recovers.
+            let mut view = Self::message(Some(&account.id), account.name.clone(), mode, "Unavailable");
+            view.metric = metric.map(str::to_owned);
+            return view;
+        }
+        let found = match metric {
+            Some(key) => account.metrics.iter().find(|m| m.key == key),
+            None => account.metrics.first(),
+        };
+        let Some(found) = found else {
+            let note = if metric.is_some() {
+                "This limit isn't reported any more. Choose another in CodexBar's Settings › Widgets."
+            } else {
+                "No limits to show"
+            };
+            return Self::message(Some(&account.id), account.name.clone(), mode, note);
+        };
+        let freshness = match (account.health, account.updated_at) {
+            (WidgetHealth::Stale, Some(at)) => Some(format!("Last known, {}", age_label(at, now))),
+            (WidgetHealth::Stale, None) => Some("Last known".to_owned()),
+            _ => None,
+        };
+        // The tile's own metric decides its status, not the account's most urgent one.
+        let status = found.status.clone();
+        let line = Some(format!("{}: {}", found.label, found.value));
+        let percent_text = found.used_percent.map(|p| format!("{p:.0}%"));
+        let resets = found
+            .resets_at
+            .filter(|at| *at > now)
+            .map(|at| format!("Resets in {}", countdown(at - now)));
+        let (line, big, percent, note) = match mode {
+            // A bar for limits; money (no percentage) shows its amount large.
+            TileMode::Automatic if found.used_percent.is_none() => (
+                Some(found.label.clone()),
+                Some(found.value.clone()),
+                None,
+                freshness.or(status.clone()),
+            ),
+            TileMode::Automatic => (line, None, found.used_percent, freshness.or(status.clone())),
+            TileMode::Percent => (
+                Some(found.label.clone()),
+                percent_text.or(Some(found.value.clone())),
+                None,
+                freshness,
+            ),
+            TileMode::Bar => (line, None, found.used_percent, freshness.or(resets).or(status.clone())),
+            TileMode::Balance => (Some(found.label.clone()), Some(found.value.clone()), None, freshness),
+            TileMode::Status => (
+                line,
+                Some(status.clone().unwrap_or_else(|| "OK".to_owned())),
+                None,
+                freshness,
+            ),
+        };
+        Self {
+            account: Some(account.id.clone()),
+            metric: Some(found.key.clone()),
+            title: account.name.clone(),
+            mode,
+            line,
+            big,
+            percent,
+            status,
+            note,
+        }
+    }
+}
+
+/// The tiles a widget shows: the builder's tiles for the Custom focus, otherwise each focused account's primary
+/// metric. `None` when the focus is gone.
+pub fn tile_views(snapshot: &WidgetSnapshot, config: &Config, size: Size, now: DateTime<Utc>) -> Option<Vec<TileView>> {
+    focus_name(&config.focus, snapshot)?;
+    let custom = config.focus == Focus::Custom;
+    let count = config.tiles.count(size, custom);
+    let views = if custom {
+        snapshot
+            .builder
+            .tiles
+            .iter()
+            .take(count)
+            .map(
+                |tile| match snapshot.accounts.iter().find(|account| account.id == tile.account) {
+                    Some(account) => TileView::of(account, Some(&tile.metric), tile.mode, now),
+                    None => TileView::message(
+                        None,
+                        "Removed account",
+                        tile.mode,
+                        "This account is gone. Choose another tile in CodexBar's Settings › Widgets.",
+                    ),
+                },
+            )
+            .collect()
+    } else {
+        focused(&config.focus, snapshot)
+            .into_iter()
+            .take(count)
+            .map(|account| TileView::of(account, None, TileMode::Automatic, now))
+            .collect()
+    };
+    Some(views)
 }
 
 /// A usage bar: two weighted columns, used and left. The color follows the account's status.
@@ -215,42 +363,58 @@ fn bar(percent: f64, status: Option<&str>) -> Value {
     json!({ "type": "ColumnSet", "spacing": "Small", "columns": columns })
 }
 
-/// One account: its name, the primary metric's value and bar, and how current it is.
-fn tile(account: &WidgetAccount, now: DateTime<Utc>, compact: bool) -> Value {
+/// The Adaptive Cards color for a status.
+fn status_color(status: Option<&str>) -> &'static str {
+    match status {
+        Some("At risk" | "Limit soon") => "Attention",
+        Some(_) => "Warning",
+        None => "Good",
+    }
+}
+
+/// One tile as a card container. Tapping it opens CodexBar on its account and metric.
+fn tile(view: &TileView, compact: bool) -> Value {
     let mut items = Vec::new();
-    let mut name = text(account.name.clone());
+    let mut name = text(view.title.clone());
     name["weight"] = json!("Bolder");
     name["size"] = json!("Small");
     name["wrap"] = json!(false);
     items.push(name);
-    match (account.health, account.metrics.first()) {
-        (WidgetHealth::Unavailable, _) => items.push(subtle("Unavailable")),
-        (_, None) => items.push(subtle("No limits to show")),
-        (health, Some(metric)) => {
-            let value = if compact {
-                metric.value.clone()
-            } else {
-                format!("{}: {}", metric.label, metric.value)
-            };
-            let mut line = text(value);
-            line["size"] = json!("Small");
-            line["spacing"] = json!("None");
-            items.push(line);
-            if let Some(percent) = metric.used_percent {
-                items.push(bar(percent, account.status.as_deref()));
-            }
-            let status = match (health, &account.status, account.updated_at) {
-                (WidgetHealth::Stale, _, Some(at)) => Some(format!("Last known, {}", age_label(at, now))),
-                (WidgetHealth::Stale, _, None) => Some("Last known".into()),
-                (_, Some(status), _) => Some(status.clone()),
-                _ => None,
-            };
-            if let Some(status) = status.filter(|_| !compact || health == WidgetHealth::Stale) {
-                items.push(subtle(status));
-            }
+    if let Some(big) = &view.big {
+        let mut figure = text(big.clone());
+        figure["size"] = json!(if compact { "Medium" } else { "Large" });
+        figure["weight"] = json!("Bolder");
+        figure["spacing"] = json!("None");
+        if view.mode == TileMode::Status {
+            figure["color"] = json!(status_color(view.status.as_deref()));
         }
+        items.push(figure);
     }
-    json!({ "type": "Container", "items": items })
+    if let Some(line) = view.line.as_ref().filter(|_| !compact || view.big.is_none()) {
+        let mut block = text(line.clone());
+        block["size"] = json!("Small");
+        block["spacing"] = json!("None");
+        items.push(block);
+    }
+    if let Some(percent) = view.percent {
+        items.push(bar(percent, view.status.as_deref()));
+    }
+    if let Some(note) = view
+        .note
+        .as_ref()
+        .filter(|note| !compact || note.starts_with("Last known") || view.line.is_none())
+    {
+        items.push(subtle(note.clone()));
+    }
+    let mut container = json!({ "type": "Container", "items": items });
+    if let Some(account) = &view.account {
+        container["selectAction"] = json!({
+            "type": "Action.Execute",
+            "verb": verbs::OPEN,
+            "data": { "account": account, "metric": view.metric },
+        });
+    }
+    container
 }
 
 /// The widget's card for the current snapshot (or why there is none).
@@ -273,17 +437,21 @@ pub fn render(snapshot: &Result<WidgetSnapshot, LoadError>, config: &Config, siz
             );
         }
     };
-    let Some(title) = focus_name(&config.focus, snapshot) else {
+    let (Some(title), Some(views)) = (
+        focus_name(&config.focus, snapshot),
+        tile_views(snapshot, config, size, now),
+    ) else {
         return message(
             "Nothing to show",
             "The provider or group this widget showed is gone. Choose another in Customize widget.",
         );
     };
-    let accounts = focused(&config.focus, snapshot);
-    if accounts.is_empty() {
+    if views.is_empty() {
         return message(
             &title,
-            if snapshot.accounts.is_empty() {
+            if config.focus == Focus::Custom {
+                "No tiles yet. Choose them in CodexBar's Settings › Widgets."
+            } else if snapshot.accounts.is_empty() {
                 "No accounts yet. Add one in CodexBar's Settings."
             } else {
                 "No accounts here yet."
@@ -291,21 +459,17 @@ pub fn render(snapshot: &Result<WidgetSnapshot, LoadError>, config: &Config, siz
         );
     }
 
-    let count = config.tiles.count(size).min(accounts.len());
+    let count = views.len();
     let compact = size == Size::Small && count > 1;
-    let tiles: Vec<Value> = accounts
-        .iter()
-        .take(count)
-        .map(|account| tile(account, now, compact))
-        .collect();
+    let tiles: Vec<Value> = views.iter().map(|view| tile(view, compact)).collect();
     let mut body = Vec::new();
     let mut heading = text(title);
     heading["weight"] = json!("Bolder");
     heading["size"] = json!("Small");
     heading["isSubtle"] = json!(true);
     body.push(heading);
-    // Four tiles sit two by two; fewer stack, unless a wide layout has room for two side by side.
-    if count == 4 || (count == 2 && size == Size::Large) {
+    // Four or more tiles sit two by two; fewer stack, unless a wide layout has room for two side by side.
+    if count >= 3 || (count == 2 && size == Size::Large) {
         for pair in tiles.chunks(2) {
             let columns: Vec<Value> = pair
                 .iter()
@@ -332,14 +496,17 @@ pub fn render(snapshot: &Result<WidgetSnapshot, LoadError>, config: &Config, siz
         Vec::new()
     };
     let mut card = card(body, actions);
-    // Tapping the widget opens CodexBar.
+    // Tapping the widget outside a tile opens CodexBar.
     card["selectAction"] = json!({ "type": "Action.Execute", "verb": verbs::OPEN });
     card
 }
 
 /// The Customize widget card: which accounts, and how many.
 pub fn customize(snapshot: &Result<WidgetSnapshot, LoadError>, config: &Config) -> Value {
-    let mut choices = vec![json!({ "title": "All accounts", "value": Focus::All.key() })];
+    let mut choices = vec![
+        json!({ "title": "All accounts", "value": Focus::All.key() }),
+        json!({ "title": "My tiles (Settings › Widgets)", "value": Focus::Custom.key() }),
+    ];
     if let Ok(snapshot) = snapshot {
         let mut providers: Vec<(&str, &str)> = Vec::new();
         for account in &snapshot.accounts {
@@ -421,6 +588,7 @@ mod tests {
                 value: format!("{percent:.0}% used"),
                 used_percent: Some(percent),
                 resets_at: None,
+                status: None,
             }],
         }
     }
@@ -608,6 +776,176 @@ mod tests {
         );
     }
 
+    fn custom(tiles: &[(&str, &str, TileMode)]) -> Result<WidgetSnapshot, LoadError> {
+        use codexbar_store::widgets::{WidgetBuilder, WidgetTile};
+        let mut snapshot = snapshot().unwrap();
+        snapshot.accounts[0].metrics.push(WidgetMetric {
+            key: "credits".into(),
+            label: "Credits".into(),
+            value: "$12.30 left".into(),
+            used_percent: None,
+            resets_at: None,
+            status: None,
+        });
+        snapshot.accounts[0].metrics[0].resets_at = Some(now() + chrono::Duration::hours(50));
+        snapshot.accounts[0].status = Some("At risk".into());
+        snapshot.accounts[0].metrics[0].status = Some("At risk".into());
+        let builder = WidgetBuilder {
+            tiles: tiles
+                .iter()
+                .map(|(account, metric, mode)| WidgetTile {
+                    account: (*account).into(),
+                    metric: (*metric).into(),
+                    mode: *mode,
+                })
+                .collect(),
+            ..WidgetBuilder::default()
+        };
+        Ok(snapshot.with_builder(builder))
+    }
+
+    fn views(snapshot: &Result<WidgetSnapshot, LoadError>, tiles: Tiles, size: Size) -> Vec<TileView> {
+        let config = Config {
+            focus: Focus::Custom,
+            tiles,
+        };
+        tile_views(snapshot.as_ref().unwrap(), &config, size, now()).unwrap()
+    }
+
+    #[test]
+    fn custom_tiles_show_their_metric_in_each_display_mode() {
+        let snapshot = custom(&[
+            ("a", "weekly", TileMode::Automatic),
+            ("a", "weekly", TileMode::Percent),
+            ("a", "weekly", TileMode::Bar),
+            ("a", "credits", TileMode::Balance),
+            ("a", "weekly", TileMode::Status),
+            ("b", "weekly", TileMode::Status),
+        ]);
+        let views = views(&snapshot, Tiles::Automatic, Size::Large);
+        assert_eq!(views.len(), 6, "automatic on large shows all six");
+        let [auto, percent, bar, balance, status, ok] = views.as_slice() else {
+            panic!()
+        };
+        assert_eq!((auto.percent, auto.big.as_deref()), (Some(82.0), None));
+        assert_eq!(auto.line.as_deref(), Some("Weekly: 82% used"));
+        assert_eq!((percent.big.as_deref(), percent.percent), (Some("82%"), None));
+        assert_eq!(
+            bar.note.as_deref(),
+            Some("Resets in 2d 2h"),
+            "the full bar adds the reset"
+        );
+        assert_eq!(bar.percent, Some(82.0));
+        assert_eq!(balance.big.as_deref(), Some("$12.30 left"));
+        assert_eq!(status.big.as_deref(), Some("At risk"));
+        assert_eq!(ok.big.as_deref(), Some("OK"), "a normal account reads OK");
+        // Credits are fine although the account's weekly limit is at risk: the tile follows its own metric.
+        let credits = TileView::of(
+            &snapshot.as_ref().unwrap().accounts[0],
+            Some("credits"),
+            TileMode::Status,
+            now(),
+        );
+        assert_eq!(credits.big.as_deref(), Some("OK"));
+        assert!(views.iter().all(|view| view.account.is_some() && view.metric.is_some()));
+    }
+
+    #[test]
+    fn automatic_money_tiles_show_the_amount_large_and_unavailable_tiles_keep_their_metric() {
+        let mut snapshot = custom(&[("a", "credits", TileMode::Automatic), ("b", "weekly", TileMode::Bar)]);
+        snapshot.as_mut().unwrap().accounts[1].health = WidgetHealth::Unavailable;
+        let views = views(&snapshot, Tiles::Two, Size::Large);
+        assert_eq!(views[0].big.as_deref(), Some("$12.30 left"));
+        assert_eq!(views[0].line.as_deref(), Some("Credits"));
+        assert_eq!(views[0].percent, None);
+        assert_eq!(views[1].note.as_deref(), Some("Unavailable"));
+        assert_eq!(
+            views[1].metric.as_deref(),
+            Some("weekly"),
+            "the tap opens the tile's metric"
+        );
+    }
+
+    #[test]
+    fn layouts_limit_how_many_custom_tiles_show() {
+        let snapshot = custom(&[
+            ("a", "weekly", TileMode::Automatic),
+            ("b", "weekly", TileMode::Automatic),
+            ("c", "weekly", TileMode::Automatic),
+            ("d", "weekly", TileMode::Automatic),
+            ("e", "weekly", TileMode::Automatic),
+        ]);
+        assert_eq!(views(&snapshot, Tiles::One, Size::Large).len(), 1);
+        assert_eq!(views(&snapshot, Tiles::Two, Size::Large).len(), 2);
+        assert_eq!(views(&snapshot, Tiles::Four, Size::Small).len(), 4);
+        assert_eq!(views(&snapshot, Tiles::Automatic, Size::Medium).len(), 2);
+        assert_eq!(views(&snapshot, Tiles::Automatic, Size::Large).len(), 5);
+    }
+
+    #[test]
+    fn removed_accounts_and_metrics_degrade_to_a_hint() {
+        let snapshot = custom(&[
+            ("gone", "weekly", TileMode::Bar),
+            ("a", "monthly", TileMode::Percent),
+            ("b", "weekly", TileMode::Automatic),
+        ]);
+        let views = views(&snapshot, Tiles::Four, Size::Large);
+        assert_eq!(views[0].title, "Removed account");
+        assert_eq!(views[0].account, None, "nothing to open");
+        assert!(views[0].note.as_deref().unwrap().contains("Settings › Widgets"));
+        assert_eq!(views[1].title, "claude a", "the account's current name");
+        assert!(views[1].note.as_deref().unwrap().contains("isn't reported any more"));
+        assert_eq!(views[2].line.as_deref(), Some("Weekly: 10% used"));
+    }
+
+    #[test]
+    fn renamed_accounts_show_their_new_name() {
+        let mut snapshot = custom(&[("a", "weekly", TileMode::Automatic)]).unwrap();
+        snapshot.accounts[0].name = "Claude · Personal".into();
+        let config = Config {
+            focus: Focus::Custom,
+            tiles: Tiles::One,
+        };
+        assert_eq!(
+            tile_views(&snapshot, &config, Size::Medium, now()).unwrap()[0].title,
+            "Claude · Personal"
+        );
+    }
+
+    #[test]
+    fn tapping_a_tile_opens_its_account_and_metric() {
+        let snapshot = custom(&[("a", "credits", TileMode::Balance)]);
+        let card = render(
+            &snapshot,
+            &Config {
+                focus: Focus::Custom,
+                tiles: Tiles::One,
+            },
+            Size::Medium,
+            now(),
+        );
+        let tile = &card["body"][1];
+        assert_eq!(tile["selectAction"]["verb"], verbs::OPEN);
+        assert_eq!(
+            tile["selectAction"]["data"],
+            serde_json::json!({ "account": "a", "metric": "credits" })
+        );
+    }
+
+    #[test]
+    fn an_empty_builder_says_where_to_add_tiles() {
+        let card = render(
+            &custom(&[]),
+            &Config {
+                focus: Focus::Custom,
+                tiles: Tiles::Automatic,
+            },
+            Size::Medium,
+            now(),
+        );
+        assert!(all_text(&card).contains("Settings › Widgets"));
+    }
+
     #[test]
     fn customize_offers_providers_once_and_groups_and_save_applies_it() {
         let card = customize(&snapshot(), &Config::default());
@@ -621,6 +959,7 @@ mod tests {
             choices,
             [
                 "all",
+                "custom",
                 "provider:claude",
                 "provider:codex",
                 "provider:copilot",

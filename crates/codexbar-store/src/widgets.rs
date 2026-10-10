@@ -29,6 +29,187 @@ pub struct WidgetSnapshot {
     /// Accounts in dashboard order: by group, then the table's order within it.
     #[serde(default)]
     pub accounts: Vec<WidgetAccount>,
+    /// The tiles and refresh choice made in Settings › Widgets (#95).
+    #[serde(default)]
+    pub builder: WidgetBuilder,
+}
+
+/// The most tiles the widget builder holds (#95).
+pub const MAX_TILES: usize = 6;
+
+/// How a builder tile shows its metric (#95). A mode this version doesn't know reads as automatic.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum TileMode {
+    /// A bar for limits, the amount for money.
+    #[default]
+    Automatic,
+    /// Just the percentage, large.
+    Percent,
+    /// Name, value, bar and reset time.
+    Bar,
+    /// Just the money left or spent.
+    Balance,
+    /// The status (OK, Watch, At risk, Limit soon) first.
+    Status,
+}
+
+impl TileMode {
+    pub const ALL: [Self; 5] = [Self::Automatic, Self::Percent, Self::Bar, Self::Balance, Self::Status];
+
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Automatic => "automatic",
+            Self::Percent => "percent",
+            Self::Bar => "bar",
+            Self::Balance => "balance",
+            Self::Status => "status",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|mode| mode.key() == key)
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Automatic => "Automatic",
+            Self::Percent => "Compact percentage",
+            Self::Bar => "Full bar",
+            Self::Balance => "Balance only",
+            Self::Status => "Urgent status",
+        }
+    }
+}
+
+/// Stored as their keys; a key this version doesn't know reads as the default, so newer files stay readable.
+macro_rules! keyed_serde {
+    ($ty:ty) => {
+        impl Serialize for $ty {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                serializer.serialize_str(self.key())
+            }
+        }
+
+        impl<'de> Deserialize<'de> for $ty {
+            fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+                let key = String::deserialize(deserializer)?;
+                Ok(Self::from_key(&key).unwrap_or_default())
+            }
+        }
+    };
+}
+
+keyed_serde!(TileMode);
+keyed_serde!(WidgetRefresh);
+
+/// One builder tile: an account's metric and how to show it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WidgetTile {
+    pub account: String,
+    /// The metric's key within the account (`weekly`, `credits`).
+    pub metric: String,
+    #[serde(default)]
+    pub mode: TileMode,
+}
+
+/// How often widgets redraw (#95). A choice this version doesn't know reads as the default.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum WidgetRefresh {
+    /// As soon as CodexBar has new usage.
+    #[default]
+    WithCodexBar,
+    FiveMinutes,
+    FifteenMinutes,
+}
+
+impl WidgetRefresh {
+    pub const ALL: [Self; 3] = [Self::WithCodexBar, Self::FiveMinutes, Self::FifteenMinutes];
+
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::WithCodexBar => "withCodexBar",
+            Self::FiveMinutes => "fiveMinutes",
+            Self::FifteenMinutes => "fifteenMinutes",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|refresh| refresh.key() == key)
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::WithCodexBar => "When CodexBar refreshes",
+            Self::FiveMinutes => "Every 5 minutes",
+            Self::FifteenMinutes => "Every 15 minutes",
+        }
+    }
+
+    /// How long the widget provider waits between redraws.
+    pub fn interval(self) -> std::time::Duration {
+        std::time::Duration::from_secs(match self {
+            Self::WithCodexBar => 10,
+            Self::FiveMinutes => 5 * 60,
+            Self::FifteenMinutes => 15 * 60,
+        })
+    }
+}
+
+/// The widget builder's choices (#95): up to six tiles, in order, and the refresh choice.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WidgetBuilder {
+    #[serde(default)]
+    pub tiles: Vec<WidgetTile>,
+    #[serde(default)]
+    pub refresh: WidgetRefresh,
+}
+
+impl WidgetBuilder {
+    /// Reads stored choices; anything unreadable gives the defaults, and extra tiles are dropped.
+    pub fn from_json(value: &serde_json::Value) -> Self {
+        let mut builder: Self = serde_json::from_value(value.clone()).unwrap_or_default();
+        builder.tiles.truncate(MAX_TILES);
+        builder
+    }
+
+    pub fn is_full(&self) -> bool {
+        self.tiles.len() >= MAX_TILES
+    }
+
+    /// Adds a tile at the end, unless the builder is full or already shows that metric. Returns whether it did.
+    pub fn add(&mut self, tile: WidgetTile) -> bool {
+        if self.is_full()
+            || self
+                .tiles
+                .iter()
+                .any(|t| t.account == tile.account && t.metric == tile.metric)
+        {
+            return false;
+        }
+        self.tiles.push(tile);
+        true
+    }
+
+    /// Moves preferences from an account's old id to its new one.
+    pub fn rename_account(&mut self, from: &str, to: &str) -> bool {
+        let mut changed = false;
+        for tile in &mut self.tiles {
+            if tile.account == from {
+                tile.account = to.to_owned();
+                changed = true;
+            }
+        }
+        changed
+    }
+
+    /// Drops a removed account's tiles.
+    pub fn forget_account(&mut self, account: &str) -> bool {
+        let before = self.tiles.len();
+        self.tiles.retain(|tile| tile.account != account);
+        self.tiles.len() != before
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -87,6 +268,9 @@ pub struct WidgetMetric {
     pub used_percent: Option<f64>,
     #[serde(default)]
     pub resets_at: Option<DateTime<Utc>>,
+    /// This metric's own status ("Watch", "At risk", "Limit soon"); none when it is normal (#95).
+    #[serde(default)]
+    pub status: Option<String>,
 }
 
 impl WidgetSnapshot {
@@ -96,7 +280,13 @@ impl WidgetSnapshot {
             generated_at,
             groups,
             accounts,
+            builder: WidgetBuilder::default(),
         }
+    }
+
+    pub fn with_builder(mut self, builder: WidgetBuilder) -> Self {
+        self.builder = builder;
+        self
     }
 }
 
@@ -193,6 +383,7 @@ mod tests {
                     value: "82% used".into(),
                     used_percent: Some(82.0),
                     resets_at: Some(at("2026-10-12T00:00:00Z")),
+                    status: Some("At risk".into()),
                 }],
             }],
         )
@@ -228,9 +419,11 @@ mod tests {
                     "label": "Weekly",
                     "value": "82% used",
                     "usedPercent": 82.0,
-                    "resetsAt": "2026-10-12T00:00:00Z"
+                    "resetsAt": "2026-10-12T00:00:00Z",
+                    "status": "At risk"
                 }]
-            }]
+            }],
+            "builder": {"tiles": [], "refresh": "withCodexBar"}
         });
         assert_eq!(text, expected);
     }
@@ -273,6 +466,80 @@ mod tests {
         dir.write(newer);
         assert!(save_widget_snapshot(&dir.0, &sample()).is_err());
         assert_eq!(std::fs::read_to_string(dir.0.join(WIDGETS_FILE)).unwrap(), newer);
+    }
+
+    fn tile(account: &str, metric: &str) -> WidgetTile {
+        WidgetTile {
+            account: account.into(),
+            metric: metric.into(),
+            mode: TileMode::Automatic,
+        }
+    }
+
+    #[test]
+    fn the_builder_holds_six_distinct_tiles() {
+        let mut builder = WidgetBuilder::default();
+        assert!(builder.add(tile("a", "weekly")));
+        assert!(!builder.add(tile("a", "weekly")), "the same metric once");
+        for n in 1..6 {
+            assert!(builder.add(tile("a", &format!("m{n}"))));
+        }
+        assert!(builder.is_full());
+        assert!(!builder.add(tile("b", "weekly")), "at most six");
+        assert_eq!(builder.tiles.len(), MAX_TILES);
+    }
+
+    #[test]
+    fn builder_tiles_follow_renamed_and_removed_accounts() {
+        let mut builder = WidgetBuilder::default();
+        builder.add(tile("old", "weekly"));
+        builder.add(tile("other", "credits"));
+        assert!(builder.rename_account("old", "new"));
+        assert_eq!(builder.tiles[0].account, "new");
+        assert!(builder.forget_account("other"));
+        assert_eq!(builder.tiles.len(), 1);
+        assert!(!builder.forget_account("missing"));
+    }
+
+    #[test]
+    fn stored_builder_choices_tolerate_newer_and_broken_values() {
+        let value = serde_json::json!({
+            "tiles": [{"account": "a", "metric": "weekly", "mode": "sparkline"}],
+            "refresh": "hourly",
+            "palette": "gold"
+        });
+        let builder = WidgetBuilder::from_json(&value);
+        assert_eq!(
+            builder.tiles[0].mode,
+            TileMode::Automatic,
+            "an unknown mode reads as automatic"
+        );
+        assert_eq!(builder.refresh, WidgetRefresh::WithCodexBar);
+        let many: Vec<_> = (0..9)
+            .map(|n| serde_json::json!({"account": "a", "metric": format!("m{n}")}))
+            .collect();
+        assert_eq!(
+            WidgetBuilder::from_json(&serde_json::json!({ "tiles": many }))
+                .tiles
+                .len(),
+            MAX_TILES
+        );
+        assert_eq!(
+            WidgetBuilder::from_json(&serde_json::json!("nonsense")),
+            WidgetBuilder::default()
+        );
+    }
+
+    #[test]
+    fn modes_and_refresh_choices_round_trip_their_keys() {
+        for mode in TileMode::ALL {
+            assert_eq!(TileMode::from_key(mode.key()), Some(mode));
+        }
+        for refresh in WidgetRefresh::ALL {
+            assert_eq!(WidgetRefresh::from_key(refresh.key()), Some(refresh));
+            let json = serde_json::to_value(refresh).unwrap();
+            assert_eq!(json, refresh.key(), "the stored key is the one the settings use");
+        }
     }
 
     #[test]

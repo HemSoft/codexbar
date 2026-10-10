@@ -188,9 +188,16 @@ pub struct Dashboard {
     /// When `widgets.json` was last written (#94); it is rewritten at least every few minutes so the widgets can
     /// tell a running CodexBar from one that quit.
     widgets_written: Option<DateTime<Utc>>,
+    /// A widget tile's account (#95) that wasn't loaded yet when it was tapped; shown once it arrives.
+    pending_focus: Option<(crate::handoff::FocusRequest, Instant)>,
+    /// The widget builder's choices the last snapshot carried (#95).
+    widget_builder: codexbar_store::widgets::WidgetBuilder,
     _clock: Task<()>,
     _subscriptions: Vec<Subscription>,
 }
+
+/// How long a widget tap waits for an account that hasn't loaded yet (#95).
+const PENDING_FOCUS_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
 
 impl Dashboard {
     pub fn new(source: DataSource, window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -292,7 +299,13 @@ impl Dashboard {
 
         // Groups and the manual order can change in Settings or from the focused account; rearrange the table then.
         // Smart order also follows alert settings and the held alerts, which the demo keeps in `Notifications`.
-        let layout_changes = cx.observe_global::<crate::prefs_hub::PrefsHub>(|this, cx| this.rearrange_if_changed(cx));
+        let layout_changes = cx.observe_global::<crate::prefs_hub::PrefsHub>(|this, cx| {
+            this.rearrange_if_changed(cx);
+            // The widget builder's tiles (#95) go to the widgets with the next snapshot; write it now.
+            if crate::prefs_hub::PrefsHub::widget_builder(cx) != this.widget_builder {
+                this.save_widget_snapshot(cx);
+            }
+        });
         let alert_changes =
             cx.observe_global::<crate::notifications::Notifications>(|this, cx| this.rearrange_if_changed(cx));
         let settings_changes = cx.observe_global::<SettingsHub>(|this, cx| {
@@ -332,6 +345,8 @@ impl Dashboard {
             owned_ids: crate::providers::owned_account_ids(SettingsHub::global(cx)),
             forgotten: HashMap::new(),
             widgets_written: None,
+            pending_focus: None,
+            widget_builder: Default::default(),
             _clock: clock,
             _subscriptions: vec![selection, activation, layout_changes, alert_changes, settings_changes],
         };
@@ -426,6 +441,41 @@ impl Dashboard {
     #[cfg(test)]
     pub fn select_row(&mut self, ix: usize, cx: &mut Context<Self>) {
         self.table.update(cx, |table, cx| table.set_selected_row(ix, cx));
+    }
+
+    /// Shows an account and metric, from a widget tile (#95): the Usage view with the account selected, and History
+    /// set to the metric. An account that isn't loaded yet is shown when it arrives; a removed one just opens Usage.
+    pub fn focus_account(&mut self, request: &crate::handoff::FocusRequest, cx: &mut Context<Self>) {
+        self.view = DashboardView::Usage;
+        let Some(ix) = self
+            .accounts
+            .iter()
+            .position(|account| account.id().as_str() == request.account)
+        else {
+            self.pending_focus = Some((request.clone(), Instant::now()));
+            cx.notify();
+            return;
+        };
+        self.pending_focus = None;
+        let id = self.accounts[ix].id().clone();
+        self.selected = Some(id.clone());
+        self.table.update(cx, |table, cx| table.set_selected_row(ix, cx));
+        let metric = request.metric.clone();
+        self.history_view
+            .update(cx, |view, cx| view.focus(&id, metric.as_deref(), cx));
+        cx.notify();
+    }
+
+    /// The selected account's id, for the headless UI tests.
+    #[cfg(test)]
+    pub fn selected_id(&self) -> Option<String> {
+        self.selected.as_ref().map(|id| id.as_str().to_owned())
+    }
+
+    /// The History view's account and metric, for the headless UI tests.
+    #[cfg(test)]
+    pub fn history_shown(&self, cx: &gpui_kit::App) -> Option<(String, String)> {
+        self.history_view.read(cx).shown()
     }
 
     /// Switches the visible view (the tray's Settings… item, the `--settings` flag).
@@ -994,18 +1044,37 @@ impl Dashboard {
         });
         self.publish_tooltip(cx);
         self.save_widget_snapshot(cx);
+        // A tap waits for its account only briefly, so it never takes over after the user has moved on.
+        if self
+            .pending_focus
+            .as_ref()
+            .is_some_and(|(_, at)| at.elapsed() > PENDING_FOCUS_WAIT)
+        {
+            self.pending_focus = None;
+        }
+        if let Some((request, _)) = self.pending_focus.clone()
+            && self
+                .accounts
+                .iter()
+                .any(|account| account.id().as_str() == request.account)
+        {
+            self.focus_account(&request, cx);
+        }
         cx.notify();
     }
 
     /// Writes what the Windows widgets show (#94), for live data only. A failed write only leaves the widgets on the
     /// previous snapshot until the next one.
     fn save_widget_snapshot(&mut self, cx: &mut Context<Self>) {
-        if !matches!(self.source, DataSource::Live { .. }) {
-            return;
-        }
-        let snapshot = crate::widget_feed::build(&self.accounts, &self.states, &self.layout, Utc::now());
-        let _ = codexbar_store::widgets::save_widget_snapshot(SettingsHub::global(cx).dir(), &snapshot);
+        self.widget_builder = crate::prefs_hub::PrefsHub::widget_builder(cx);
+        let snapshot = crate::widget_feed::build(&self.accounts, &self.states, &self.layout, Utc::now())
+            .with_builder(self.widget_builder.clone());
         self.widgets_written = Some(self.now);
+        // The builder's preview reads it (#95), in the demo too; only live data goes to the widgets.
+        if matches!(self.source, DataSource::Live { .. }) {
+            let _ = codexbar_store::widgets::save_widget_snapshot(SettingsHub::global(cx).dir(), &snapshot);
+        }
+        cx.set_global(crate::widget_builder::WidgetFeed(snapshot));
     }
 
     /// Recomputes the table's compact history for the current minute, keeping its rows and selection.
