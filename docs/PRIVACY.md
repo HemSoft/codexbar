@@ -1,0 +1,81 @@
+# Privacy and data handling
+
+CodexBar runs on your PC only. It has no server, no account of its own, no
+analytics and no telemetry. It talks to each provider's own API, with the
+sign-in or key you gave it, and to nothing else.
+
+## Network destinations
+
+CodexBar sends requests only to providers that are on and have a sign-in or key
+to use. On a first start, before any account is set up, every provider except
+Moonshot is on: one already signed in on this PC (the Codex CLI, Claude Code, the
+Cursor app, the GitHub CLI) is fetched right away, and one without a sign-in or
+key makes no request. To stop one, add an account for it in Settings > Accounts
+(the provider's own sign-in, Automatic) and switch that account off.
+
+| Provider | Endpoint | Authenticated with |
+| --- | --- | --- |
+| ChatGPT / Codex | `https://chatgpt.com/backend-api/wham/usage` | The Codex sign-in (`auth.json`) |
+| Claude | `https://api.anthropic.com/api/oauth/usage` | The Claude Code sign-in (`.credentials.json`) |
+| Copilot | `https://api.github.com/copilot_internal/user`, and for org billing `https://api.github.com/enterprises/…/settings/billing/ai_credit/usage` and `https://api.github.com/orgs/…/copilot/billing` | A GitHub CLI token |
+| Cursor | `https://api2.cursor.sh/aiserver.v1.DashboardService/GetCurrentPeriodUsage` | The Cursor sign-in (`auth.json`) |
+| OpenRouter | `https://openrouter.ai/api/v1/credits` | Your API key |
+| Moonshot (Kimi) | `https://api.moonshot.ai/v1/users/me/balance` | Your API key |
+| OpenCode Go / Zen | `https://opencode.ai/workspace/…` | Your dashboard auth cookie |
+
+For the GitHub CLI's Copilot accounts, CodexBar also runs `gh auth status` on
+each refresh to list them; the GitHub CLI checks each account with GitHub while
+it does.
+
+Signing an account in from Settings runs the provider's own CLI (Codex CLI,
+GitHub CLI, Claude Code or the Cursor CLI), which talks to that provider's
+sign-in service. CodexBar opens the provider's sign-in page in your default
+browser. See [OAUTH.md](OAUTH.md) for how each sign-in works.
+
+## Secrets
+
+- **API keys and cookies** you paste in Settings are stored in Windows
+  Credential Manager under `CodexBar:account:<id>`, not in a file. An
+  environment variable (`OPENROUTER_API_KEY`, `MOONSHOT_API_KEY`, …) takes
+  precedence over a stored key. Keys an older CodexBar left in its settings
+  file are moved to Credential Manager at startup. If that move fails, the key
+  stays in the file and in use, Settings says so, and the move is tried again
+  at the next start.
+- **Copilot accounts CodexBar signs in** keep their GitHub CLI token in
+  Credential Manager, split across parts when it is long.
+- **Codex, Claude and Cursor accounts CodexBar signs in** keep their sign-in
+  where the provider's CLI writes it, in that account's own folder under the
+  settings folder (`codex\`, `claude\`, `cursor\`). CodexBar reads those files
+  and never writes them.
+- **Sign-ins of the providers' own apps** (`~/.codex`, `~/.claude`, the Cursor
+  app's, your `gh` accounts) are read, never written by CodexBar. One exception
+  is renewal: when a Codex or Claude sign-in (the CLI's own or one CodexBar
+  made) is about to expire or is refused, CodexBar asks that CLI to renew it
+  (`codex app-server`, `claude auth status`). The CLI then writes the renewed
+  tokens, as it would when you use it.
+- Secrets never appear in the UI, error messages, notifications, logs or
+  saved snapshots. Errors keep only a provider's short error text or status.
+
+## Files
+
+Everything CodexBar writes lives in `%USERPROFILE%\.codexbar`. With
+`CODEXBAR_SETTINGS_DIR` set (for isolated testing), everything except
+`history.jsonl` moves to that folder:
+
+| File | What it holds |
+| --- | --- |
+| `settings.json` | Accounts (provider, name, sign-in method, username or workspace id, org billing settings), refresh interval, zoom |
+| `dashboard.json` | Groups, order, appearance, alert settings, which alerts were shown, hidden history series |
+| `snapshots.json` | The last good usage of each account (ids, labels, metric names, numbers, times), so the dashboard shows something at startup and while a provider fails |
+| `history.jsonl` | Usage samples for the history charts, kept **30 days** and pruned at startup |
+| `codex\`, `claude\`, `cursor\` | One folder per account CodexBar signed in, holding that provider CLI's own sign-in files |
+
+Removing an account in Settings deletes its saved key or token, its folder and
+its usage history (for accounts that are their own dashboard account). Reset
+accounts does the same for every account. Removing the `.codexbar` folder
+removes everything else CodexBar stored.
+
+## Notifications
+
+Alerts (nearing or hitting a limit) are shown as Windows notifications. They
+contain the account's name and the alert, never a secret.

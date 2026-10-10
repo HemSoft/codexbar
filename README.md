@@ -54,6 +54,41 @@ development, `cargo run -p codexbar-app -- --demo` starts the dashboard with sam
 4. **Cursor**: Sign in to the Cursor app. For more accounts, install the Cursor CLI (`cursor-agent`) and add a Cursor account with the OAuth sign-in method in Settings > Accounts
 5. **OpenRouter**: Get an API key from [openrouter.ai/keys](https://openrouter.ai/keys) and add it in Settings, or set `OPENROUTER_API_KEY`
 6. **Moonshot (Kimi)**: Get an API key from [platform.kimi.ai](https://platform.kimi.ai/) and add it in Settings, or set `MOONSHOT_API_KEY`
+7. **OpenCode Go / Zen**: Sign in at [opencode.ai](https://opencode.ai), then add an OpenCode Go account in Settings with the dashboard auth cookie and your workspace id (`wrk_…`), or set `OPENCODE_GO_AUTH_COOKIE` and `OPENCODE_GO_WORKSPACE_ID`. OpenCode Zen uses the same cookie unless you give it its own (`OPENCODE_ZEN_AUTH_COOKIE`)
+
+How each sign-in works, and what CodexBar stores and sends, is in [docs/OAUTH.md](docs/OAUTH.md) and [docs/PRIVACY.md](docs/PRIVACY.md).
+
+## Installing, updating and support
+
+There is no packaged release yet: CodexBar is built from source with `run.ps1`
+(see [Build from source](#build-from-source)). A signed MSIX package with
+updates is planned for the first release
+([#93](https://github.com/hemsoft-dev/codexbar/issues/93)).
+
+- **Update**: `git pull`, then `.\run.ps1`. It rebuilds, stops the running
+  CodexBar and starts the new one. Settings, saved keys and history are kept.
+- **Roll back**: check out an earlier commit (`git checkout <commit>`) and run
+  `.\run.ps1` again. Settings stay compatible: a file from a newer CodexBar is
+  opened read-only rather than overwritten. To update again afterwards, switch
+  back to the branch you build from (`git switch feat/rust-gpui-dashboard` today)
+  before `git pull`, since a checked-out commit has no branch to pull into.
+- **Start with Windows**: `run.ps1` keeps an existing `CodexBar` entry in
+  `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` pointed at the installed
+  app.
+- **Widgets**: Windows widgets need a packaged app, so they come with the MSIX
+  release ([#94](https://github.com/hemsoft-dev/codexbar/issues/94),
+  [#95](https://github.com/hemsoft-dev/codexbar/issues/95)).
+- **Uninstall**: first quit CodexBar (tray menu, Quit CodexBar). Then delete
+  `%LOCALAPPDATA%\CodexBar\bin`, the `.codexbar` folder in your profile (and the
+  folder in `CODEXBAR_SETTINGS_DIR`, if you set it), the `CodexBar:account:*`
+  entries in Credential Manager, and the `CodexBar` startup entry if you had one
+  (`Remove-ItemProperty HKCU:\Software\Microsoft\Windows\CurrentVersion\Run -Name CodexBar`).
+- **Support**: report problems at
+  [github.com/hemsoft-dev/codexbar/issues](https://github.com/hemsoft-dev/codexbar/issues).
+  Never paste keys, tokens or cookies into an issue.
+
+Differences from the iOS app are listed in
+[docs/IOS_DIFFERENCES.md](docs/IOS_DIFFERENCES.md).
 
 ## Architecture
 
