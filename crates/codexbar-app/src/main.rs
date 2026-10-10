@@ -11,6 +11,7 @@ mod dashboard;
 mod focus_cards;
 mod github_sign_in;
 mod groups_page;
+mod handoff;
 mod history_view;
 mod locale;
 mod managed;
@@ -25,6 +26,7 @@ mod theme;
 mod tray;
 #[cfg(test)]
 mod ui_tests;
+mod widget_builder;
 mod widget_feed;
 mod widgets;
 mod zoom;
@@ -57,14 +59,8 @@ fn data_source() -> DataSource {
     }
 }
 
-/// One CodexBar per Windows user, across sessions (two Remote Desktop sessions share one profile), so two instances
-/// never send the same alert twice or write history and preferences over each other. The mutex is in the global
-/// namespace and named per user, so other users on the machine run their own. The demo has its own name, so design
-/// work can run beside the real app. A second launch exits; the first one is already in the notification area.
-fn already_running() -> bool {
-    use windows::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError};
-    use windows::Win32::System::Threading::CreateMutexW;
-    use windows::core::HSTRING;
+/// This instance's name part, per user: `DOMAIN.user`, or `Demo.DOMAIN.user` for the demo.
+fn instance() -> String {
     let user: String = format!(
         "{}.{}",
         std::env::var("USERDOMAIN").unwrap_or_default(),
@@ -73,11 +69,18 @@ fn already_running() -> bool {
     .chars()
     .filter(|ch| *ch != '\\')
     .collect();
-    let name = if is_demo() {
-        format!(r"Global\HemSoft.CodexBar.Demo.{user}")
-    } else {
-        format!(r"Global\HemSoft.CodexBar.{user}")
-    };
+    if is_demo() { format!("Demo.{user}") } else { user }
+}
+
+/// One CodexBar per Windows user, across sessions (two Remote Desktop sessions share one profile), so two instances
+/// never send the same alert twice or write history and preferences over each other. The mutex is in the global
+/// namespace and named per user, so other users on the machine run their own. The demo has its own name, so design
+/// work can run beside the real app. A second launch exits; the first one is already in the notification area.
+fn already_running() -> bool {
+    use windows::Win32::Foundation::{ERROR_ALREADY_EXISTS, GetLastError};
+    use windows::Win32::System::Threading::CreateMutexW;
+    use windows::core::HSTRING;
+    let name = format!(r"Global\HemSoft.CodexBar.{}", instance());
     // SAFETY: a named mutex with default security; the handle is kept open for the life of the process.
     match unsafe { CreateMutexW(None, false, &HSTRING::from(name)) } {
         // The handle is never closed: Windows releases the mutex when the process exits.
@@ -105,8 +108,13 @@ fn main() {
         let written = file.map(|path| package::write_status(&path, trigger.as_deref()));
         std::process::exit(if matches!(written, Some(Ok(()))) { 0 } else { 1 });
     }
+    let focus = handoff::FocusRequest::from_args(std::env::args());
     if already_running() {
-        eprintln!("codexbar: already running; open it from the notification area");
+        // A widget tile (#95) or a second launch: the running CodexBar shows its window, on the tile's account.
+        if let Some(request) = &focus {
+            let _ = handoff::write_request(&codexbar_store::settings::Settings::default_dir(), request);
+        }
+        handoff::signal(&instance());
         return;
     }
     gpui_kit::application().with_assets(gpui_kit::assets::Assets).run(|cx| {
@@ -164,6 +172,32 @@ fn main() {
         }
         if std::env::args().any(|arg| arg == "--settings") {
             dashboard.update(cx, |dashboard, cx| dashboard.show_view(DashboardView::Settings, cx));
+        }
+        if let Some(request) = focus {
+            dashboard.update(cx, |dashboard, cx| dashboard.focus_account(&request, cx));
+        }
+        // Later launches hand over here: show the window, on the requested account when there is one.
+        if let Some(event) = handoff::listen(&instance()) {
+            let focus_target = dashboard.clone();
+            let request_dir = dir.clone();
+            cx.spawn(async move |cx| {
+                loop {
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(250))
+                        .await;
+                    if !handoff::signaled(event) {
+                        continue;
+                    }
+                    let request = handoff::take_request(&request_dir);
+                    cx.update(|cx| {
+                        if let Some(request) = &request {
+                            focus_target.update(cx, |dashboard, cx| dashboard.focus_account(request, cx));
+                        }
+                        let _ = cx.update_window(handle, |_, window, _| tray::show(window));
+                    });
+                }
+            })
+            .detach();
         }
 
         let tooltip_source = dashboard.clone();

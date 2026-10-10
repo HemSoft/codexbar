@@ -25,7 +25,7 @@ use bindings::Microsoft::Windows::Widgets::Providers::{
 };
 use bindings::Microsoft::Windows::Widgets::WidgetSize;
 use chrono::Utc;
-use codexbar_store::widgets::{LoadError, WidgetSnapshot, load_widget_snapshot};
+use codexbar_store::widgets::{LoadError, WidgetRefresh, WidgetSnapshot, load_widget_snapshot};
 use windows::Win32::Foundation::CLASS_E_NOAGGREGATION;
 use windows::Win32::System::Com::{
     CLSCTX_LOCAL_SERVER, COINIT_MULTITHREADED, CoAddRefServerProcess, CoInitializeEx, CoRegisterClassObject,
@@ -189,11 +189,20 @@ fn send(update: Update) {
     }
 }
 
-/// Starts CodexBar's window, as a separate process so it outlives the provider.
-fn open_codexbar() {
-    if let Ok(exe) = std::env::current_exe() {
-        let _ = std::process::Command::new(exe).spawn();
+/// Starts CodexBar's window, as a separate process so it outlives the provider. A running CodexBar takes the request
+/// over (`crate::handoff`) and shows the tapped account and metric.
+fn open_codexbar(target: Option<&host::Target>) {
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    let mut command = std::process::Command::new(exe);
+    if let Some(target) = target {
+        command.arg(crate::handoff::FOCUS_ARG).arg(&target.account);
+        if let Some(metric) = &target.metric {
+            command.arg(crate::handoff::METRIC_ARG).arg(metric);
+        }
     }
+    let _ = command.spawn();
 }
 
 /// One provider object per client request; the server lives as long as any is held (out-of-process COM's rule).
@@ -243,7 +252,7 @@ impl IWidgetProvider_Impl for Provider_Impl {
         match outcome {
             Outcome::Nothing => {}
             Outcome::Update(update) => send(update),
-            Outcome::Open => open_codexbar(),
+            Outcome::Open(target) => open_codexbar(target.as_ref()),
         }
         Ok(())
     }
@@ -333,6 +342,15 @@ fn restore(shared: &Shared) -> windows::core::Result<()> {
     Ok(())
 }
 
+/// Whether visible widgets redraw now, under the builder's refresh choice (#95): with CodexBar, as soon as the
+/// snapshot changes and once a minute for the ages; otherwise only every five or fifteen minutes.
+fn redraw_due(refresh: WidgetRefresh, changed: bool, since_drawn: Duration) -> bool {
+    match refresh {
+        WidgetRefresh::WithCodexBar => changed || since_drawn >= REDRAW,
+        other => since_drawn >= other.interval(),
+    }
+}
+
 /// Runs the COM server until its clients have released every provider object and lock.
 pub fn serve() -> windows::core::Result<()> {
     // SAFETY: the process's main thread joins the multithreaded apartment once, before any COM use.
@@ -383,8 +401,10 @@ pub fn serve() -> windows::core::Result<()> {
                 .last_active
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner()) = Instant::now();
-            if changed != seen || drawn.elapsed() >= REDRAW {
-                let updates = shared.host().refresh(&shared.snapshot(), Utc::now());
+            let snapshot = shared.snapshot();
+            let refresh = snapshot.as_ref().map(|s| s.builder.refresh).unwrap_or_default();
+            if redraw_due(refresh, changed != seen, drawn.elapsed()) {
+                let updates = shared.host().refresh(&snapshot, Utc::now());
                 updates.into_iter().for_each(send);
                 drawn = Instant::now();
             }
@@ -415,6 +435,27 @@ mod tests {
         );
         assert!(manifest.contains(&format!(r#"arguments="{}""#, SERVER_ARG.to_lowercase())));
         assert!(manifest.contains(&format!(r#"<definition id="{}""#, host::DEFINITION.to_lowercase())));
+    }
+
+    #[test]
+    fn the_refresh_choice_paces_redraws() {
+        let minute = Duration::from_secs(60);
+        assert!(
+            redraw_due(WidgetRefresh::WithCodexBar, true, Duration::ZERO),
+            "new usage shows at once"
+        );
+        assert!(!redraw_due(WidgetRefresh::WithCodexBar, false, Duration::from_secs(30)));
+        assert!(
+            redraw_due(WidgetRefresh::WithCodexBar, false, minute),
+            "ages move on each minute"
+        );
+        assert!(
+            !redraw_due(WidgetRefresh::FiveMinutes, true, minute),
+            "new usage waits for the interval"
+        );
+        assert!(redraw_due(WidgetRefresh::FiveMinutes, false, 5 * minute));
+        assert!(!redraw_due(WidgetRefresh::FifteenMinutes, true, 10 * minute));
+        assert!(redraw_due(WidgetRefresh::FifteenMinutes, false, 15 * minute));
     }
 
     #[test]

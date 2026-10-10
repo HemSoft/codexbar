@@ -1707,6 +1707,225 @@ fn update_status(cx: &mut TestAppContext, handle: AnyWindowHandle) -> Option<Str
     .unwrap()
 }
 
+// The widget builder (#95): Settings › Widgets, page 5.
+
+fn open_widget_builder(cx: &mut TestAppContext, settings: &TempSettings) -> (Entity<Dashboard>, AnyWindowHandle) {
+    let codex = FakeProvider::new(Provider::Codex, "codex-1", Some(0.3));
+    let claude = FakeProvider::new(Provider::Claude, "claude-1", Some(0.8));
+    let dashboard = open_live(cx, settings, vec![codex, claude]);
+    cx.run_until_parked();
+    let handle = cx.windows()[0];
+    cx.update(|cx| dashboard.update(cx, |dashboard, cx| dashboard.show_view(DashboardView::Settings, cx)));
+    cx.update_window(handle, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    cx.update_window(handle, |_, window, cx| {
+        window.within("settings-sidebar").click("0-5", cx)
+    })
+    .unwrap();
+    cx.run_until_parked();
+    (dashboard, handle)
+}
+
+/// Opens the dropdown of `item` in `group` and picks the option `downs` places down (the first Down is the first).
+fn choose(cx: &mut TestAppContext, handle: AnyWindowHandle, group: usize, item: usize, downs: usize) {
+    cx.update_window(handle, |_, window, cx| {
+        window
+            .within(format!("group-{group}"))
+            .within(format!("item-{item}"))
+            .within("field")
+            .click("btn", cx)
+    })
+    .unwrap();
+    cx.run_until_parked();
+    for _ in 0..downs {
+        press(cx, handle, "down");
+    }
+    press(cx, handle, "enter");
+}
+
+fn builder(cx: &mut TestAppContext) -> codexbar_store::widgets::WidgetBuilder {
+    cx.update(|cx| crate::prefs_hub::PrefsHub::widget_builder(cx))
+}
+
+#[gpui_kit::test]
+fn the_widget_builder_adds_tiles_sets_modes_and_saves(cx: &mut TestAppContext) {
+    use codexbar_store::widgets::TileMode;
+    let settings = TempSettings::new("widget-builder", "{}");
+    let (_dashboard, handle) = open_widget_builder(cx, &settings);
+
+    // My tiles starts with only Add a tile; its second option is the first limit (after the placeholder).
+    choose(cx, handle, 1, 0, 2);
+    let tiles = builder(cx).tiles;
+    assert_eq!(tiles.len(), 1, "one tile added");
+    assert_eq!(tiles[0].mode, TileMode::Automatic);
+    let first = tiles[0].clone();
+
+    // The tile's dropdown: Automatic, Compact percentage, Full bar, Balance only, Urgent status, Remove tile.
+    choose(cx, handle, 1, 0, 3);
+    assert_eq!(builder(cx).tiles[0].mode, TileMode::Bar);
+
+    // A second tile, then move it up.
+    choose(cx, handle, 1, 1, 2);
+    assert_eq!(builder(cx).tiles.len(), 2);
+    assert_ne!(builder(cx).tiles[1], first);
+    choose(cx, handle, 1, 1, 6);
+    assert_eq!(
+        builder(cx).tiles[1],
+        codexbar_store::widgets::WidgetTile {
+            mode: TileMode::Bar,
+            ..first.clone()
+        }
+    );
+
+    // Saved in dashboard.json, and sent to the widgets in widgets.json.
+    let saved = codexbar_store::prefs::DashboardPrefs::load(&settings.0);
+    assert_eq!(saved.widget_builder().tiles.len(), 2);
+    let snapshot = codexbar_store::widgets::load_widget_snapshot(&settings.0).unwrap();
+    assert_eq!(
+        snapshot.builder.tiles,
+        builder(cx).tiles,
+        "the widgets get the tiles at once"
+    );
+
+    // Remove the first tile.
+    choose(cx, handle, 1, 0, 6);
+    assert_eq!(builder(cx).tiles.len(), 1);
+}
+
+#[gpui_kit::test]
+fn the_widget_preview_shows_each_layout(cx: &mut TestAppContext) {
+    use codexbar_store::widgets::{TileMode, WidgetTile};
+    let settings = TempSettings::new("widget-preview", "{}");
+    let (_dashboard, handle) = open_widget_builder(cx, &settings);
+    cx.update(|cx| {
+        crate::prefs_hub::PrefsHub::update_widget_builder(cx, |builder| {
+            for (account, mode) in [
+                ("codex-1", TileMode::Percent),
+                ("claude-1", TileMode::Status),
+                ("gone", TileMode::Bar),
+            ] {
+                let snapshot = cx_metric(account);
+                builder.add(WidgetTile {
+                    account: account.into(),
+                    metric: snapshot,
+                    mode,
+                });
+            }
+        })
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.within("settings-sidebar").click("0-5-3", cx)
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    // Automatic previews all three sizes: one tile on small, two on medium, every tile on large.
+    let label = |cx: &mut TestAppContext, id: (&'static str, usize)| {
+        cx.update_window(handle, |_, window, cx| {
+            window.render_frame(cx);
+            window.try_find(id).and_then(|found| found.label().map(str::to_owned))
+        })
+        .unwrap()
+    };
+    assert_eq!(
+        label(cx, ("widget-preview", 0)).as_deref(),
+        Some("Small widget preview, 1 tiles")
+    );
+    assert_eq!(
+        label(cx, ("widget-preview", 1)).as_deref(),
+        Some("Medium widget preview, 2 tiles")
+    );
+    assert_eq!(
+        label(cx, ("widget-preview", 2)).as_deref(),
+        Some("Large widget preview, 3 tiles")
+    );
+    let removed = label(cx, ("preview-tile", 22)).unwrap();
+    assert!(removed.starts_with("Removed account"), "{removed}");
+
+    // Four tiles: one medium preview.
+    click(cx, handle, ("preview-layout", 3usize));
+    assert_eq!(
+        label(cx, ("widget-preview", 1)).as_deref(),
+        Some("Medium widget preview, 3 tiles")
+    );
+    assert!(label(cx, ("widget-preview", 0)).is_none());
+    click(cx, handle, ("preview-layout", 1usize));
+    assert_eq!(
+        label(cx, ("widget-preview", 1)).as_deref(),
+        Some("Medium widget preview, 1 tiles")
+    );
+}
+
+/// The metric key the fake providers report (their Weekly window).
+fn cx_metric(_account: &str) -> String {
+    "weekly".to_owned()
+}
+
+#[gpui_kit::test]
+fn widget_settings_reset_after_confirming(cx: &mut TestAppContext) {
+    use codexbar_store::widgets::{WidgetRefresh, WidgetTile};
+    let settings = TempSettings::new("widget-reset", "{}");
+    let (_dashboard, handle) = open_widget_builder(cx, &settings);
+    cx.update(|cx| {
+        crate::prefs_hub::PrefsHub::update_widget_builder(cx, |builder| {
+            builder.add(WidgetTile {
+                account: "codex-1".into(),
+                metric: cx_metric("codex-1"),
+                mode: Default::default(),
+            });
+            builder.refresh = WidgetRefresh::FifteenMinutes;
+        })
+    });
+    cx.update_window(handle, |_, window, cx| {
+        window.within("settings-sidebar").click("0-5-4", cx)
+    })
+    .unwrap();
+    cx.run_until_parked();
+    click(cx, handle, "reset-widgets");
+    press(cx, handle, "escape");
+    assert_eq!(builder(cx).tiles.len(), 1, "cancel keeps the tiles");
+    click(cx, handle, "reset-widgets");
+    press(cx, handle, "enter");
+    assert_eq!(builder(cx), codexbar_store::widgets::WidgetBuilder::default());
+    assert_eq!(
+        codexbar_store::prefs::DashboardPrefs::load(&settings.0).widget_builder(),
+        &codexbar_store::widgets::WidgetBuilder::default()
+    );
+}
+
+#[gpui_kit::test]
+fn a_widget_tile_opens_its_account_and_metric(cx: &mut TestAppContext) {
+    use crate::handoff::FocusRequest;
+    let settings = TempSettings::new("widget-focus", "{}");
+    let (dashboard, _handle) = open_widget_builder(cx, &settings);
+    let request = FocusRequest {
+        account: "claude-1".into(),
+        metric: Some(cx_metric("claude-1")),
+    };
+    cx.update(|cx| dashboard.update(cx, |dashboard, cx| dashboard.focus_account(&request, cx)));
+    cx.run_until_parked();
+    let (selected, view, history) = cx.update(|cx| {
+        let dashboard = dashboard.read(cx);
+        (dashboard.selected_id(), dashboard.view(), dashboard.history_shown(cx))
+    });
+    assert_eq!(selected.as_deref(), Some("claude-1"));
+    assert_eq!(view, DashboardView::Usage, "Settings gives way to the account");
+    assert_eq!(history, Some(("claude-1".to_owned(), cx_metric("claude-1"))));
+
+    // A tile for a removed account still opens CodexBar, on Usage.
+    let gone = FocusRequest {
+        account: "gone".into(),
+        metric: None,
+    };
+    cx.update(|cx| dashboard.update(cx, |dashboard, cx| dashboard.show_view(DashboardView::Settings, cx)));
+    cx.update(|cx| dashboard.update(cx, |dashboard, cx| dashboard.focus_account(&gone, cx)));
+    assert_eq!(cx.update(|cx| dashboard.read(cx).view()), DashboardView::Usage);
+    assert_eq!(
+        cx.update(|cx| dashboard.read(cx).selected_id()).as_deref(),
+        Some("claude-1")
+    );
+}
+
 #[gpui_kit::test]
 fn about_shows_the_build_and_where_updates_come_from(cx: &mut TestAppContext) {
     use crate::package::{UpdateState, Updates};

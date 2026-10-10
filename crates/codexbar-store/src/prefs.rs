@@ -1,5 +1,6 @@
 //! Dashboard preferences that only the Rust app uses: which accounts show history (#86), alert settings and the
-//! alerts currently active (#87), and account groups with the manual card order (#89).
+//! alerts currently active (#87), account groups with the manual card order (#89), and the widget builder's tiles
+//! and refresh choice (#95).
 //!
 //! They live in `dashboard.json`, not `settings.json`: the WPF app reads `settings.json` into typed settings and writes
 //! them back, so a key it doesn't know would be dropped on its next save. Keys this version doesn't know are kept, and
@@ -12,6 +13,8 @@ use std::path::Path;
 use codexbar_core::alerts::AlertSettings;
 use codexbar_core::layout::{Group, Layout, OrderMode};
 use serde_json::{Map, Value, json};
+
+use crate::widgets::WidgetBuilder;
 
 pub const PREFS_FILE: &str = "dashboard.json";
 const LOCK_FILE: &str = "dashboard.write.lock";
@@ -40,6 +43,9 @@ pub struct DashboardPrefs {
     /// The layout changed and isn't saved yet. A save replaces the file's layout with this one as a whole: group
     /// edits depend on each other (a membership needs its group), and only one CodexBar runs per user.
     layout_dirty: bool,
+    /// The widget builder's choices (#95). Saved as a whole when changed, like the layout.
+    widgets: WidgetBuilder,
+    widgets_dirty: bool,
     /// The file came from a newer version: read what we understand, never write it.
     read_only: bool,
 }
@@ -71,6 +77,8 @@ impl DashboardPrefs {
             pending_active: BTreeMap::new(),
             layout: layout_from_json(&doc),
             layout_dirty: false,
+            widgets: doc.get("widgets").map(WidgetBuilder::from_json).unwrap_or_default(),
+            widgets_dirty: false,
             read_only: version > VERSION,
         }
     }
@@ -85,6 +93,20 @@ impl DashboardPrefs {
         let result = change(&mut self.layout);
         if self.layout != before {
             self.layout_dirty = true;
+        }
+        result
+    }
+
+    pub fn widget_builder(&self) -> &WidgetBuilder {
+        &self.widgets
+    }
+
+    /// Changes the widget builder's choices; returns `change`'s result. An unchanged builder isn't saved.
+    pub fn update_widget_builder<T>(&mut self, change: impl FnOnce(&mut WidgetBuilder) -> T) -> T {
+        let before = self.widgets.clone();
+        let result = change(&mut self.widgets);
+        if self.widgets != before {
+            self.widgets_dirty = true;
         }
         result
     }
@@ -136,6 +158,7 @@ impl DashboardPrefs {
             || !self.pending_active.is_empty()
             || self.layout_dirty
             || self.appearance_dirty
+            || self.widgets_dirty
     }
 
     pub fn shows_history(&self, account: &str) -> bool {
@@ -172,6 +195,9 @@ impl DashboardPrefs {
         if self.update_layout(|layout| layout.forget_account(account)) {
             changed = true;
         }
+        if self.update_widget_builder(|builder| builder.forget_account(account)) {
+            changed = true;
+        }
         changed
     }
 
@@ -204,6 +230,9 @@ impl DashboardPrefs {
             changed = true;
         }
         if self.update_layout(|layout| layout.rename_account(from, to)) {
+            changed = true;
+        }
+        if self.update_widget_builder(|builder| builder.rename_account(from, to)) {
             changed = true;
         }
         changed
@@ -263,12 +292,19 @@ impl DashboardPrefs {
         if self.layout_dirty {
             layout_to_json(&self.layout, &mut doc);
         }
+        if self.widgets_dirty {
+            doc.insert(
+                "widgets".into(),
+                serde_json::to_value(&self.widgets).map_err(io::Error::other)?,
+            );
+        }
         if self.appearance_dirty
             && let Some(appearance) = &self.appearance
         {
             doc.insert("appearance".into(), json!(appearance));
         }
         let layout = layout_from_json(&doc);
+        let widgets = doc.get("widgets").map(WidgetBuilder::from_json).unwrap_or_default();
         let doc_appearance = doc.get("appearance").and_then(Value::as_str).map(str::to_owned);
         let text = serde_json::to_string_pretty(&Value::Object(doc)).map_err(io::Error::other)?;
         std::fs::create_dir_all(dir)?;
@@ -282,6 +318,8 @@ impl DashboardPrefs {
         self.active_alerts = active;
         self.layout = layout;
         self.layout_dirty = false;
+        self.widgets = widgets;
+        self.widgets_dirty = false;
         self.appearance_dirty = false;
         self.appearance = doc_appearance;
         self.pending.clear();
@@ -687,6 +725,39 @@ mod tests {
         assert_eq!(DashboardPrefs::load(&dir.0).appearance(), Some("light"));
         prefs.set_appearance("light");
         assert!(!prefs.is_dirty(), "the same choice again changes nothing");
+    }
+
+    #[test]
+    fn widget_builder_choices_save_and_follow_account_changes() {
+        use crate::widgets::{TileMode, WidgetRefresh, WidgetTile};
+        let dir = Dir::new("widgets");
+        let mut prefs = DashboardPrefs::load(&dir.0);
+        prefs.update_widget_builder(|builder| {
+            builder.add(WidgetTile {
+                account: "a".into(),
+                metric: "weekly".into(),
+                mode: TileMode::Status,
+            });
+            builder.add(WidgetTile {
+                account: "b".into(),
+                metric: "credits".into(),
+                mode: TileMode::Balance,
+            });
+            builder.refresh = WidgetRefresh::FiveMinutes;
+        });
+        assert!(prefs.is_dirty());
+        prefs.save(&dir.0).unwrap();
+        let loaded = DashboardPrefs::load(&dir.0);
+        assert_eq!(loaded.widget_builder(), prefs.widget_builder());
+        assert_eq!(loaded.widget_builder().refresh, WidgetRefresh::FiveMinutes);
+
+        let mut prefs = loaded;
+        assert!(prefs.rename_account("a", "a2"));
+        assert!(prefs.forget_account("b"));
+        prefs.save(&dir.0).unwrap();
+        let tiles = DashboardPrefs::load(&dir.0).widget_builder().tiles.clone();
+        assert_eq!(tiles.len(), 1);
+        assert_eq!((tiles[0].account.as_str(), tiles[0].mode), ("a2", TileMode::Status));
     }
 
     #[test]

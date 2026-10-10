@@ -25,8 +25,31 @@ pub struct Update {
 pub enum Outcome {
     Nothing,
     Update(Update),
-    /// Start CodexBar.
-    Open,
+    /// Start CodexBar, focused on an account and metric when a tile was tapped (#95).
+    Open(Option<Target>),
+}
+
+/// The account (and metric) a tapped tile asks CodexBar to show.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Target {
+    pub account: String,
+    pub metric: Option<String>,
+}
+
+impl Target {
+    /// The target in an Open action's data (`{"account": ..., "metric": ...}`), if it names an account.
+    pub fn from_data(data: &str) -> Option<Self> {
+        let value: Value = serde_json::from_str(data).ok()?;
+        let account = value.get("account")?.as_str().filter(|account| !account.is_empty())?;
+        Some(Self {
+            account: account.to_owned(),
+            metric: value
+                .get("metric")
+                .and_then(Value::as_str)
+                .filter(|metric| !metric.is_empty())
+                .map(str::to_owned),
+        })
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -160,7 +183,7 @@ impl Host {
         now: DateTime<Utc>,
     ) -> Outcome {
         if verb == verbs::OPEN {
-            return Outcome::Open;
+            return Outcome::Open(Target::from_data(data));
         }
         let Some(widget) = self.widgets.get_mut(id) else {
             return Outcome::Nothing;
@@ -300,10 +323,35 @@ mod tests {
         let mut host = Host::default();
         assert_eq!(
             host.action("unknown", verbs::OPEN, "", &snapshot(), now()),
-            Outcome::Open
+            Outcome::Open(None)
         );
         host.create("w1", DEFINITION, Size::Medium, &snapshot(), now());
         assert_eq!(host.action("w1", "dance", "", &snapshot(), now()), Outcome::Nothing);
+    }
+
+    #[test]
+    fn a_tapped_tile_opens_its_account_and_metric() {
+        let mut host = Host::default();
+        let data = r#"{"account":"claude-1","metric":"weekly"}"#;
+        assert_eq!(
+            host.action("w1", verbs::OPEN, data, &snapshot(), now()),
+            Outcome::Open(Some(Target {
+                account: "claude-1".into(),
+                metric: Some("weekly".into())
+            }))
+        );
+        let data = r#"{"account":"claude-1","metric":null}"#;
+        assert_eq!(
+            host.action("w1", verbs::OPEN, data, &snapshot(), now()),
+            Outcome::Open(Some(Target {
+                account: "claude-1".into(),
+                metric: None
+            }))
+        );
+        assert_eq!(
+            host.action("w1", verbs::OPEN, r#"{"account":""}"#, &snapshot(), now()),
+            Outcome::Open(None)
+        );
     }
 
     #[test]

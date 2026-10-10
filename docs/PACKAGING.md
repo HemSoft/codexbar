@@ -108,10 +108,41 @@ only with **Developer Mode** on (Settings › System › For developers). Settin
 Widgets and `package.ps1 -Install` say when it is off, and Settings says when
 the PC runs Windows 10. Add the widget from the Widgets board (Windows key + W,
 **Add widgets**). The picker shows a sample medium widget, drawn by
-`package.ps1`. **Customize widget** chooses which accounts it shows (all
-accounts in dashboard order, one provider, or one group) and the layout:
-automatic (one tile on small, two on medium, four on large) or one, two or four
-tiles.
+`package.ps1`.
+**Customize widget** chooses what it shows and the layout.
+It can show **My tiles** (below), all accounts in dashboard order, one provider
+or one group. The layout is automatic (one tile on small, two on medium, four
+on large, or all six of My tiles on large) or one, two or four tiles.
+
+**Settings › Widgets** is the widget builder (#95):
+
+- **My tiles.** Up to six tiles, in order. Each is one account's limit or
+  balance, with a display mode:
+  - **Automatic**: a bar for limits, the amount for money.
+  - **Compact percentage**: the percentage, large.
+  - **Full bar**: name, value, bar and reset time.
+  - **Balance only**: the money left or spent.
+  - **Urgent status**: OK, Watch, At risk or Limit soon, in color.
+
+  Each tile's menu also moves it up or removes it. **Add a tile** lists every
+  limit and balance CodexBar has fetched.
+- **Widget refresh.** When CodexBar refreshes (the default), or every 5 or 15
+  minutes. Widgets redraw at that pace; their usage still comes from
+  CodexBar's own refreshes.
+- **Preview.** Shows the automatic layout at all three sizes, or the one-,
+  two- or four-tile layout, from the latest usage. It works in the build from
+  source and in the demo too.
+- **Reset.** Removes every tile and restores the default refresh, after
+  confirming.
+
+The tiles and the refresh choice are saved in `dashboard.json`. They reach the
+widgets with the next `widgets.json`, which is written as soon as they change.
+Tapping a tile opens CodexBar on that account, in Usage, with History set to
+the tile's metric. If CodexBar is already running, the new launch hands the
+request to it and exits. A tile whose account was removed reads **Removed
+account**, and one whose limit is no longer reported says so. Both point back to
+Settings › Widgets. Renamed accounts show their new name, because tiles keep
+the account's id.
 
 - **Data.** The dashboard writes `widgets.json` next to `settings.json` after
   every refresh and at least every five minutes. The file holds names, group
@@ -127,7 +158,7 @@ tiles.
   Accounts whose last refresh failed show **Last known** with their age, and
   accounts with no usage yet show **Unavailable**. A snapshot older than 15
   minutes reads **CodexBar isn't running**, with an Open button. Tapping the
-  widget opens CodexBar. A provider or group that no longer exists shows a
+  widget outside a tile opens CodexBar. A provider or group that no longer exists shows a
   message pointing to **Customize widget**.
 - **Windows App Runtime.** The provider uses the Windows App SDK's widget
   manager, so the package depends on the `Microsoft.WindowsAppRuntime.2`
