@@ -268,6 +268,9 @@ pub struct WidgetMetric {
     pub used_percent: Option<f64>,
     #[serde(default)]
     pub resets_at: Option<DateTime<Utc>>,
+    /// This metric's own status ("Watch", "At risk", "Limit soon"); none when it is normal (#95).
+    #[serde(default)]
+    pub status: Option<String>,
 }
 
 impl WidgetSnapshot {
@@ -380,6 +383,7 @@ mod tests {
                     value: "82% used".into(),
                     used_percent: Some(82.0),
                     resets_at: Some(at("2026-10-12T00:00:00Z")),
+                    status: Some("At risk".into()),
                 }],
             }],
         )
@@ -415,7 +419,8 @@ mod tests {
                     "label": "Weekly",
                     "value": "82% used",
                     "usedPercent": 82.0,
-                    "resetsAt": "2026-10-12T00:00:00Z"
+                    "resetsAt": "2026-10-12T00:00:00Z",
+                    "status": "At risk"
                 }]
             }],
             "builder": {"tiles": [], "refresh": "withCodexBar"}

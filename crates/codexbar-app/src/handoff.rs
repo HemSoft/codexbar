@@ -61,10 +61,12 @@ pub fn write_request(dir: &Path, request: &FocusRequest) -> std::io::Result<()> 
 
 /// Takes the waiting request, if there is one, so it is acted on once.
 pub fn take_request(dir: &Path) -> Option<FocusRequest> {
-    let path = dir.join(REQUEST_FILE);
-    let text = std::fs::read_to_string(&path).ok()?;
-    let _ = std::fs::remove_file(&path);
-    FocusRequest::from_json(&text)
+    // Claimed by renaming it first, so a newer request written meanwhile stays for the next signal.
+    let claimed = dir.join(format!("{REQUEST_FILE}.{}.taken", std::process::id()));
+    std::fs::rename(dir.join(REQUEST_FILE), &claimed).ok()?;
+    let text = std::fs::read_to_string(&claimed).ok();
+    let _ = std::fs::remove_file(&claimed);
+    FocusRequest::from_json(&text?)
 }
 
 /// The named event a second launch signals, per user like the single-instance lock (`main::already_running`).

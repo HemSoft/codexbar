@@ -225,6 +225,8 @@ impl HistoryView {
     pub fn focus(&mut self, account: &AccountId, metric: Option<&str>, cx: &mut Context<Self>) {
         self.select_account(account.clone(), cx);
         self.metric = metric.map(str::to_owned);
+        // The chart starts at its latest point, as when a metric is picked here.
+        self.cursor = None;
     }
 
     /// The account and metric key shown, for the headless UI tests.

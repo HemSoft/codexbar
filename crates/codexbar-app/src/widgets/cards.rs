@@ -263,6 +263,8 @@ impl TileView {
             (WidgetHealth::Stale, None) => Some("Last known".to_owned()),
             _ => None,
         };
+        // The tile's own metric decides its status, not the account's most urgent one.
+        let status = found.status.clone();
         let line = Some(format!("{}: {}", found.label, found.value));
         let percent_text = found.used_percent.map(|p| format!("{p:.0}%"));
         let resets = found
@@ -275,25 +277,20 @@ impl TileView {
                 Some(found.label.clone()),
                 Some(found.value.clone()),
                 None,
-                freshness.or(account.status.clone()),
+                freshness.or(status.clone()),
             ),
-            TileMode::Automatic => (line, None, found.used_percent, freshness.or(account.status.clone())),
+            TileMode::Automatic => (line, None, found.used_percent, freshness.or(status.clone())),
             TileMode::Percent => (
                 Some(found.label.clone()),
                 percent_text.or(Some(found.value.clone())),
                 None,
                 freshness,
             ),
-            TileMode::Bar => (
-                line,
-                None,
-                found.used_percent,
-                freshness.or(resets).or(account.status.clone()),
-            ),
+            TileMode::Bar => (line, None, found.used_percent, freshness.or(resets).or(status.clone())),
             TileMode::Balance => (Some(found.label.clone()), Some(found.value.clone()), None, freshness),
             TileMode::Status => (
                 line,
-                Some(account.status.clone().unwrap_or_else(|| "OK".to_owned())),
+                Some(status.clone().unwrap_or_else(|| "OK".to_owned())),
                 None,
                 freshness,
             ),
@@ -306,7 +303,7 @@ impl TileView {
             line,
             big,
             percent,
-            status: account.status.clone(),
+            status,
             note,
         }
     }
@@ -591,6 +588,7 @@ mod tests {
                 value: format!("{percent:.0}% used"),
                 used_percent: Some(percent),
                 resets_at: None,
+                status: None,
             }],
         }
     }
@@ -787,9 +785,11 @@ mod tests {
             value: "$12.30 left".into(),
             used_percent: None,
             resets_at: None,
+            status: None,
         });
         snapshot.accounts[0].metrics[0].resets_at = Some(now() + chrono::Duration::hours(50));
         snapshot.accounts[0].status = Some("At risk".into());
+        snapshot.accounts[0].metrics[0].status = Some("At risk".into());
         let builder = WidgetBuilder {
             tiles: tiles
                 .iter()
@@ -839,6 +839,14 @@ mod tests {
         assert_eq!(balance.big.as_deref(), Some("$12.30 left"));
         assert_eq!(status.big.as_deref(), Some("At risk"));
         assert_eq!(ok.big.as_deref(), Some("OK"), "a normal account reads OK");
+        // Credits are fine although the account's weekly limit is at risk: the tile follows its own metric.
+        let credits = TileView::of(
+            &snapshot.as_ref().unwrap().accounts[0],
+            Some("credits"),
+            TileMode::Status,
+            now(),
+        );
+        assert_eq!(credits.big.as_deref(), Some("OK"));
         assert!(views.iter().all(|view| view.account.is_some() && view.metric.is_some()));
     }
 

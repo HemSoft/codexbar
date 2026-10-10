@@ -189,12 +189,15 @@ pub struct Dashboard {
     /// tell a running CodexBar from one that quit.
     widgets_written: Option<DateTime<Utc>>,
     /// A widget tile's account (#95) that wasn't loaded yet when it was tapped; shown once it arrives.
-    pending_focus: Option<crate::handoff::FocusRequest>,
+    pending_focus: Option<(crate::handoff::FocusRequest, Instant)>,
     /// The widget builder's choices the last snapshot carried (#95).
     widget_builder: codexbar_store::widgets::WidgetBuilder,
     _clock: Task<()>,
     _subscriptions: Vec<Subscription>,
 }
+
+/// How long a widget tap waits for an account that hasn't loaded yet (#95).
+const PENDING_FOCUS_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
 
 impl Dashboard {
     pub fn new(source: DataSource, window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -449,7 +452,7 @@ impl Dashboard {
             .iter()
             .position(|account| account.id().as_str() == request.account)
         else {
-            self.pending_focus = Some(request.clone());
+            self.pending_focus = Some((request.clone(), Instant::now()));
             cx.notify();
             return;
         };
@@ -1041,7 +1044,15 @@ impl Dashboard {
         });
         self.publish_tooltip(cx);
         self.save_widget_snapshot(cx);
-        if let Some(request) = self.pending_focus.clone()
+        // A tap waits for its account only briefly, so it never takes over after the user has moved on.
+        if self
+            .pending_focus
+            .as_ref()
+            .is_some_and(|(_, at)| at.elapsed() > PENDING_FOCUS_WAIT)
+        {
+            self.pending_focus = None;
+        }
+        if let Some((request, _)) = self.pending_focus.clone()
             && self
                 .accounts
                 .iter()
