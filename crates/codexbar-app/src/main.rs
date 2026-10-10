@@ -173,6 +173,8 @@ fn main() {
         });
         if let Err(err) = result {
             eprintln!("codexbar: tray icon unavailable: {err}");
+            // Without a tray icon the window is the only way in, even after a start with Windows.
+            let _ = cx.update_window(handle, |_, window, _| tray::show(window));
         }
         // Restored accounts were shown before the tray icon existed; give it their text now.
         tooltip_source.update(cx, |dashboard, cx| dashboard.publish_tooltip(cx));

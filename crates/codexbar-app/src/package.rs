@@ -30,6 +30,28 @@ impl Installed {
     }
 }
 
+/// Joins the Windows Runtime's multithreaded apartment for the calls on this thread, which may be a background
+/// worker that never did, and leaves it again when dropped.
+struct Apartment(bool);
+
+impl Apartment {
+    fn enter() -> Self {
+        use windows::Win32::System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize};
+        // SAFETY: balanced by `RoUninitialize` in `drop` when it succeeded (including "already initialized");
+        // a thread in another apartment keeps it and is left alone.
+        Self(unsafe { RoInitialize(RO_INIT_MULTITHREADED) }.is_ok())
+    }
+}
+
+impl Drop for Apartment {
+    fn drop(&mut self) {
+        if self.0 {
+            // SAFETY: pairs with the successful `RoInitialize` in `enter` on this thread.
+            unsafe { windows::Win32::System::WinRT::RoUninitialize() }
+        }
+    }
+}
+
 /// The package of this process, read once. `None` for the unpackaged build.
 pub fn installed() -> Option<&'static Installed> {
     static INSTALLED: OnceLock<Option<Installed>> = OnceLock::new();
@@ -140,6 +162,7 @@ where
 /// Asks Windows whether the App Installer channel has a newer version, once more after a short pause if Windows
 /// reports an error (seen right after an install). Blocking: run it off the UI thread.
 pub fn check() -> UpdateState {
+    let _apartment = Apartment::enter();
     match check_once() {
         UpdateState::Failed(_) if installed().is_some() => {
             std::thread::sleep(std::time::Duration::from_secs(3));
@@ -186,6 +209,7 @@ pub fn launched_at_startup() -> bool {
 /// Installs the channel's newer version. Windows closes CodexBar to replace it and starts it again afterwards, so on
 /// success this call doesn't return; it returns the error otherwise. Blocking: run it off the UI thread.
 pub fn install() -> Result<(), String> {
+    let _apartment = Apartment::enter();
     use windows::ApplicationModel::Package;
     use windows::Management::Deployment::{AddPackageByAppInstallerOptions, PackageManager, PackageVolume};
     use windows::Win32::System::Recovery::{REGISTER_APPLICATION_RESTART_FLAGS, RegisterApplicationRestart};
@@ -272,12 +296,14 @@ fn startup_from(state: windows::ApplicationModel::StartupTaskState) -> Startup {
 
 /// The package's Start with Windows state; `None` for the unpackaged build or when Windows can't say.
 pub fn startup() -> Option<Startup> {
+    let _apartment = Apartment::enter();
     installed()?;
     Some(startup_from(startup_task().ok()?.State().ok()?))
 }
 
 /// Turns Start with Windows on or off and returns the state Windows ends up in (a user's or a policy's choice wins).
 pub fn set_startup(on: bool) -> Option<Startup> {
+    let _apartment = Apartment::enter();
     installed()?;
     let task = startup_task().ok()?;
     if on {

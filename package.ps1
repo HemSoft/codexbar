@@ -173,8 +173,21 @@ function ConvertTo-FileUri([string]$Path) {
 # points at a lower package version) still reads as the newer file; ForceUpdateFromAnyVersion lets it move back.
 function Write-AppInstaller([string]$Version, [string]$PackageFile) {
     $now = Get-Date
-    $fileVersion = '1.{0}.{1}.{2}' -f $now.Year, ($now.Month * 100 + $now.Day), ($now.Hour * 100 + $now.Minute)
+    $fileVersion = [version]('1.{0}.{1}.{2}' -f $now.Year, ($now.Month * 100 + $now.Day), ($now.Hour * 100 + $now.Minute))
     $appInstaller = Join-Path $Channel 'CodexBar.appinstaller'
+    # Every publication must read as newer, also twice in one minute or after the clock moved back.
+    if (Test-Path -LiteralPath $appInstaller) {
+        $previous = $null
+        try { $previous = [version]([xml](Get-Content -LiteralPath $appInstaller -Raw)).AppInstaller.Version } catch { }
+        if ($previous -and $fileVersion -le $previous) {
+            $fileVersion = if ($previous.Revision -lt 65535) {
+                [version]::new($previous.Major, $previous.Minor, $previous.Build, $previous.Revision + 1)
+            }
+            else {
+                [version]::new($previous.Major, $previous.Minor, $previous.Build + 1, 0)
+            }
+        }
+    }
     $content = @"
 <?xml version="1.0" encoding="utf-8"?>
 <AppInstaller xmlns="http://schemas.microsoft.com/appx/appinstaller/2018" Version="$fileVersion" Uri="$(ConvertTo-FileUri $appInstaller)">
@@ -201,8 +214,15 @@ if ($Rollback) {
         throw "The channel has no CodexBar $version ($packageFile)."
     }
     # The certificate that signed that package, which may be older than the current one after a renewal.
-    $certificate = (Get-AuthenticodeSignature -LiteralPath $packageFile).SignerCertificate
-    if (-not $certificate) { throw "CodexBar $version in the channel isn't signed." }
+    # Intact, and signed by a CodexBar certificate from this store. Before -Trust the chain reads as untrusted
+    # (UnknownError), which is expected for a self-signed certificate.
+    $signature = Get-AuthenticodeSignature -LiteralPath $packageFile
+    $certificate = $signature.SignerCertificate
+    $ours = $certificate -and $certificate.Subject -eq $publisher -and
+        (Get-ChildItem Cert:\CurrentUser\My | Where-Object Thumbprint -eq $certificate.Thumbprint)
+    if ($signature.Status -notin @('Valid', 'UnknownError') -or -not $ours) {
+        throw "CodexBar $version in the channel isn't intact or isn't signed by a CodexBar certificate here ($($signature.Status))."
+    }
 }
 else {
     $certificate = Get-SigningCertificate
@@ -268,7 +288,25 @@ else {
 
     $unsigned = Join-Path $PSScriptRoot 'target\msix\CodexBar.msix'
     Invoke-Tool (Find-SdkTool 'makeappx.exe') @('pack', '/d', $layout, '/p', $unsigned, '/o')
-    Invoke-Tool (Find-SdkTool 'signtool.exe') @('sign', '/fd', 'SHA256', '/sha1', $certificate.Thumbprint, '/s', 'My', $unsigned)
+    # Timestamped, so packages stay installable after the certificate expires. Without a timestamp server (offline)
+    # it signs without one and says so.
+    $signtool = Find-SdkTool 'signtool.exe'
+    $signArgs = @('sign', '/fd', 'SHA256', '/sha1', $certificate.Thumbprint, '/s', 'My')
+    $stamped = $false
+    foreach ($server in @('http://timestamp.digicert.com', 'http://timestamp.sectigo.com')) {
+        try {
+            Invoke-Tool $signtool ($signArgs + @('/tr', $server, '/td', 'SHA256', $unsigned))
+            $stamped = $true
+            break
+        }
+        catch {
+            Write-Warning "Timestamp server $server failed: $($_.Exception.Message.Split([Environment]::NewLine)[0])"
+        }
+    }
+    if (-not $stamped) {
+        Write-Warning 'Signing without a timestamp: this package stops installing once the certificate expires.'
+        Invoke-Tool $signtool ($signArgs + @($unsigned))
+    }
     Move-Item -LiteralPath $unsigned -Destination $packageFile
 }
 
