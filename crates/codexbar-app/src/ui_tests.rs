@@ -992,6 +992,9 @@ fn open_live_dyn(
         if cx.try_global::<crate::codex_sign_in::Service>().is_none() {
             crate::codex_sign_in::init_with(cx, Arc::new(codex_fixture::FakeCodexSignIn::default()));
         }
+        if cx.try_global::<crate::github_sign_in::Service>().is_none() {
+            crate::github_sign_in::init_with(cx, Arc::new(github_fixture::FakeGitHub::default()));
+        }
     });
     let factory: crate::dashboard::ProviderFactory = Arc::new(move |_| providers.clone());
     let mut dashboard = None;
@@ -2816,4 +2819,370 @@ fn saved_codex_usage_restores_per_account(cx: &mut TestAppContext) {
         shown, expected,
         "a signed-out account keeps its usage; a switched-off one stays hidden"
     );
+}
+
+// Copilot accounts CodexBar signs in (#79): the GitHub CLI's device sign-in, its token kept in Credential Manager,
+// sign-out, duplicates, cancellation and org billing settings, with a fake standing in for the GitHub CLI.
+
+mod github_fixture {
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+    use std::time::Duration;
+
+    use codexbar_providers::gh_login::{DeviceCode, GhAccount, GhLoginError};
+
+    use crate::github_sign_in::{PendingSignIn, SignInService};
+
+    #[derive(Clone, Default)]
+    pub enum Outcome {
+        SignsIn(&'static str),
+        /// GitHub approves, and the user closes the dialog in the same moment.
+        SignsInAsCancelled(&'static str),
+        Fails,
+        #[default]
+        Waits,
+    }
+
+    #[derive(Default)]
+    pub struct State {
+        pub outcome: Mutex<Outcome>,
+        pub parents: Mutex<Vec<PathBuf>>,
+        pub scopes: Mutex<Vec<String>>,
+        pub cancel: Mutex<Option<Arc<AtomicBool>>>,
+    }
+
+    #[derive(Default, Clone)]
+    pub struct FakeGitHub(pub Arc<State>);
+
+    impl FakeGitHub {
+        pub fn new(outcome: Outcome) -> Self {
+            let fake = Self::default();
+            *fake.0.outcome.lock().unwrap() = outcome;
+            fake
+        }
+    }
+
+    impl SignInService for FakeGitHub {
+        fn begin(
+            &self,
+            parent: &Path,
+            scopes: &[&str],
+            _: &AtomicBool,
+        ) -> Result<Box<dyn PendingSignIn>, GhLoginError> {
+            self.0.parents.lock().unwrap().push(parent.to_owned());
+            *self.0.scopes.lock().unwrap() = scopes.iter().map(|scope| (*scope).to_owned()).collect();
+            Ok(Box::new(Pending(self.0.clone())))
+        }
+    }
+
+    struct Pending(Arc<State>);
+
+    impl PendingSignIn for Pending {
+        fn device(&self) -> DeviceCode {
+            DeviceCode {
+                code: "ABCD-1234".to_owned(),
+                url: "https://github.com/login/device".to_owned(),
+            }
+        }
+
+        fn finish(self: Box<Self>, _: Duration, cancel: Arc<AtomicBool>) -> Result<GhAccount, GhLoginError> {
+            *self.0.cancel.lock().unwrap() = Some(cancel.clone());
+            match self.0.outcome.lock().unwrap().clone() {
+                Outcome::SignsIn(user) => Ok(GhAccount {
+                    username: user.to_owned(),
+                    token: format!("gho_token_for_{user}"),
+                }),
+                Outcome::SignsInAsCancelled(user) => {
+                    cancel.store(true, Ordering::SeqCst);
+                    Ok(GhAccount {
+                        username: user.to_owned(),
+                        token: format!("gho_token_for_{user}"),
+                    })
+                }
+                Outcome::Fails => Err(GhLoginError::Failed),
+                Outcome::Waits => {
+                    assert!(!cancel.load(Ordering::SeqCst));
+                    Err(GhLoginError::Cancelled)
+                }
+            }
+        }
+    }
+}
+
+use github_fixture::FakeGitHub;
+
+const MANAGED_COPILOT: &str = r#"{ "accountConfigurationVersion": 1, "accounts": [
+    { "id": "gh-1", "providerId": "Copilot", "displayLabel": "Work", "enabled": true,
+      "authenticationMethod": "OAuth" } ] }"#;
+
+fn open_copilot_accounts(cx: &mut TestAppContext, settings: &TempSettings, fake: &FakeGitHub) -> AnyWindowHandle {
+    let fake = fake.clone();
+    cx.update(|cx| crate::github_sign_in::init_with(cx, Arc::new(fake)));
+    open_settings_page(cx, settings, MemoryCredentialStore::default(), 1)
+}
+
+#[gpui_kit::test]
+fn a_copilot_account_signs_in_with_a_github_code_and_keeps_its_own_token(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("github-sign-in", MANAGED_COPILOT);
+    let fake = FakeGitHub::new(github_fixture::Outcome::SignsIn("octocat"));
+    let handle = open_copilot_accounts(cx, &settings, &fake);
+    assert_eq!(
+        label_of(cx, "account-detail-gh-1").as_deref(),
+        Some("OAuth · Not signed in")
+    );
+    click(cx, handle, "sign-in-gh-1");
+    // The private GitHub CLI folder goes in CodexBar's settings folder, never the user's own gh config.
+    assert_eq!(*fake.0.parents.lock().unwrap(), std::slice::from_ref(&settings.0));
+    assert!(
+        !exists(cx, handle, "github-sign-in-status"),
+        "the dialog closes once signed in"
+    );
+    assert_eq!(
+        saved_settings(&settings).accounts()[0].external_id.as_deref(),
+        Some("octocat")
+    );
+    let stored =
+        cx.update(|cx| codexbar_store::credentials::read_long(SettingsHub::global(cx).credentials().as_ref(), "gh-1"));
+    assert!(
+        stored.ok().flatten().as_deref() == Some("gho_token_for_octocat"),
+        "the token is kept for the account"
+    );
+    assert_eq!(label_of(cx, "account-detail-gh-1").as_deref(), Some("OAuth · octocat"));
+
+    // The account is fetched with that token, and the GitHub CLI isn't asked for anyone else.
+    let adapters = cx.update(|cx| crate::providers::enabled(SettingsHub::global(cx)));
+    assert_eq!(adapters.iter().filter(|a| a.name() == "Copilot").count(), 1);
+    assert!(!cx.update(|cx| crate::providers::copilot_discovers_all(SettingsHub::global(cx))));
+    let owned = cx.update(|cx| crate::providers::owned_account_ids(SettingsHub::global(cx)));
+    assert_eq!(owned.get("gh-1").map(String::as_str), Some("copilot-octocat"));
+
+    // Signing out deletes CodexBar's token and keeps the account.
+    click(cx, handle, "sign-out-gh-1");
+    let stored =
+        cx.update(|cx| codexbar_store::credentials::read_long(SettingsHub::global(cx).credentials().as_ref(), "gh-1"));
+    assert_eq!(stored.ok().flatten(), None);
+    assert_eq!(
+        label_of(cx, "account-detail-gh-1").as_deref(),
+        Some("OAuth · octocat · Not signed in")
+    );
+    assert_eq!(saved_settings(&settings).accounts().len(), 1);
+}
+
+#[gpui_kit::test]
+fn the_github_sign_in_dialog_shows_the_code_and_cancels_when_closed(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("github-sign-in-cancel", MANAGED_COPILOT);
+    let fake = FakeGitHub::new(github_fixture::Outcome::Waits);
+    let handle = open_copilot_accounts(cx, &settings, &fake);
+    click(cx, handle, "sign-in-gh-1");
+    assert_eq!(
+        label_of(cx, "github-sign-in-code").as_deref(),
+        Some("One-time code ABCD-1234")
+    );
+    assert!(exists(cx, handle, "github-sign-in-copy") && exists(cx, handle, "github-sign-in-open"));
+    let cancel = fake.0.cancel.lock().unwrap().clone().unwrap();
+    press(cx, handle, "escape");
+    assert!(!exists(cx, handle, "github-sign-in-code"));
+    assert!(cancel.load(std::sync::atomic::Ordering::SeqCst));
+    assert_eq!(saved_settings(&settings).accounts()[0].external_id, None);
+}
+
+#[gpui_kit::test]
+fn a_failed_github_sign_in_says_so(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("github-sign-in-fails", MANAGED_COPILOT);
+    let fake = FakeGitHub::new(github_fixture::Outcome::Fails);
+    let handle = open_copilot_accounts(cx, &settings, &fake);
+    click(cx, handle, "sign-in-gh-1");
+    assert_eq!(
+        label_of(cx, "github-sign-in-error").as_deref(),
+        Some("The GitHub CLI didn't complete the sign-in.")
+    );
+    assert_eq!(saved_settings(&settings).accounts()[0].external_id, None);
+}
+
+#[gpui_kit::test]
+fn a_github_user_already_added_is_not_added_twice(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "github-duplicate",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "gh-1", "providerId": "Copilot", "displayLabel": "Work", "enabled": true,
+              "authenticationMethod": "OAuth" },
+            { "id": "cli-1", "providerId": "Copilot", "displayLabel": "CLI", "enabled": true,
+              "authenticationMethod": "CommandLine", "externalAccountId": "OctoCat" } ] }"#,
+    );
+    let fake = FakeGitHub::new(github_fixture::Outcome::SignsIn("octocat"));
+    let handle = open_copilot_accounts(cx, &settings, &fake);
+    click(cx, handle, "sign-in-gh-1");
+    assert_eq!(
+        label_of(cx, "github-sign-in-error").as_deref(),
+        Some("octocat is already added as “CLI”.")
+    );
+    let stored =
+        cx.update(|cx| codexbar_store::credentials::read_long(SettingsHub::global(cx).credentials().as_ref(), "gh-1"));
+    assert_eq!(stored.ok().flatten(), None, "no token is kept for the refused sign-in");
+}
+
+#[gpui_kit::test]
+fn org_billing_settings_are_saved_per_copilot_account(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "github-billing",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "cli-1", "providerId": "Copilot", "displayLabel": "Work", "enabled": true,
+              "authenticationMethod": "CommandLine", "externalAccountId": "dev" } ] }"#,
+    );
+    let handle = open_copilot_accounts(cx, &settings, &FakeGitHub::default());
+    click(cx, handle, "edit-cli-1");
+    // Name, method, username, then the three billing fields.
+    for _ in 0..3 {
+        press(cx, handle, "tab");
+    }
+    type_text(cx, handle, "acme");
+    press(cx, handle, "tab");
+    type_text(cx, handle, "acme-eng");
+    press(cx, handle, "tab");
+    type_text(cx, handle, "lots");
+    click(cx, handle, "account-save");
+    assert_eq!(
+        label_of(cx, "account-error").as_deref(),
+        Some("The pool total is a whole number of AI credits.")
+    );
+    cx.update_window(handle, |_, window, cx| window.input("\u{8}\u{8}\u{8}\u{8}", cx))
+        .unwrap();
+    press(cx, handle, "ctrl-a");
+    type_text(cx, handle, "12,000");
+    click(cx, handle, "account-save");
+    let saved = saved_settings(&settings);
+    let record = &saved.accounts()[0];
+    assert_eq!(record.copilot_enterprise.as_deref(), Some("acme"));
+    assert_eq!(record.copilot_organization.as_deref(), Some("acme-eng"));
+    assert_eq!(record.copilot_pool_total, Some(12_000));
+    assert_eq!(record.external_id.as_deref(), Some("dev"));
+}
+
+#[gpui_kit::test]
+fn a_copilot_account_with_org_billing_asks_github_for_billing_access(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "github-billing-scope",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "gh-1", "providerId": "Copilot", "displayLabel": "Work", "enabled": true,
+              "authenticationMethod": "OAuth", "copilotEnterprise": "acme", "copilotOrganization": "acme-eng" },
+            { "id": "gh-2", "providerId": "Copilot", "displayLabel": "Home", "enabled": true,
+              "authenticationMethod": "OAuth" } ] }"#,
+    );
+    let fake = FakeGitHub::new(github_fixture::Outcome::SignsIn("octocat"));
+    let handle = open_copilot_accounts(cx, &settings, &fake);
+    click(cx, handle, "sign-in-gh-1");
+    assert_eq!(*fake.0.scopes.lock().unwrap(), ["manage_billing:enterprise"]);
+    *fake.0.outcome.lock().unwrap() = github_fixture::Outcome::SignsIn("homeuser");
+    click(cx, handle, "sign-in-gh-2");
+    assert!(
+        fake.0.scopes.lock().unwrap().is_empty(),
+        "no extra scope without org billing"
+    );
+}
+
+#[gpui_kit::test]
+fn a_sign_in_that_cant_be_saved_keeps_the_previous_token(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "github-rollback",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "gh-1", "providerId": "Copilot", "displayLabel": "Work", "enabled": true,
+              "authenticationMethod": "OAuth", "externalAccountId": "olduser" } ] }"#,
+    );
+    let fake = FakeGitHub::new(github_fixture::Outcome::SignsIn("newuser"));
+    let handle = open_copilot_accounts(cx, &settings, &fake);
+    cx.update(|cx| {
+        codexbar_store::credentials::write_long(SettingsHub::global(cx).credentials().as_ref(), "gh-1", "gho_old")
+    })
+    .unwrap();
+    // The settings file can't be written while the sign-in runs.
+    let file = settings.0.join("settings.json");
+    let writable = std::fs::metadata(&file).unwrap().permissions();
+    let mut read_only = writable.clone();
+    read_only.set_readonly(true);
+    std::fs::set_permissions(&file, read_only).unwrap();
+    click(cx, handle, "sign-in-gh-1");
+    std::fs::set_permissions(&file, writable).unwrap();
+    let error = label_of(cx, "github-sign-in-error").unwrap_or_default();
+    assert!(error.starts_with("The sign-in couldn't be saved"), "{error}");
+    let stored =
+        cx.update(|cx| codexbar_store::credentials::read_long(SettingsHub::global(cx).credentials().as_ref(), "gh-1"));
+    assert!(
+        stored.ok().flatten().as_deref() == Some("gho_old"),
+        "the account keeps its previous user's token"
+    );
+    assert_eq!(
+        saved_settings(&settings).accounts()[0].external_id.as_deref(),
+        Some("olduser")
+    );
+}
+
+#[gpui_kit::test]
+fn an_unreadable_copilot_token_is_shown_as_such(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "github-unreadable",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "gh-1", "providerId": "Copilot", "displayLabel": "Work", "enabled": true,
+              "authenticationMethod": "OAuth", "externalAccountId": "octocat" } ] }"#,
+    );
+    cx.update(|cx| crate::github_sign_in::init_with(cx, Arc::new(FakeGitHub::default())));
+    let _handle = open_settings_page(cx, &settings, MemoryCredentialStore::failing(), 1);
+    assert_eq!(
+        label_of(cx, "account-detail-gh-1").as_deref(),
+        Some("OAuth · Its token couldn't be read from Windows Credential Manager")
+    );
+}
+
+#[gpui_kit::test]
+fn a_sign_in_cancelled_as_github_approves_keeps_nothing(cx: &mut TestAppContext) {
+    let settings = TempSettings::new("github-cancel-late", MANAGED_COPILOT);
+    let fake = FakeGitHub::new(github_fixture::Outcome::SignsInAsCancelled("octocat"));
+    let handle = open_copilot_accounts(cx, &settings, &fake);
+    click(cx, handle, "sign-in-gh-1");
+    assert_eq!(saved_settings(&settings).accounts()[0].external_id, None);
+    let stored =
+        cx.update(|cx| codexbar_store::credentials::read_long(SettingsHub::global(cx).credentials().as_ref(), "gh-1"));
+    assert_eq!(stored.ok().flatten(), None, "a cancelled sign-in keeps no token");
+}
+
+#[gpui_kit::test]
+fn org_billing_on_a_github_cli_account_needs_its_username(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "github-billing-username",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "cli-1", "providerId": "Copilot", "displayLabel": "Every gh account", "enabled": true,
+              "authenticationMethod": "CommandLine" } ] }"#,
+    );
+    let handle = open_copilot_accounts(cx, &settings, &FakeGitHub::default());
+    click(cx, handle, "edit-cli-1");
+    // Name, method, username (left blank), then Enterprise.
+    for _ in 0..3 {
+        press(cx, handle, "tab");
+    }
+    type_text(cx, handle, "acme");
+    click(cx, handle, "account-save");
+    assert_eq!(
+        label_of(cx, "account-error").as_deref(),
+        Some("Org billing needs this account's GitHub username.")
+    );
+    assert_eq!(saved_settings(&settings).accounts()[0].copilot_enterprise, None);
+}
+
+#[gpui_kit::test]
+fn an_organization_card_is_owned_while_an_account_bills_it(cx: &mut TestAppContext) {
+    let settings = TempSettings::new(
+        "github-org-owned",
+        r#"{ "accountConfigurationVersion": 1, "accounts": [
+            { "id": "cli-1", "providerId": "Copilot", "displayLabel": "Work", "enabled": true,
+              "authenticationMethod": "CommandLine", "externalAccountId": "dev",
+              "copilotEnterprise": "acme", "copilotOrganization": "Acme-Eng" },
+            { "id": "cli-2", "providerId": "Copilot", "displayLabel": "Off", "enabled": false,
+              "authenticationMethod": "CommandLine", "externalAccountId": "other",
+              "copilotEnterprise": "acme", "copilotOrganization": "other-org" } ] }"#,
+    );
+    cx.update(|cx| SettingsHub::init_with(cx, &settings.0, Arc::new(MemoryCredentialStore::default())));
+    let owned = cx.update(|cx| crate::providers::owned_account_ids(SettingsHub::global(cx)));
+    assert_eq!(owned.get("cli-1").map(String::as_str), Some("copilot-dev"));
+    assert_eq!(owned.get("cli-1#org").map(String::as_str), Some("copilotorg-acme-eng"));
+    assert!(!owned.contains_key("cli-2#org"), "a switched-off account bills nothing");
 }

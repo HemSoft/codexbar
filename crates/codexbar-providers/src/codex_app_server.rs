@@ -7,7 +7,7 @@
 
 use std::io::{BufReader, Write as _};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel};
 use std::time::{Duration, Instant};
@@ -80,31 +80,16 @@ impl AppServer {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            const CREATE_SUSPENDED: u32 = 0x0000_0004;
-            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-            // Suspended until it is in its job, so nothing it starts can run outside the job.
-            command.creation_flags(CREATE_NO_WINDOW | CREATE_SUSPENDED);
-        }
-        let mut child = command.spawn().map_err(|err| match err.kind() {
+        let mut process = crate::contained::spawn(&mut command).map_err(|err| match err.kind() {
             std::io::ErrorKind::NotFound => AppServerError::NotInstalled,
             _ => AppServerError::Failed,
         })?;
-        let parts = ProcessParts::for_child(&child);
-        #[cfg(windows)]
-        if !job::resume(child.id()) {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(AppServerError::Failed);
-        }
-        let stdin = child.stdin.take().ok_or(AppServerError::Failed)?;
-        let stdout = child.stdout.take().ok_or(AppServerError::Failed)?;
+        let stdin = process.child.stdin.take().ok_or(AppServerError::Failed)?;
+        let stdout = process.child.stdout.take().ok_or(AppServerError::Failed)?;
         let (sender, messages) = channel();
         std::thread::spawn(move || read_messages(BufReader::new(stdout), &sender));
         let mut server = Self::over(Box::new(Pipe(stdin)), messages);
-        server._process = Some(parts.into_process(child));
+        server._process = Some(Process(process));
         server.initialize()?;
         Ok(server)
     }
@@ -329,134 +314,24 @@ impl Transport for Pipe {
     }
 }
 
-/// The app-server process. `codex` from npm is a `.cmd` that starts Node, which starts `codex.exe`; the Windows job
-/// they all run in is closed with the session, so none of them outlives it. Codex exits by itself when its stdin
+/// The app-server process. `codex` from npm is a `.cmd` that starts Node, which starts `codex.exe`; they all run in
+/// one kill-on-close job, so none of them outlives the session or CodexBar. Codex exits by itself when its stdin
 /// closes; the job is the backstop.
-struct Process {
-    child: Child,
-    #[cfg(windows)]
-    _job: Option<job::Job>,
-}
-
-/// The parts of a [`Process`] made before the child is moved in.
-struct ProcessParts {
-    #[cfg(windows)]
-    _job: Option<job::Job>,
-}
-
-impl ProcessParts {
-    /// Puts `child` in a job (when Windows allows it); the child itself is moved in afterwards.
-    fn for_child(child: &Child) -> Self {
-        Self {
-            #[cfg(windows)]
-            _job: job::Job::kill_on_close(child),
-        }
-    }
-
-    fn into_process(self, child: Child) -> Process {
-        Process {
-            child,
-            #[cfg(windows)]
-            _job: self._job,
-        }
-    }
-}
+struct Process(crate::contained::Contained);
 
 impl Drop for Process {
     fn drop(&mut self) {
         // Stdin is closed by now; give Codex a moment to exit on its own.
+        let child = &mut self.0.child;
         let deadline = Instant::now() + Duration::from_secs(2);
         while Instant::now() < deadline {
-            if let Ok(Some(_)) = self.child.try_wait() {
+            if let Ok(Some(_)) = child.try_wait() {
                 return;
             }
             std::thread::sleep(Duration::from_millis(50));
         }
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
-
-#[cfg(windows)]
-mod job {
-    use std::os::windows::io::AsRawHandle as _;
-    use std::process::Child;
-
-    use windows::Win32::Foundation::{CloseHandle, HANDLE};
-    use windows::Win32::System::Diagnostics::ToolHelp::{
-        CreateToolhelp32Snapshot, TH32CS_SNAPTHREAD, THREADENTRY32, Thread32First, Thread32Next,
-    };
-    use windows::Win32::System::JobObjects::{
-        AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-        JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation, SetInformationJobObject,
-    };
-    use windows::Win32::System::Threading::{OpenThread, ResumeThread, THREAD_SUSPEND_RESUME};
-    use windows::core::PCWSTR;
-
-    /// A job whose processes all end when it is closed.
-    pub struct Job(HANDLE);
-
-    // SAFETY: a job handle may be used and closed from any thread.
-    unsafe impl Send for Job {}
-    unsafe impl Sync for Job {}
-
-    impl Job {
-        pub fn kill_on_close(child: &Child) -> Option<Self> {
-            // SAFETY: no name and default security; the handle is owned by the returned Job and closed on drop.
-            let handle = unsafe { CreateJobObjectW(None, PCWSTR::null()) }.ok()?;
-            let job = Self(handle);
-            let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
-            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-            // SAFETY: `info` is the structure this information class expects, with its exact size.
-            unsafe {
-                SetInformationJobObject(
-                    job.0,
-                    JobObjectExtendedLimitInformation,
-                    std::ptr::from_ref(&info).cast(),
-                    std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
-                )
-            }
-            .ok()?;
-            // SAFETY: the child's handle is valid while `child` lives, which outlasts this call.
-            unsafe { AssignProcessToJobObject(job.0, HANDLE(child.as_raw_handle())) }.ok()?;
-            Some(job)
-        }
-    }
-
-    /// Resumes the threads of a process started suspended (it has one). False if none could be resumed.
-    pub fn resume(pid: u32) -> bool {
-        // SAFETY: a snapshot of all threads; the handle is closed below.
-        let Ok(snapshot) = (unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0) }) else {
-            return false;
-        };
-        let mut entry = THREADENTRY32 {
-            dwSize: std::mem::size_of::<THREADENTRY32>() as u32,
-            ..Default::default()
-        };
-        let mut resumed = false;
-        // SAFETY: `entry` is a THREADENTRY32 with its size set, as both calls require.
-        let mut more = unsafe { Thread32First(snapshot, &mut entry) }.is_ok();
-        while more {
-            if entry.th32OwnerProcessID == pid {
-                // SAFETY: the thread handle is used for this one call and closed.
-                if let Ok(thread) = unsafe { OpenThread(THREAD_SUSPEND_RESUME, false, entry.th32ThreadID) } {
-                    resumed |= unsafe { ResumeThread(thread) } != u32::MAX;
-                    let _ = unsafe { CloseHandle(thread) };
-                }
-            }
-            // SAFETY: as above.
-            more = unsafe { Thread32Next(snapshot, &mut entry) }.is_ok();
-        }
-        // SAFETY: the snapshot handle came from CreateToolhelp32Snapshot and is closed once.
-        let _ = unsafe { CloseHandle(snapshot) };
-        resumed
-    }
-
-    impl Drop for Job {
-        fn drop(&mut self) {
-            // SAFETY: the handle came from CreateJobObjectW and is closed once.
-            let _ = unsafe { CloseHandle(self.0) };
-        }
+        let _ = child.kill();
+        let _ = child.wait();
     }
 }
 

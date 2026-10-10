@@ -199,19 +199,31 @@ fn account_item(record: AccountRecord) -> SettingItem {
             .secret
             .as_ref()
             .map(|_| describe_source(&hub.secret_for(&current).1));
-        let managed = crate::codex_sign_in::is_managed(&current);
+        let codex = crate::codex_sign_in::is_managed(&current);
+        let github = crate::github_sign_in::is_managed(&current);
+        let managed = codex || github;
         let detail = match (&current.external_id, &secret) {
             // A Codex account CodexBar signs in shows who it is signed in as (#78); its external id is internal.
-            _ if managed => format!(
+            _ if codex => format!(
                 "{} · {}",
                 current.method.label(),
                 crate::codex_sign_in::describe(hub.dir(), &current)
+            ),
+            // A Copilot account CodexBar signs in (#79): its GitHub user, and whether CodexBar holds its token.
+            _ if github => format!(
+                "{} · {}",
+                current.method.label(),
+                crate::github_sign_in::describe(hub, &current)
             ),
             (Some(user), _) => format!("{} · {user}", current.method.label()),
             (None, Some(source)) => format!("{} · {source}", current.method.label()),
             (None, None) => current.method.label().to_owned(),
         };
-        let signed_in = managed && crate::codex_sign_in::auth_path(hub.dir(), &current).exists();
+        let signed_in = if codex {
+            crate::codex_sign_in::auth_path(hub.dir(), &current).exists()
+        } else {
+            github && matches!(crate::github_sign_in::token(hub, &current), Ok(Some(_)))
+        };
         let sign_in_id = current.id.clone();
         let sign_out_id = current.id.clone();
         let read_only = hub.is_read_only();
@@ -276,7 +288,13 @@ fn account_item(record: AccountRecord) -> SettingItem {
                         .ghost()
                         .label(if signed_in { "Sign in again…" } else { "Sign in…" })
                         .disabled(read_only)
-                        .on_click(move |_, window, cx| crate::codex_sign_in::sign_in(&sign_in_id, window, cx)),
+                        .on_click(move |_, window, cx| {
+                            if codex {
+                                crate::codex_sign_in::sign_in(&sign_in_id, window, cx);
+                            } else {
+                                crate::github_sign_in::sign_in(&sign_in_id, window, cx);
+                            }
+                        }),
                 )
                 .when(signed_in, |this| {
                     this.child(
@@ -285,7 +303,13 @@ fn account_item(record: AccountRecord) -> SettingItem {
                             .ghost()
                             .label("Sign out")
                             .disabled(read_only)
-                            .on_click(move |_, window, cx| crate::codex_sign_in::sign_out(&sign_out_id, window, cx)),
+                            .on_click(move |_, window, cx| {
+                                if codex {
+                                    crate::codex_sign_in::sign_out(&sign_out_id, window, cx);
+                                } else {
+                                    crate::github_sign_in::sign_out(&sign_out_id, cx);
+                                }
+                            }),
                     )
                 })
             })
@@ -327,6 +351,9 @@ struct AccountForm {
     secret: Entity<InputState>,
     username: Entity<InputState>,
     workspace: Entity<InputState>,
+    enterprise: Entity<InputState>,
+    organization: Entity<InputState>,
+    pool_total: Entity<InputState>,
     error: Rc<RefCell<Option<SharedString>>>,
 }
 
@@ -388,6 +415,37 @@ fn open_account_dialog(provider: &'static str, existing: Option<AccountRecord>, 
                     .unwrap_or_default(),
             )
         }),
+        enterprise: cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("Enterprise slug, for org billing")
+                .default_value(
+                    existing
+                        .as_ref()
+                        .and_then(|r| r.copilot_enterprise.clone())
+                        .unwrap_or_default(),
+                )
+        }),
+        organization: cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("Organization slug, for org billing")
+                .default_value(
+                    existing
+                        .as_ref()
+                        .and_then(|r| r.copilot_organization.clone())
+                        .unwrap_or_default(),
+                )
+        }),
+        pool_total: cx.new(|cx| {
+            InputState::new(window, cx)
+                .placeholder("Blank: seats × monthly allowance")
+                .default_value(
+                    existing
+                        .as_ref()
+                        .and_then(|r| r.copilot_pool_total)
+                        .map(|total| total.to_string())
+                        .unwrap_or_default(),
+                )
+        }),
         error: Rc::default(),
     });
     let editing = existing.is_some();
@@ -403,6 +461,11 @@ fn open_account_dialog(provider: &'static str, existing: Option<AccountRecord>, 
             .selected_index(cx)
             .map_or(provider_ix, |ix| ix.row);
         let info = &PROVIDERS[provider_ix.min(PROVIDERS.len() - 1)];
+        let oauth = form
+            .methods
+            .read(cx)
+            .selected_index(cx)
+            .is_some_and(|ix| AuthMethod::ALL.get(ix.row) == Some(&AuthMethod::OAuth));
         let error = form.error.borrow().clone();
         let field = |label: &'static str, control: AnyElement| {
             v_flex()
@@ -452,8 +515,26 @@ fn open_account_dialog(provider: &'static str, existing: Option<AccountRecord>, 
                              through the Codex CLI. Automatic: uses the sign-in from `codex`.",
                         ))
                     })
-                    .when(info.id == names::COPILOT, |this| {
+                    .when(info.id == names::COPILOT && !oauth, |this| {
                         this.child(field("GitHub username", Input::new(&form.username).into_any_element()))
+                    })
+                    .when(info.id == names::COPILOT, |this| {
+                        this.when(oauth, |this| {
+                            this.child(div().text_xs().text_color(cx.theme().muted_foreground).child(
+                                "OAuth: after adding, CodexBar signs this account in with your browser through the \
+                                 GitHub CLI, apart from the GitHub CLI's own accounts.",
+                            ))
+                        })
+                        .child(field("Enterprise", Input::new(&form.enterprise).into_any_element()))
+                        .child(field("Organization", Input::new(&form.organization).into_any_element()))
+                        .child(field(
+                            "Pool total (AI credits a month)",
+                            Input::new(&form.pool_total).into_any_element(),
+                        ))
+                        .child(div().text_xs().text_color(cx.theme().muted_foreground).child(
+                            "Org billing: for a Copilot Enterprise seat, shows the organization's AI credits this \
+                             month and this account's share. Leave blank to skip.",
+                        ))
                     })
                     .when(info.id == names::OPENCODE_GO, |this| {
                         this.child(field("Workspace id", Input::new(&form.workspace).into_any_element()))
@@ -505,13 +586,42 @@ fn save_account(form: &AccountForm, existing: Option<AccountRecord>, window: &mu
     let secret = form.secret.read(cx).value().trim().to_owned();
     let username = form.username.read(cx).value().trim().to_owned();
     let workspace = form.workspace.read(cx).value().trim().to_owned();
+    let enterprise = form.enterprise.read(cx).value().trim().to_owned();
+    let organization = form.organization.read(cx).value().trim().to_owned();
+    let pool_total = form.pool_total.read(cx).value().trim().replace([',', '_'], "");
+    let pool_total = match pool_total.as_str() {
+        "" => None,
+        text => match text.parse::<u64>() {
+            Ok(total) if total > 0 => Some(total),
+            _ => {
+                *form.error.borrow_mut() = Some("The pool total is a whole number of AI credits.".into());
+                window.refresh();
+                return false;
+            }
+        },
+    };
 
     let previous = existing.clone();
     let mut record = existing.unwrap_or_else(|| AccountRecord::new(info.id, &label, method));
     record.label = label;
     record.method = method;
+    if info.id == names::COPILOT
+        && method != AuthMethod::OAuth
+        && username.is_empty()
+        && (!enterprise.is_empty() || !organization.is_empty() || pool_total.is_some())
+    {
+        *form.error.borrow_mut() = Some("Org billing needs this account's GitHub username.".into());
+        window.refresh();
+        return false;
+    }
     if info.id == names::COPILOT {
-        record.external_id = (!username.is_empty()).then_some(username);
+        // An account CodexBar signs in gets its username from the sign-in.
+        if method != AuthMethod::OAuth {
+            record.external_id = (!username.is_empty()).then_some(username);
+        }
+        record.copilot_enterprise = (!enterprise.is_empty()).then_some(enterprise);
+        record.copilot_organization = (!organization.is_empty()).then_some(organization);
+        record.copilot_pool_total = pool_total;
     }
     if info.id == names::OPENCODE_GO {
         record.workspace_id = (!workspace.is_empty()).then_some(workspace);
@@ -526,12 +636,19 @@ fn save_account(form: &AccountForm, existing: Option<AccountRecord>, window: &mu
             return false;
         }
     }
-    let sign_in_now = crate::codex_sign_in::is_managed(&record)
+    let managed =
+        |record: &AccountRecord| crate::codex_sign_in::is_managed(record) || crate::github_sign_in::is_managed(record);
+    let sign_in_now = managed(&record)
         && !SettingsHub::global(cx)
             .settings()
             .accounts()
             .iter()
-            .any(|existing| existing.id == record.id && crate::codex_sign_in::is_managed(existing));
+            .any(|existing| existing.id == record.id && managed(existing));
+    let github = crate::github_sign_in::is_managed(&record);
+    // An account leaving CodexBar's own GitHub sign-in loses CodexBar's token for it.
+    let left_github = previous
+        .as_ref()
+        .is_some_and(|old| crate::github_sign_in::is_managed(old) && !github);
     let record_id = record.id.clone();
     // The first Codex account CodexBar signs in joins the Codex CLI's own sign-in rather than replacing it: that one
     // was showing as the implicit account and stays, as an account of its own the user can switch off or remove.
@@ -559,10 +676,23 @@ fn save_account(form: &AccountForm, existing: Option<AccountRecord>, window: &mu
             if let Some(old) = left_managed {
                 crate::codex_sign_in::forget(old, cx);
             }
+            if left_github
+                && let Err(err) =
+                    codexbar_store::credentials::delete_long(SettingsHub::global(cx).credentials().as_ref(), &record_id)
+            {
+                SettingsHub::set_error(
+                    cx,
+                    Some(format!("The account was saved, but its GitHub token couldn't be deleted: {err}").into()),
+                );
+            }
             if sign_in_now {
                 // After this dialog has closed.
                 window.defer(cx, move |window, cx| {
-                    crate::codex_sign_in::sign_in(&record_id, window, cx)
+                    if github {
+                        crate::github_sign_in::sign_in(&record_id, window, cx);
+                    } else {
+                        crate::codex_sign_in::sign_in(&record_id, window, cx);
+                    }
                 });
             }
             true

@@ -43,7 +43,9 @@ pub const PROVIDERS: [ProviderInfo; 8] = [
     ProviderInfo {
         id: names::COPILOT,
         display: "Copilot",
-        sign_in: "Uses the GitHub CLI (`gh auth login`). Set a username to fetch one account.",
+        sign_in: "Automatic and Command line use the GitHub CLI's accounts (`gh auth login`); set a username to fetch \
+                  one. OAuth signs an account in with your browser through the GitHub CLI, kept apart from its own \
+                  accounts. Enterprise seats can also show their organization's AI credits.",
         secret: None,
         default_method: AuthMethod::CommandLine,
         multi_account: true,

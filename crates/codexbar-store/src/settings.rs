@@ -114,6 +114,10 @@ pub struct AccountRecord {
     pub workspace_id: Option<String>,
     /// The card key kept for the WPF app's manual ordering.
     pub legacy_card_key: Option<String>,
+    /// Copilot org billing (#79): the enterprise and organization slugs, and the monthly pool of AI credits when set.
+    pub copilot_enterprise: Option<String>,
+    pub copilot_organization: Option<String>,
+    pub copilot_pool_total: Option<u64>,
 }
 
 impl AccountRecord {
@@ -128,6 +132,9 @@ impl AccountRecord {
             external_id: None,
             workspace_id: None,
             legacy_card_key: None,
+            copilot_enterprise: None,
+            copilot_organization: None,
+            copilot_pool_total: None,
         }
     }
 
@@ -141,6 +148,16 @@ impl AccountRecord {
         map.insert("externalAccountId".into(), opt(&self.external_id));
         map.insert("workspaceId".into(), opt(&self.workspace_id));
         map.insert("legacyCardKey".into(), opt(&self.legacy_card_key));
+        // Written only when set, so files without org billing keep their shape.
+        if let Some(enterprise) = &self.copilot_enterprise {
+            map.insert("copilotEnterprise".into(), json!(enterprise));
+        }
+        if let Some(organization) = &self.copilot_organization {
+            map.insert("copilotOrganization".into(), json!(organization));
+        }
+        if let Some(total) = self.copilot_pool_total {
+            map.insert("copilotPoolTotal".into(), json!(total));
+        }
         Value::Object(map)
     }
 
@@ -167,6 +184,12 @@ impl AccountRecord {
             external_id: text("externalAccountId").map(str::to_owned),
             workspace_id: text("workspaceId").map(str::to_owned),
             legacy_card_key: text("legacyCardKey").map(str::to_owned),
+            copilot_enterprise: text("copilotEnterprise").map(str::to_owned),
+            copilot_organization: text("copilotOrganization").map(str::to_owned),
+            copilot_pool_total: object
+                .get("copilotPoolTotal")
+                .and_then(Value::as_u64)
+                .filter(|total| *total > 0),
         })
     }
 }
@@ -592,6 +615,9 @@ fn migrate_legacy(doc: &Value) -> Vec<AccountRecord> {
             external_id: None,
             workspace_id: workspace,
             legacy_card_key: Some(provider.to_owned()),
+            copilot_enterprise: None,
+            copilot_organization: None,
+            copilot_pool_total: None,
         });
     }
 
@@ -635,6 +661,9 @@ fn migrate_legacy(doc: &Value) -> Vec<AccountRecord> {
             external_id: Some(username.clone()),
             workspace_id: None,
             legacy_card_key: Some(format!("copilot:{username}")),
+            copilot_enterprise: None,
+            copilot_organization: None,
+            copilot_pool_total: None,
         });
     }
     if known.is_empty() && copilot_entry.is_some() {
@@ -647,6 +676,9 @@ fn migrate_legacy(doc: &Value) -> Vec<AccountRecord> {
             external_id: None,
             workspace_id: None,
             legacy_card_key: Some("Copilot".to_owned()),
+            copilot_enterprise: None,
+            copilot_organization: None,
+            copilot_pool_total: None,
         });
     }
     accounts
@@ -950,6 +982,33 @@ mod tests {
             "Codex": null
         }
     }"#;
+
+    #[test]
+    fn copilot_org_billing_round_trips_and_is_written_only_when_set() {
+        let dir = TempDir::with(
+            PRIMARY_FILE,
+            r#"{"accountConfigurationVersion":1,"accounts":[
+                {"id":"a","providerId":"Copilot","displayLabel":"Work","enabled":true,"authenticationMethod":"OAuth",
+                 "externalAccountId":"dev","copilotEnterprise":"acme","copilotOrganization":"acme-eng",
+                 "copilotPoolTotal":12000},
+                {"id":"b","providerId":"Copilot","displayLabel":"Home","enabled":true,"authenticationMethod":"CommandLine",
+                 "copilotPoolTotal":0}]}"#,
+        );
+        let mut settings = Settings::load(&dir.0).unwrap();
+        let work = settings.accounts()[0].clone();
+        assert_eq!(work.copilot_enterprise.as_deref(), Some("acme"));
+        assert_eq!(work.copilot_organization.as_deref(), Some("acme-eng"));
+        assert_eq!(work.copilot_pool_total, Some(12_000));
+        // A zero pool is no pool.
+        assert_eq!(settings.accounts()[1].copilot_pool_total, None);
+        settings.upsert(work).unwrap();
+        settings.save().unwrap();
+        let saved = dir.read(PRIMARY_FILE);
+        assert_eq!(saved["accounts"][0]["copilotPoolTotal"], 12000);
+        assert_eq!(saved["accounts"][0]["copilotOrganization"], "acme-eng");
+        let home = saved["accounts"][1].as_object().unwrap();
+        assert!(!home.contains_key("copilotEnterprise") && !home.contains_key("copilotPoolTotal"));
+    }
 
     #[test]
     fn legacy_id_matches_wpf_algorithm() {

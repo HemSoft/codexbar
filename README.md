@@ -10,7 +10,7 @@ Built with Rust, [GPUI](https://www.gpui.rs/) and [gpui-kit](https://gpui-kit.co
 |----------|-------------|----------------|
 | **ChatGPT / Codex** | Codex CLI ChatGPT login (`~/.codex/auth.json`), or browser sign-in per account through the Codex CLI | 5-hour + weekly usage limits |
 | **Claude** | Claude Code login (`~/.claude/.credentials.json`) | Session + weekly limits, extra-usage spend |
-| **Copilot** | GitHub CLI (`gh auth`) | Usage limits per account |
+| **Copilot** | GitHub CLI (`gh auth`), or browser sign-in per account through the GitHub CLI | Usage limits per account; organization AI credits for Enterprise seats |
 | **Cursor** | Cursor app sign-in (`%APPDATA%\Cursor\auth.json`) | Plan usage and spend |
 | **OpenCode Go / Zen** | Dashboard cookie + workspace ID | Usage and balance |
 | **OpenRouter** | API Key | Credits, usage across models |
@@ -50,7 +50,7 @@ development, `cargo run -p codexbar-app -- --demo` starts the dashboard with sam
 
 1. **ChatGPT / Codex**: Run `codex` and sign in with your ChatGPT account. For more accounts, add a Codex account with the OAuth sign-in method in Settings > Accounts; CodexBar signs it in with your browser through the Codex CLI
 2. **Claude**: Run `claude` and sign in
-3. **Copilot**: Uses GitHub CLI tokens — run `gh auth login` for each account
+3. **Copilot**: Uses GitHub CLI tokens — run `gh auth login` for each account, or add a Copilot account with the OAuth sign-in method and sign it in from Settings. For an Enterprise seat, set the account's enterprise and organization (and optionally the pool total) to see the organization's AI credits
 4. **Cursor**: Sign in to the Cursor app
 5. **OpenRouter**: Get an API key from [openrouter.ai/keys](https://openrouter.ai/keys) and add it in Settings, or set `OPENROUTER_API_KEY`
 6. **Moonshot (Kimi)**: Get an API key from [platform.kimi.ai](https://platform.kimi.ai/) and add it in Settings, or set `MOONSHOT_API_KEY`

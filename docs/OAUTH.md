@@ -44,6 +44,24 @@ and keeps writing its own credential file; CodexBar only reads it.
   the import and fallback path. The app-server process tree runs in a Windows
   job that ends with each session.
 
+- **GitHub Copilot (#79).** An account with the OAuth sign-in method is signed
+  in by the GitHub CLI's own device sign-in (`gh auth login --web
+  --insecure-storage`), run in a private, temporary config folder inside the
+  settings folder with the clipboard copy and prompts off. Not in a terminal,
+  `gh` prints the one-time code and `https://github.com/login/device`; CodexBar
+  shows the code and opens the page. Once `gh` reports the sign-in, CodexBar
+  reads the token with `gh auth token`, keeps it in Credential Manager under
+  the account (`CodexBar:account:<id>`) and deletes the folder. The user's own
+  `gh` accounts, keyring entries and git configuration are never touched.
+  An account with org billing set also asks for `manage_billing:enterprise`,
+  which the enterprise AI-credit report needs. `gh` runs in a kill-on-close
+  Windows job, and folders an interrupted sign-in left behind are deleted at
+  startup.
+  GitHub CLI tokens don't expire; Sign out deletes CodexBar's copy (revoke it
+  at github.com/settings/applications to end it on GitHub's side). Accounts with
+  the Automatic or Command line method use the GitHub CLI's own accounts, the
+  import and fallback path.
+
 ## Approved client registrations
 
 A provider can use this path only once a human has confirmed its client
