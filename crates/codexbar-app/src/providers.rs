@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use codexbar_providers::balance::{MoonshotProvider, OpenRouterProvider};
-use codexbar_providers::claude::{ClaudeProvider, default_credentials_path};
+use codexbar_providers::claude::{self, ClaudeCliRenewer, ClaudeProvider};
 use codexbar_providers::codex::{self, CodexCliRenewer, CodexProvider};
 use codexbar_providers::copilot::{CopilotProvider, OrgBilling};
 use codexbar_providers::cursor::{self, CursorProvider};
@@ -37,12 +37,7 @@ pub fn enabled(hub: &SettingsHub) -> Vec<Arc<dyn UsageProvider>> {
         providers.push(copilot);
     }
 
-    if !enabled_accounts(hub, names::CLAUDE).is_empty() {
-        providers.push(Arc::new(ClaudeProvider::new(
-            UreqClient::new(),
-            default_credentials_path(),
-        )));
-    }
+    providers.extend(claude_adapters(hub));
     if !enabled_accounts(hub, names::CURSOR).is_empty() {
         providers.push(Arc::new(CursorProvider::new(
             UreqClient::new(),
@@ -126,6 +121,41 @@ fn codex_adapters(hub: &SettingsHub) -> Vec<Arc<dyn UsageProvider>> {
     adapters
 }
 
+/// One adapter per Claude Code config folder (#80): Claude Code's own, and one for each account CodexBar signed in.
+/// Folders signed in to the same Claude account show it once, through the CodexBar account that owns it. Every
+/// adapter renews through Claude Code.
+fn claude_adapters(hub: &SettingsHub) -> Vec<Arc<dyn UsageProvider>> {
+    let mut records = enabled_accounts(hub, names::CLAUDE);
+    let several = records.len() > 1;
+    records.sort_by_key(|record| !crate::claude_sign_in::is_managed(record));
+    let mut folders = Vec::new();
+    let mut identities = Vec::new();
+    let mut adapters: Vec<Arc<dyn UsageProvider>> = Vec::new();
+    for record in records {
+        let credentials = crate::claude_sign_in::credentials_path(hub.dir(), &record);
+        let profile = crate::claude_sign_in::profile_path(hub.dir(), &record);
+        let managed = crate::claude_sign_in::is_managed(&record);
+        let identity = if managed { record.external_id.clone() } else { None }
+            .or_else(|| claude::signed_in_identity(&profile).map(|(id, _)| id.as_str().to_owned()));
+        if folders.contains(&credentials) || identity.as_ref().is_some_and(|id| identities.contains(id)) {
+            continue;
+        }
+        folders.push(credentials.clone());
+        identities.extend(identity.clone());
+        let mut provider = ClaudeProvider::new(UreqClient::new(), credentials)
+            .with_profile(profile)
+            .with_renewer(Arc::new(ClaudeCliRenewer));
+        if managed {
+            provider = provider.managed();
+        }
+        if managed || several {
+            provider = provider.with_account(identity.unwrap_or_else(|| record.id.clone()), record.label.clone());
+        }
+        adapters.push(Arc::new(provider));
+    }
+    adapters
+}
+
 /// The dashboard account each configured record owns (#85), by record id: OpenRouter and Moonshot records report under
 /// their own id, a Copilot record for one username under that user's id, and a Codex account CodexBar signed in
 /// under the ChatGPT identity it holds (#78). Removing such a record removes that dashboard account. Codex on the
@@ -161,6 +191,7 @@ pub fn owned_account_ids(hub: &SettingsHub) -> HashMap<String, String> {
             let owned = match record.provider.as_str() {
                 names::OPENROUTER | names::MOONSHOT => record.id.clone(),
                 names::CODEX if crate::codex_sign_in::is_managed(record) => record.external_id.clone()?,
+                names::CLAUDE if crate::claude_sign_in::is_managed(record) => record.external_id.clone()?,
                 names::COPILOT => {
                     let user = record.external_id.as_deref()?.trim();
                     (!user.is_empty()).then(|| codexbar_providers::copilot::account_id(user).as_str().to_owned())?

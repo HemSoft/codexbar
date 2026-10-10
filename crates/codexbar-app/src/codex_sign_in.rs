@@ -49,7 +49,7 @@ pub fn home(dir: &Path, record: &AccountRecord) -> PathBuf {
 
 /// The folder an account's home is in: its id when that is a plain name (CodexBar's ids are 32 hex digits), else a
 /// hash of it, so an edited settings file can't place a home, or its deletion, outside `codex\`.
-fn folder_name(id: &str) -> String {
+pub(crate) fn folder_name(id: &str) -> String {
     let plain = !id.is_empty()
         && id.len() <= 64
         // Lowercase only: Windows folders ignore case, so "Work" and "work" must not share one.

@@ -199,31 +199,19 @@ fn account_item(record: AccountRecord) -> SettingItem {
             .secret
             .as_ref()
             .map(|_| describe_source(&hub.secret_for(&current).1));
-        let codex = crate::codex_sign_in::is_managed(&current);
-        let github = crate::github_sign_in::is_managed(&current);
-        let managed = codex || github;
+        // An account CodexBar signs in (#78-#80) shows who it is signed in as; its external id is internal.
+        let managed = crate::managed::Managed::of(&current);
         let detail = match (&current.external_id, &secret) {
-            // A Codex account CodexBar signs in shows who it is signed in as (#78); its external id is internal.
-            _ if codex => format!(
+            _ if managed.is_some() => format!(
                 "{} · {}",
                 current.method.label(),
-                crate::codex_sign_in::describe(hub.dir(), &current)
-            ),
-            // A Copilot account CodexBar signs in (#79): its GitHub user, and whether CodexBar holds its token.
-            _ if github => format!(
-                "{} · {}",
-                current.method.label(),
-                crate::github_sign_in::describe(hub, &current)
+                managed.map(|kind| kind.describe(hub, &current)).unwrap_or_default()
             ),
             (Some(user), _) => format!("{} · {user}", current.method.label()),
             (None, Some(source)) => format!("{} · {source}", current.method.label()),
             (None, None) => current.method.label().to_owned(),
         };
-        let signed_in = if codex {
-            crate::codex_sign_in::auth_path(hub.dir(), &current).exists()
-        } else {
-            github && matches!(crate::github_sign_in::token(hub, &current), Ok(Some(_)))
-        };
+        let signed_in = managed.is_some_and(|kind| kind.signed_in(hub, &current));
         let sign_in_id = current.id.clone();
         let sign_out_id = current.id.clone();
         let read_only = hub.is_read_only();
@@ -281,20 +269,14 @@ fn account_item(record: AccountRecord) -> SettingItem {
                         });
                     }),
             )
-            .when(managed, |this| {
+            .when_some(managed, |this, kind| {
                 this.child(
                     Button::new(SharedString::from(format!("sign-in-{}", current.id)))
                         .small()
                         .ghost()
                         .label(if signed_in { "Sign in again…" } else { "Sign in…" })
                         .disabled(read_only)
-                        .on_click(move |_, window, cx| {
-                            if codex {
-                                crate::codex_sign_in::sign_in(&sign_in_id, window, cx);
-                            } else {
-                                crate::github_sign_in::sign_in(&sign_in_id, window, cx);
-                            }
-                        }),
+                        .on_click(move |_, window, cx| kind.sign_in(&sign_in_id, window, cx)),
                 )
                 .when(signed_in, |this| {
                     this.child(
@@ -303,13 +285,7 @@ fn account_item(record: AccountRecord) -> SettingItem {
                             .ghost()
                             .label("Sign out")
                             .disabled(read_only)
-                            .on_click(move |_, window, cx| {
-                                if codex {
-                                    crate::codex_sign_in::sign_out(&sign_out_id, window, cx);
-                                } else {
-                                    crate::github_sign_in::sign_out(&sign_out_id, cx);
-                                }
-                            }),
+                            .on_click(move |_, window, cx| kind.sign_out(&sign_out_id, window, cx)),
                     )
                 })
             })
@@ -515,6 +491,13 @@ fn open_account_dialog(provider: &'static str, existing: Option<AccountRecord>, 
                              through the Codex CLI. Automatic: uses the sign-in from `codex`.",
                         ))
                     })
+                    .when(info.id == names::CLAUDE, |this| {
+                        this.child(div().text_xs().text_color(cx.theme().muted_foreground).child(
+                            "Browser session: after adding, CodexBar opens a Claude Code window to sign this account \
+                             in to Claude, apart from Claude Code's own sign-in. OAuth or Automatic: uses the sign-in \
+                             from `claude`.",
+                        ))
+                    })
                     .when(info.id == names::COPILOT && !oauth, |this| {
                         this.child(field("GitHub username", Input::new(&form.username).into_any_element()))
                     })
@@ -636,19 +619,21 @@ fn save_account(form: &AccountForm, existing: Option<AccountRecord>, window: &mu
             return false;
         }
     }
-    let managed =
-        |record: &AccountRecord| crate::codex_sign_in::is_managed(record) || crate::github_sign_in::is_managed(record);
-    let sign_in_now = managed(&record)
+    use crate::managed::Managed;
+    let kind = Managed::of(&record);
+    // A new account on a CodexBar sign-in, or one switched to it, is signed in right after saving.
+    let sign_in_now = kind.is_some()
         && !SettingsHub::global(cx)
             .settings()
             .accounts()
             .iter()
-            .any(|existing| existing.id == record.id && managed(existing));
-    let github = crate::github_sign_in::is_managed(&record);
-    // An account leaving CodexBar's own GitHub sign-in loses CodexBar's token for it.
-    let left_github = previous
-        .as_ref()
-        .is_some_and(|old| crate::github_sign_in::is_managed(old) && !github);
+            .any(|existing| existing.id == record.id && Managed::of(existing) == kind);
+    // An account leaving a CodexBar sign-in (OAuth to Automatic, say) is signed out and what CodexBar kept is deleted.
+    let left = previous.as_ref().and_then(|old| {
+        Managed::of(old)
+            .filter(|old_kind| Some(*old_kind) != kind)
+            .map(|old_kind| (old_kind, old.clone()))
+    });
     let record_id = record.id.clone();
     // The first Codex account CodexBar signs in joins the Codex CLI's own sign-in rather than replacing it: that one
     // was showing as the implicit account and stays, as an account of its own the user can switch off or remove.
@@ -660,11 +645,6 @@ fn save_account(form: &AccountForm, existing: Option<AccountRecord>, window: &mu
             .accounts_for(names::CODEX)
             .next()
             .is_none();
-    // An account leaving CodexBar's own sign-in (OAuth to Automatic) is signed out and its folder deleted.
-    let left_managed = previous
-        .as_ref()
-        .filter(|old| crate::codex_sign_in::is_managed(old) && !crate::codex_sign_in::is_managed(&record))
-        .cloned();
     let saved = SettingsHub::update(cx, |settings| {
         if keep_cli_account {
             settings.upsert(SettingsHub::implicit_account(names::CODEX))?;
@@ -673,27 +653,12 @@ fn save_account(form: &AccountForm, existing: Option<AccountRecord>, window: &mu
     });
     match saved {
         Ok(()) => {
-            if let Some(old) = left_managed {
-                crate::codex_sign_in::forget(old, cx);
+            if let Some((old_kind, old)) = left {
+                old_kind.forget(old, cx);
             }
-            if left_github
-                && let Err(err) =
-                    codexbar_store::credentials::delete_long(SettingsHub::global(cx).credentials().as_ref(), &record_id)
-            {
-                SettingsHub::set_error(
-                    cx,
-                    Some(format!("The account was saved, but its GitHub token couldn't be deleted: {err}").into()),
-                );
-            }
-            if sign_in_now {
+            if let Some(kind) = kind.filter(|_| sign_in_now) {
                 // After this dialog has closed.
-                window.defer(cx, move |window, cx| {
-                    if github {
-                        crate::github_sign_in::sign_in(&record_id, window, cx);
-                    } else {
-                        crate::codex_sign_in::sign_in(&record_id, window, cx);
-                    }
-                });
+                window.defer(cx, move |window, cx| kind.sign_in(&record_id, window, cx));
             }
             true
         }
@@ -711,8 +676,8 @@ fn confirm_remove(record: AccountRecord, window: &mut Window, cx: &mut App) {
     // dashboard account loses its stored usage too (#85); one that keeps showing through the provider's sign-in keeps it.
     let owns_account = crate::providers::owned_account_ids(SettingsHub::global(cx)).contains_key(&record.id);
     let description = match (catalog::info(&record.provider).secret.is_some(), owns_account) {
-        _ if crate::codex_sign_in::is_managed(&record) => {
-            "It is signed out and its CodexBar sign-in is deleted, with its usage history. The Codex CLI's own sign-in is kept."
+        _ if crate::managed::Managed::of(&record).is_some() => {
+            "It is signed out and CodexBar's sign-in for it is deleted, with its usage history. The provider's own sign-in is kept."
         }
         (true, true) => "Its saved key is deleted from Credential Manager, and its usage history is deleted.",
         (true, false) => "Its saved key is deleted from Credential Manager. Usage history is kept.",
@@ -743,8 +708,10 @@ fn confirm_remove(record: AccountRecord, window: &mut Window, cx: &mut App) {
                     settings.remove(&id);
                     Ok(())
                 });
-                if result.is_ok() {
-                    crate::codex_sign_in::forget(record.clone(), cx);
+                if result.is_ok()
+                    && let Some(kind) = crate::managed::Managed::of(&record)
+                {
+                    kind.forget(record.clone(), cx);
                 }
                 let mut ids = vec![id.clone()];
                 if first && catalog::info(&record.provider).secret.is_some() {
@@ -794,7 +761,9 @@ fn confirm_reset(window: &mut Window, cx: &mut App) {
                 {
                     // Codex accounts CodexBar signed in are signed out and their folders deleted (#78).
                     for record in records.clone() {
-                        crate::codex_sign_in::forget(record, cx);
+                        if let Some(kind) = crate::managed::Managed::of(&record) {
+                            kind.forget(record, cx);
+                        }
                     }
                     let store = SettingsHub::global(cx).credentials();
                     let failed = ids.iter().filter(|id| codexbar_store::credentials::delete_long(store.as_ref(), id).is_err()).count();
