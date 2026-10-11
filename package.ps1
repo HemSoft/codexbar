@@ -370,6 +370,10 @@ else {
     if (Test-Path -LiteralPath $layout) { Remove-Item -LiteralPath $layout -Recurse -Force }
     New-Item -ItemType Directory -Path (Join-Path $layout 'Assets') -Force | Out-Null
     Copy-Item -LiteralPath $builtExe -Destination (Join-Path $layout 'codexbar.exe')
+    # The provider logos embedded in codexbar.exe are MIT-licensed; their notice ships with it.
+    New-Item -ItemType Directory -Path (Join-Path $layout 'ThirdPartyNotices') -Force | Out-Null
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'crates\codexbar-app\assets\brand\LICENSE.md') `
+        -Destination (Join-Path $layout 'ThirdPartyNotices\provider-logos.md')
     $manifest = (Get-Content -LiteralPath (Join-Path $PSScriptRoot 'packaging\AppxManifest.xml') -Raw).
         Replace('{{VERSION}}', $version).Replace('{{PUBLISHER}}', $publisher).
         Replace('{{RUNTIME_NAME}}', $runtime.Name).Replace('{{RUNTIME_VERSION}}', $runtime.Version).

@@ -122,6 +122,10 @@ try {
     # Clean install from the App Installer file.
     & $package -Channel $Channel -Revision 1 -Trust -Install
     Assert-Installed $first
+    $notice = Join-Path (Get-AppxPackage -Name $name).InstallLocation 'ThirdPartyNotices\provider-logos.md'
+    if (-not (Select-String -LiteralPath $notice -SimpleMatch 'Copyright (c) 2023 LobeHub' -Quiet)) {
+        throw 'The installed package has no provider logo license notice.'
+    }
     $status = Get-PackageStatus
     if (-not $status.packaged -or $status.version -ne $first -or -not $status.channel) {
         throw "The installed app reports $($status | ConvertTo-Json -Compress)."
