@@ -1,35 +1,40 @@
-//! Provider branding (#92): a small badge with each provider's accent color and monogram, so accounts are recognizable
-//! at a glance. The badge always carries the provider's name for screen readers; the name also sits beside it.
+//! Provider branding (#92): a small badge with each provider's own logo on its accent color, so accounts are
+//! recognizable at a glance. The badge always carries the provider's name for screen readers; the name also sits
+//! beside it. The logos are the providers' marks (`assets/brand`, see its LICENSE.md), drawn in one color.
 //!
 //! This is the product's token layer for provider colors, the one place they are defined. The accents approximate
-//! each provider's own brand color; the monogram's color is picked for contrast on it. Under Windows high contrast the
+//! each provider's own brand color; the logo's color is picked for contrast on it. Under Windows high contrast the
 //! badge uses the scheme's text and window pair instead.
 
 use codexbar_core::Provider;
 use gpui_kit::component::ActiveTheme as _;
 use gpui_kit::{
     App, Hsla, InteractiveElement as _, IntoElement, ParentElement as _, Role, SharedString,
-    StatefulInteractiveElement as _, Styled as _, TestSupportExt as _, div, rgb,
+    StatefulInteractiveElement as _, Styled as _, TestSupportExt as _, div, rgb, svg,
 };
 
-/// A provider's accent (`0xRRGGBB`) and monogram.
+/// A provider's accent (`0xRRGGBB`) and logo.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Brand {
     pub accent: u32,
-    pub monogram: &'static str,
+    /// The logo's asset path (`crate::assets`).
+    pub logo: &'static str,
 }
 
 pub fn brand(provider: Provider) -> Brand {
-    let (accent, monogram) = match provider {
-        Provider::Codex => (0x10A37F, "Cx"),
-        Provider::Claude => (0xD97757, "Cl"),
-        Provider::Copilot => (0x8957E5, "Co"),
-        Provider::Cursor => (0x262626, "Cu"),
-        Provider::OpenRouter => (0x4F52D9, "OR"),
-        Provider::OpenCode => (0xB45309, "OC"),
-        Provider::Moonshot => (0x1D4ED8, "Ki"),
+    let accent = match provider {
+        Provider::Codex => 0x10A37F,
+        Provider::Claude => 0xD97757,
+        Provider::Copilot => 0x8957E5,
+        Provider::Cursor => 0x262626,
+        Provider::OpenRouter => 0x4F52D9,
+        Provider::OpenCode => 0xB45309,
+        Provider::Moonshot => 0x1D4ED8,
     };
-    Brand { accent, monogram }
+    Brand {
+        accent,
+        logo: crate::assets::logo_path(provider),
+    }
 }
 
 /// The provider for a settings record's provider name (`OpenCodeGo` and `OpenCodeZen` are both OpenCode).
@@ -48,7 +53,7 @@ pub fn from_settings_name(name: &str) -> Option<Provider> {
 }
 
 /// White or near-black, whichever reads better on `accent`.
-fn monogram_color(accent: u32) -> u32 {
+fn logo_color(accent: u32) -> u32 {
     if contrast(accent, 0xFFFFFF) >= contrast(accent, 0x111111) {
         0xFFFFFF
     } else {
@@ -56,7 +61,7 @@ fn monogram_color(accent: u32) -> u32 {
     }
 }
 
-/// The badge: accent square, monogram, and the provider's name as its accessible label. `key` makes its id unique
+/// The badge: accent square, the provider's logo, and the provider's name as its accessible label. `key` makes its id unique
 /// where several badges share a view (one per row).
 pub fn badge(provider: Provider, key: impl Into<SharedString>, cx: &App) -> impl IntoElement {
     let brand = brand(provider);
@@ -64,7 +69,7 @@ pub fn badge(provider: Provider, key: impl Into<SharedString>, cx: &App) -> impl
     let (fill, ink): (Hsla, Hsla) = if high_contrast {
         (cx.theme().foreground, cx.theme().background)
     } else {
-        (rgb(brand.accent).into(), rgb(monogram_color(brand.accent)).into())
+        (rgb(brand.accent).into(), rgb(logo_color(brand.accent)).into())
     };
     let key: SharedString = key.into();
     div()
@@ -79,10 +84,7 @@ pub fn badge(provider: Provider, key: impl Into<SharedString>, cx: &App) -> impl
         .justify_center()
         .rounded(cx.theme().radius)
         .bg(fill)
-        .text_color(ink)
-        .text_xs()
-        .font_weight(gpui_kit::FontWeight::SEMIBOLD)
-        .child(brand.monogram)
+        .child(svg().path(brand.logo).size(gpui_kit::rems(0.875)).text_color(ink))
 }
 
 fn luminance(color: u32) -> f64 {
@@ -107,20 +109,20 @@ mod tests {
     use super::*;
 
     #[test]
-    fn every_monogram_is_readable_on_its_accent() {
+    fn every_logo_is_readable_on_its_accent() {
         for provider in Provider::ALL {
             let brand = brand(provider);
-            let ratio = contrast(brand.accent, monogram_color(brand.accent));
+            let ratio = contrast(brand.accent, logo_color(brand.accent));
             assert!(ratio >= 4.5, "{provider:?}: {ratio:.2}:1");
         }
     }
 
     #[test]
-    fn providers_are_told_apart_by_monogram_not_color_alone() {
-        let mut monograms: Vec<&str> = Provider::ALL.iter().map(|provider| brand(*provider).monogram).collect();
-        monograms.sort_unstable();
-        monograms.dedup();
-        assert_eq!(monograms.len(), Provider::ALL.len());
+    fn providers_are_told_apart_by_logo_not_color_alone() {
+        let mut logos: Vec<&str> = Provider::ALL.iter().map(|provider| brand(*provider).logo).collect();
+        logos.sort_unstable();
+        logos.dedup();
+        assert_eq!(logos.len(), Provider::ALL.len());
     }
 
     #[test]
